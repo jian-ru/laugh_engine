@@ -1,0 +1,5 @@
+Debug/*
+x64/*
+laugh_engine/Debug/*
+laugh_engine/x64/*
+*.sdf
