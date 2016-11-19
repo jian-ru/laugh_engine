@@ -26,5 +26,8 @@
     <ClInclude Include="vutils.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="common_utils.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

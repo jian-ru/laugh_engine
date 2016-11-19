@@ -154,6 +154,7 @@
     <ClCompile Include="main.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="common_utils.h" />
     <ClInclude Include="vdeleter.h" />
     <ClInclude Include="vutils.h" />
   </ItemGroup>
