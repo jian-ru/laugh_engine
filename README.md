@@ -30,3 +30,4 @@ A Vulkan implementation of real-time PBR renderer.
 
 #### Assets
 * [Chalet Hippolyte Chassande Baroz by Gaël](https://skfb.ly/HDVU)
+* [Cerberus by Andrew Maximov](http://artisaverb.info/Cerberus.html)
