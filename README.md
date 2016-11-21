@@ -7,7 +7,7 @@ A Vulkan implementation of real-time PBR renderer.
 ### Milestone 1 - 11/21/2016
 
 * Finished the Vulkan tutorial by Alexander Overvoorde
-* Reading and exploring Saccha Williams's Vulkan C++ examples
+* Reading and exploring Sascha Willems's Vulkan C++ examples
 
 ![](docs/demo001.gif)
 
@@ -17,6 +17,7 @@ A Vulkan implementation of real-time PBR renderer.
 
 #### References:
 * [Vulkan Tutorial by Alexander Overvoorde](https://vulkan-tutorial.com)
+* [Vulkan Samples by Sascha Willems](https://github.com/SaschaWillems/Vulkan)
 
 #### Libraries
 * [GLFW](http://www.glfw.org/)
