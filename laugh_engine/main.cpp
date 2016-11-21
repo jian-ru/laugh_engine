@@ -29,8 +29,8 @@
 const int WIDTH = 800;
 const int HEIGHT = 600;
 
-const std::string MODEL_PATH = "../models/dilpoh.obj";
-const std::string TEXTURE_PATH = "../textures/dilpoh.jpg";
+const std::string MODEL_PATH = "../models/cerberus_gun.obj";
+const std::string TEXTURE_PATH = "../textures/Cerberus_A.tga";
 
 const std::vector<const char*> validationLayers =
 {
