@@ -4,15 +4,33 @@ A Vulkan implementation of real-time PBR renderer.
 
 ---
 
+### Milestone 2 - 11/28/2016
+
+Finished:
+* Basic deferred shading pipeline
+* Blinn-Phong
+* Point light
+* Camera control
+* Debug views
+* Code refactorization
+
+![](docs/demo005.gif)
+
+| Blinn-Phong | Albedo |
+| --- | --- |
+| ![](docs/blinn_phong.png) | ![](docs/albedo.png) |
+
+
+| Eye Space Normal | Eye Space Position |
+| --- | --- |
+| ![](docs/eye_nrm.png) | ![](docs/eye_pos.png) |
+
 ### Milestone 1 - 11/21/2016
 
 * Finished the Vulkan tutorial by Alexander Overvoorde
 * Reading and exploring Sascha Willems's Vulkan C++ examples
 
 ![](docs/demo001.gif)
-![](docs/demo004.gif)
-![](docs/demo002.gif)
-![](docs/demo003.gif)
 
 ---
 
