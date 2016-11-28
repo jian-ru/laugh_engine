@@ -55,6 +55,10 @@ void main()
 	vec3 nrm = recoverEyeNrm(gb1.xy);
 	vec3 albedo = unpackRGBA(gb1.z).rgb;
 	
+	// float depth = (100.0 / -99.9 * gb1.w - 10.0 / 99.9) / -gb1.w;
+	// outColor = vec4(depth, depth, depth, 1.0);
+	// return;
+	
 	if (-gb1.w > 0.1 && -gb1.w < 100.0)
 	{
 		vec3 finalColor = vec3(0.0);
