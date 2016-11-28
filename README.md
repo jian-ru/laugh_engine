@@ -10,6 +10,7 @@ A Vulkan implementation of real-time PBR renderer.
 * Reading and exploring Sascha Willems's Vulkan C++ examples
 
 ![](docs/demo001.gif)
+![](docs/demo004.gif)
 ![](docs/demo002.gif)
 ![](docs/demo003.gif)
 
@@ -29,3 +30,4 @@ A Vulkan implementation of real-time PBR renderer.
 
 #### Assets
 * [Chalet Hippolyte Chassande Baroz by Gaël](https://skfb.ly/HDVU)
+* [Cerberus by Andrew Maximov](http://artisaverb.info/Cerberus.html)
