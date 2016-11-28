@@ -72,7 +72,10 @@ protected:
 	std::vector<VDeleter<VkFramebuffer>> m_finalOutputFramebuffers;
 
 	VDeleter<VkSemaphore> m_imageAvailableSemaphore{ m_device, vkDestroySemaphore };
+	VDeleter<VkSemaphore> m_geomAndLightingCompleteSemaphore{ m_device, vkDestroySemaphore };
 	VDeleter<VkSemaphore> m_renderFinishedSemaphore{ m_device, vkDestroySemaphore };
+
+	VkCommandBuffer m_geomAndLightingCommandBuffer;
 
 
 	virtual void createRenderPasses();
@@ -110,6 +113,9 @@ protected:
 	virtual void createLightingPassDescriptorSets();
 	virtual void createFinalOutputPassDescriptorSets();
 
+	virtual void createGeomAndLightingCommandBuffer();
+	virtual void createPresentCommandBuffers();
+
 	virtual VkFormat findDepthFormat();
 };
 
@@ -120,11 +126,10 @@ protected:
 void DeferredRenderer::updateUniformBuffers()
 {
 	// update transformation matrices
-	glm::mat4 M(1.f);
 	glm::mat4 V, P;
 	m_camera.getViewProjMatrix(V, P);
 
-	m_geomUniformsHostData.MV = V * M;
+	m_geomUniformsHostData.MV = V;
 	m_geomUniformsHostData.MVP = P * m_geomUniformsHostData.MV;
 	m_geomUniformsHostData.MV_invTrans = glm::transpose(glm::inverse(m_geomUniformsHostData.MV));
 
@@ -171,22 +176,33 @@ void DeferredRenderer::drawFrame()
 		throw std::runtime_error("failed to acquire swap chain image!");
 	}
 
-	VkSubmitInfo submitInfo = {};
-	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+	VkSubmitInfo submitInfos[2] = {};
 
-	VkSemaphore waitSemaphores[] = { m_imageAvailableSemaphore };
-	VkPipelineStageFlags waitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
-	submitInfo.waitSemaphoreCount = 1;
-	submitInfo.pWaitSemaphores = waitSemaphores;
-	submitInfo.pWaitDstStageMask = waitStages;
-	submitInfo.commandBufferCount = 1;
-	submitInfo.pCommandBuffers = &m_graphicsCommandBuffers[imageIndex];
+	VkSemaphore waitSemaphores0[] = { m_imageAvailableSemaphore };
+	VkSemaphore signalSemaphores0[] = { m_geomAndLightingCompleteSemaphore };
+	VkPipelineStageFlags waitStages0[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+	submitInfos[0].sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+	submitInfos[0].waitSemaphoreCount = 1;
+	submitInfos[0].pWaitSemaphores = waitSemaphores0;
+	submitInfos[0].pWaitDstStageMask = waitStages0;
+	submitInfos[0].commandBufferCount = 1;
+	submitInfos[0].signalSemaphoreCount = 1;
+	submitInfos[0].pSignalSemaphores = signalSemaphores0;
+	submitInfos[0].pCommandBuffers = &m_geomAndLightingCommandBuffer;
 
-	VkSemaphore signalSemaphores[] = { m_renderFinishedSemaphore };
-	submitInfo.signalSemaphoreCount = 1;
-	submitInfo.pSignalSemaphores = signalSemaphores;
+	VkSemaphore waitSemaphores1[] = { m_geomAndLightingCompleteSemaphore };
+	VkSemaphore signalSemaphores1[] = { m_renderFinishedSemaphore };
+	VkPipelineStageFlags waitStages1[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+	submitInfos[1].sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+	submitInfos[1].waitSemaphoreCount = 1;
+	submitInfos[1].pWaitSemaphores = waitSemaphores1;
+	submitInfos[1].pWaitDstStageMask = waitStages1;
+	submitInfos[1].commandBufferCount = 1;
+	submitInfos[1].signalSemaphoreCount = 1;
+	submitInfos[1].pSignalSemaphores = signalSemaphores1;
+	submitInfos[1].pCommandBuffers = &m_presentCommandBuffers[imageIndex];
 
-	if (vkQueueSubmit(m_graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS)
+	if (vkQueueSubmit(m_graphicsQueue, 2, submitInfos, VK_NULL_HANDLE) != VK_SUCCESS)
 	{
 		throw std::runtime_error("failed to submit draw command buffer!");
 	}
@@ -195,13 +211,12 @@ void DeferredRenderer::drawFrame()
 	presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
 
 	presentInfo.waitSemaphoreCount = 1;
-	presentInfo.pWaitSemaphores = signalSemaphores;
+	presentInfo.pWaitSemaphores = signalSemaphores1;
 
 	VkSwapchainKHR swapChains[] = { m_swapChain.swapChain };
 	presentInfo.swapchainCount = 1;
 	presentInfo.pSwapchains = swapChains;
 	presentInfo.pImageIndices = &imageIndex;
-
 	presentInfo.pResults = nullptr; // Optional
 
 	result = vkQueuePresentKHR(m_presentQueue, &presentInfo);
@@ -268,11 +283,19 @@ void DeferredRenderer::createColorAttachmentResources()
 		createImage(m_physicalDevice, m_device,
 			m_swapChain.swapChainExtent.width, m_swapChain.swapChainExtent.height, image.format,
 			VK_IMAGE_TILING_OPTIMAL,
-			VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT,
+			VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
 			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
 			image.image, image.imageMemory);
 
 		createImageView2D(m_device, image.image, image.format, VK_IMAGE_ASPECT_COLOR_BIT, 1, image.imageView);
+
+		VkSamplerCreateInfo samplerInfo = {};
+		getDefaultSamplerCreateInfo(samplerInfo);
+
+		if (vkCreateSampler(m_device, &samplerInfo, nullptr, image.sampler.replace()) != VK_SUCCESS)
+		{
+			throw std::runtime_error("failed to create lighting result image sampler.");
+		}
 	}
 
 	// Lighting result image
@@ -336,7 +359,7 @@ void DeferredRenderer::createDescriptorPoolsAndSets()
 	poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	poolSizes[0].descriptorCount = 2;
 	poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	poolSizes[1].descriptorCount = 1 + m_models.size() * 2; // lighting result + model textures
+	poolSizes[1].descriptorCount = 2 + m_models.size() * 2; // lighting result + g-buffer + model textures
 	poolSizes[2].type = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
 	poolSizes[2].descriptorCount = 1;
 
@@ -440,110 +463,39 @@ void DeferredRenderer::createFramebuffers()
 
 void DeferredRenderer::createCommandBuffers()
 {
-	if (m_graphicsCommandBuffers.size() > 0)
+	// Allocate command buffers
+	if (m_presentCommandBuffers.size() > 0)
 	{
 		vkFreeCommandBuffers(
 			m_device, m_graphicsCommandPool,
-			static_cast<uint32_t>(m_graphicsCommandBuffers.size()), m_graphicsCommandBuffers.data());
+			static_cast<uint32_t>(m_presentCommandBuffers.size()),
+			m_presentCommandBuffers.data());
 	}
 
-	m_graphicsCommandBuffers.resize(m_swapChain.swapChainImages.size());
+	m_presentCommandBuffers.resize(m_swapChain.swapChainImages.size());
 
 	VkCommandBufferAllocateInfo allocInfo = {};
 	allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
 	allocInfo.commandPool = m_graphicsCommandPool;
 	allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-	allocInfo.commandBufferCount = (uint32_t)m_graphicsCommandBuffers.size();
+	allocInfo.commandBufferCount = (uint32_t)m_presentCommandBuffers.size() + 1;
 
-	if (vkAllocateCommandBuffers(m_device, &allocInfo, m_graphicsCommandBuffers.data()) != VK_SUCCESS)
+	std::vector<VkCommandBuffer> commandBuffers(allocInfo.commandBufferCount);
+	if (vkAllocateCommandBuffers(m_device, &allocInfo, commandBuffers.data()) != VK_SUCCESS)
 	{
 		throw std::runtime_error("failed to allocate command buffers!");
 	}
 
-	for (size_t i = 0; i < m_graphicsCommandBuffers.size(); i++)
+	int idx;
+	for (idx = 0; idx < m_presentCommandBuffers.size(); ++idx)
 	{
-		VkCommandBufferBeginInfo beginInfo = {};
-		beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-		beginInfo.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
-		beginInfo.pInheritanceInfo = nullptr; // Optional
-
-		vkBeginCommandBuffer(m_graphicsCommandBuffers[i], &beginInfo);
-
-		{
-			VkRenderPassBeginInfo geomAndLightingRenderPassInfo = {};
-			geomAndLightingRenderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-			geomAndLightingRenderPassInfo.renderPass = m_geomAndLightRenderPass;
-			geomAndLightingRenderPassInfo.framebuffer = m_geomAndLightingFramebuffer;
-			geomAndLightingRenderPassInfo.renderArea.offset = { 0, 0 };
-			geomAndLightingRenderPassInfo.renderArea.extent = m_swapChain.swapChainExtent;
-
-			std::array<VkClearValue, 3> geomAndLightingPassClearValues = {};
-			geomAndLightingPassClearValues[0].depthStencil = { 1.0f, 0 };
-			geomAndLightingPassClearValues[1].color = { { 0.0f, 0.0f, 0.0f, 0.0f } };
-			geomAndLightingPassClearValues[2].color = { { 0.0f, 0.0f, 0.0f, 0.0f } };
-
-			geomAndLightingRenderPassInfo.clearValueCount = static_cast<uint32_t>(geomAndLightingPassClearValues.size());
-			geomAndLightingRenderPassInfo.pClearValues = geomAndLightingPassClearValues.data();
-
-			vkCmdBeginRenderPass(m_graphicsCommandBuffers[i], &geomAndLightingRenderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-
-			// Geometry pass
-			vkCmdBindPipeline(m_graphicsCommandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, m_geomPipeline);
-
-			for (uint32_t j = 0; j < m_models.size(); ++j)
-			{
-				VkBuffer vertexBuffers[] = { m_models[j].vertexBuffer.buffer };
-				VkDeviceSize offsets[] = { 0 };
-
-				vkCmdBindVertexBuffers(m_graphicsCommandBuffers[i], 0, 1, vertexBuffers, offsets);
-				vkCmdBindIndexBuffer(m_graphicsCommandBuffers[i], m_models[j].indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-
-				vkCmdBindDescriptorSets(m_graphicsCommandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, m_geomPipelineLayout, 0, 1, &m_geomDescriptorSets[j], 0, nullptr);
-
-				vkCmdDrawIndexed(m_graphicsCommandBuffers[i], static_cast<uint32_t>(m_models[j].indexBuffer.numElements), 1, 0, 0, 0);
-			}
-
-			// Lighting pass
-			vkCmdNextSubpass(m_graphicsCommandBuffers[i], VK_SUBPASS_CONTENTS_INLINE);
-
-			vkCmdBindPipeline(m_graphicsCommandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, m_lightingPipeline);
-			vkCmdBindDescriptorSets(m_graphicsCommandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, m_lightingPipelineLayout, 0, 1, &m_lightingDescriptorSet, 0, nullptr);
-			vkCmdDraw(m_graphicsCommandBuffers[i], 3, 1, 0, 0);
-
-			vkCmdEndRenderPass(m_graphicsCommandBuffers[i]);
-		}
-		
-
-		// Final ouput pass
-		{
-			VkRenderPassBeginInfo renderPassInfo = {};
-			renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-			renderPassInfo.renderPass = m_finalOutputRenderPass;
-			renderPassInfo.framebuffer = m_finalOutputFramebuffers[i];
-			renderPassInfo.renderArea.offset = { 0, 0 };
-			renderPassInfo.renderArea.extent = m_swapChain.swapChainExtent;
-
-			std::array<VkClearValue, 1> clearValues = {};
-			clearValues[0].color = { { 0.0f, 0.0f, 0.0f, 0.0f } };
-
-			renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
-			renderPassInfo.pClearValues = clearValues.data();
-
-			vkCmdBeginRenderPass(m_graphicsCommandBuffers[i], &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-
-			// Geometry pass
-			vkCmdBindPipeline(m_graphicsCommandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, m_finalOutputPipeline);
-			vkCmdBindDescriptorSets(m_graphicsCommandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, m_finalOutputPipelineLayout, 0, 1, &m_finalOutputDescriptorSet, 0, nullptr);
-			vkCmdDraw(m_graphicsCommandBuffers[i], 3, 1, 0, 0);
-
-			vkCmdEndRenderPass(m_graphicsCommandBuffers[i]);
-		}
-
-		if (vkEndCommandBuffer(m_graphicsCommandBuffers[i]) != VK_SUCCESS)
-		{
-			throw std::runtime_error("failed to record command buffer!");
-		}
+		m_presentCommandBuffers[idx] = commandBuffers[idx];
 	}
+	m_geomAndLightingCommandBuffer = commandBuffers[idx++];
+
+	// Create command buffers for different purposes
+	createGeomAndLightingCommandBuffer();
+	createPresentCommandBuffers();
 }
 
 void DeferredRenderer::createSynchronizationObjects()
@@ -552,6 +504,7 @@ void DeferredRenderer::createSynchronizationObjects()
 	semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
 
 	if (vkCreateSemaphore(m_device, &semaphoreInfo, nullptr, m_imageAvailableSemaphore.replace()) != VK_SUCCESS ||
+		vkCreateSemaphore(m_device, &semaphoreInfo, nullptr, m_geomAndLightingCompleteSemaphore.replace()) != VK_SUCCESS ||
 		vkCreateSemaphore(m_device, &semaphoreInfo, nullptr, m_renderFinishedSemaphore.replace()) != VK_SUCCESS)
 	{
 		throw std::runtime_error("failed to create semaphores!");
@@ -582,7 +535,7 @@ void DeferredRenderer::createGeometryAndLightingRenderPass()
 	attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 	attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
 	attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED; // we don't care about the initial layout of this attachment image (content may not be preserved)
-	attachments[1].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+	attachments[1].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
 	// Lighting result
 	attachments[2].format = m_lightingResultImage.format;
@@ -810,7 +763,7 @@ void DeferredRenderer::createLightingPassDescriptorSetLayout()
 
 void DeferredRenderer::createFinalOutputDescriptorSetLayout()
 {
-	std::array<VkDescriptorSetLayoutBinding, 1> bindings = {};
+	std::array<VkDescriptorSetLayoutBinding, 2> bindings = {};
 
 	// Final image
 	bindings[0].binding = 0;
@@ -819,9 +772,16 @@ void DeferredRenderer::createFinalOutputDescriptorSetLayout()
 	bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 	bindings[0].pImmutableSamplers = nullptr;
 
+	// G-buffer for debug views
+	bindings[1].binding = 1;
+	bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	bindings[1].descriptorCount = 1;
+	bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	bindings[1].pImmutableSamplers = nullptr;
+
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = bindings.size();
+	layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
 	layoutInfo.pBindings = bindings.data();
 
 	if (vkCreateDescriptorSetLayout(m_device, &layoutInfo, nullptr, m_finalOutputDescriptorSetLayout.replace()) != VK_SUCCESS)
@@ -1032,8 +992,9 @@ void DeferredRenderer::createLightingPassDescriptorSets()
 
 void DeferredRenderer::createFinalOutputPassDescriptorSets()
 {
-	std::array<VkDescriptorImageInfo, 1> imageInfos;
+	std::array<VkDescriptorImageInfo, 2> imageInfos;
 	imageInfos[0] = m_lightingResultImage.getDescriptorInfo();
+	imageInfos[1] = m_gbufferImages[0].getDescriptorInfo();
 
 	std::array<VkWriteDescriptorSet, 1> descriptorWrites = {};
 
@@ -1046,6 +1007,104 @@ void DeferredRenderer::createFinalOutputPassDescriptorSets()
 	descriptorWrites[0].pImageInfo = imageInfos.data();
 
 	vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
+}
+
+void DeferredRenderer::createGeomAndLightingCommandBuffer()
+{
+	VkCommandBufferBeginInfo beginInfo = {};
+	beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+	beginInfo.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
+	beginInfo.pInheritanceInfo = nullptr; // Optional
+
+	vkBeginCommandBuffer(m_geomAndLightingCommandBuffer, &beginInfo);
+
+	VkRenderPassBeginInfo renderPassInfo = {};
+	renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+	renderPassInfo.renderPass = m_geomAndLightRenderPass;
+	renderPassInfo.framebuffer = m_geomAndLightingFramebuffer;
+	renderPassInfo.renderArea.offset = { 0, 0 };
+	renderPassInfo.renderArea.extent = m_swapChain.swapChainExtent;
+
+	std::array<VkClearValue, 3> clearValues = {};
+	clearValues[0].depthStencil = { 1.0f, 0 };
+	clearValues[1].color = { { 0.0f, 0.0f, 0.0f, 0.0f } }; // g-buffer 1
+	clearValues[2].color = { { 0.0f, 0.0f, 0.0f, 0.0f } }; // lighting result
+
+	renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
+	renderPassInfo.pClearValues = clearValues.data();
+
+	vkCmdBeginRenderPass(m_geomAndLightingCommandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+	// Geometry pass
+	vkCmdBindPipeline(m_geomAndLightingCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_geomPipeline);
+
+	for (uint32_t j = 0; j < m_models.size(); ++j)
+	{
+		VkBuffer vertexBuffers[] = { m_models[j].vertexBuffer.buffer };
+		VkDeviceSize offsets[] = { 0 };
+
+		vkCmdBindVertexBuffers(m_geomAndLightingCommandBuffer, 0, 1, vertexBuffers, offsets);
+		vkCmdBindIndexBuffer(m_geomAndLightingCommandBuffer, m_models[j].indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+
+		vkCmdBindDescriptorSets(m_geomAndLightingCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_geomPipelineLayout, 0, 1, &m_geomDescriptorSets[j], 0, nullptr);
+
+		vkCmdDrawIndexed(m_geomAndLightingCommandBuffer, static_cast<uint32_t>(m_models[j].indexBuffer.numElements), 1, 0, 0, 0);
+	}
+
+	// Lighting pass
+	vkCmdNextSubpass(m_geomAndLightingCommandBuffer, VK_SUBPASS_CONTENTS_INLINE);
+
+	vkCmdBindPipeline(m_geomAndLightingCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_lightingPipeline);
+	vkCmdBindDescriptorSets(m_geomAndLightingCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_lightingPipelineLayout, 0, 1, &m_lightingDescriptorSet, 0, nullptr);
+	vkCmdDraw(m_geomAndLightingCommandBuffer, 3, 1, 0, 0);
+
+	vkCmdEndRenderPass(m_geomAndLightingCommandBuffer);
+
+	if (vkEndCommandBuffer(m_geomAndLightingCommandBuffer) != VK_SUCCESS)
+	{
+		throw std::runtime_error("failed to record command buffer!");
+	}
+}
+
+void DeferredRenderer::createPresentCommandBuffers()
+{
+	// Final ouput pass
+	VkCommandBufferBeginInfo beginInfo = {};
+	beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+	beginInfo.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
+	beginInfo.pInheritanceInfo = nullptr; // Optional
+
+	for (uint32_t i = 0; i < m_presentCommandBuffers.size(); ++i)
+	{
+		vkBeginCommandBuffer(m_presentCommandBuffers[i], &beginInfo);
+
+		VkRenderPassBeginInfo renderPassInfo = {};
+		renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+		renderPassInfo.renderPass = m_finalOutputRenderPass;
+		renderPassInfo.framebuffer = m_finalOutputFramebuffers[i];
+		renderPassInfo.renderArea.offset = { 0, 0 };
+		renderPassInfo.renderArea.extent = m_swapChain.swapChainExtent;
+
+		std::array<VkClearValue, 1> clearValues = {};
+		clearValues[0].color = { { 0.0f, 0.0f, 0.0f, 0.0f } };
+
+		renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
+		renderPassInfo.pClearValues = clearValues.data();
+
+		vkCmdBeginRenderPass(m_presentCommandBuffers[i], &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+		// Geometry pass
+		vkCmdBindPipeline(m_presentCommandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, m_finalOutputPipeline);
+		vkCmdBindDescriptorSets(m_presentCommandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, m_finalOutputPipelineLayout, 0, 1, &m_finalOutputDescriptorSet, 0, nullptr);
+		vkCmdDraw(m_presentCommandBuffers[i], 3, 1, 0, 0);
+
+		vkCmdEndRenderPass(m_presentCommandBuffers[i]);
+
+		if (vkEndCommandBuffer(m_presentCommandBuffers[i]) != VK_SUCCESS)
+		{
+			throw std::runtime_error("failed to record command buffer!");
+		}
+	}
 }
 
 VkFormat DeferredRenderer::findDepthFormat()

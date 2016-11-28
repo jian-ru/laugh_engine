@@ -120,7 +120,7 @@ protected:
 	VDeleter<VkDescriptorPool> m_descriptorPool{ m_device, vkDestroyDescriptorPool };
 
 	VDeleter<VkCommandPool> m_graphicsCommandPool{ m_device, vkDestroyCommandPool };
-	std::vector<VkCommandBuffer> m_graphicsCommandBuffers;
+	std::vector<VkCommandBuffer> m_presentCommandBuffers;
 
 	VDeleter<VkPipelineCache> m_pipelineCache{ m_device, vkDestroyPipelineCache };
 
