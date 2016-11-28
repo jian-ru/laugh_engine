@@ -30,6 +30,18 @@ struct LightingPassUniformBuffer
 	PointLight pointLights[NUM_LIGHTS];
 };
 
+struct FinalOutputUniformBuffer
+{
+	typedef int DisplayMode_t;
+	
+	DisplayMode_t displayMode;
+	float imageWidth;
+	float imageHeight;
+	float twoTimesTanHalfFovy;
+	float zNear;
+	float zFar;
+};
+
 
 class DeferredRenderer : public VBaseGraphics
 {
@@ -63,6 +75,8 @@ protected:
 	BufferWrapper m_geomPassUniformBuffer{ m_device };
 	LightingPassUniformBuffer m_lightingUniformsHostData;
 	BufferWrapper m_lightingPassUniformBuffer{ m_device };
+	FinalOutputUniformBuffer m_finalOutputUniformHostData;
+	BufferWrapper m_finalOutputUniformBuffer{ m_device };
 
 	std::vector<VkDescriptorSet> m_geomDescriptorSets; // one set per model
 	VkDescriptorSet m_lightingDescriptorSet;
@@ -156,6 +170,21 @@ void DeferredRenderer::updateUniformBuffers()
 	vkMapMemory(m_device, m_lightingPassUniformBuffer.bufferMemory, 0, sizeof(LightingPassUniformBuffer), 0, &data);
 	memcpy(data, &m_lightingUniformsHostData, sizeof(LightingPassUniformBuffer));
 	vkUnmapMemory(m_device, m_lightingPassUniformBuffer.bufferMemory);
+
+	// update final output pass info
+	m_finalOutputUniformHostData =
+	{
+		m_displayMode,
+		m_swapChain.swapChainExtent.width,
+		m_swapChain.swapChainExtent.height,
+		2.f * tanf(m_camera.fovy * .5f),
+		m_camera.zNear,
+		m_camera.zFar
+	};
+
+	vkMapMemory(m_device, m_finalOutputUniformBuffer.bufferMemory, 0, sizeof(FinalOutputUniformBuffer), 0, &data);
+	memcpy(data, &m_finalOutputUniformHostData, sizeof(FinalOutputUniformBuffer));
+	vkUnmapMemory(m_device, m_finalOutputUniformBuffer.bufferMemory);
 }
 
 void DeferredRenderer::drawFrame()
@@ -265,7 +294,7 @@ void DeferredRenderer::createDepthResources()
 	createImage(m_physicalDevice, m_device,
 		m_swapChain.swapChainExtent.width, m_swapChain.swapChainExtent.height, depthFormat,
 		VK_IMAGE_TILING_OPTIMAL,
-		VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+		VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
 		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
 		m_depthImage.image, m_depthImage.imageMemory);
 
@@ -273,6 +302,14 @@ void DeferredRenderer::createDepthResources()
 
 	transitionImageLayout(m_device, m_graphicsCommandPool, m_graphicsQueue,
 		m_depthImage.image, depthFormat, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+
+	VkSamplerCreateInfo samplerInfo = {};
+	getDefaultSamplerCreateInfo(samplerInfo);
+
+	if (vkCreateSampler(m_device, &samplerInfo, nullptr, m_depthImage.sampler.replace()) != VK_SUCCESS)
+	{
+		throw std::runtime_error("failed to create lighting result image sampler.");
+	}
 }
 
 void DeferredRenderer::createColorAttachmentResources()
@@ -350,6 +387,15 @@ void DeferredRenderer::createUniformBuffers()
 		m_lightingPassUniformBuffer.sizeInBytes, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
 		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 		m_lightingPassUniformBuffer.buffer, m_lightingPassUniformBuffer.bufferMemory);
+
+	m_finalOutputUniformBuffer.sizeInBytes = sizeof(FinalOutputUniformBuffer);
+	m_finalOutputUniformBuffer.numElements = 1;
+
+	createBuffer(
+		m_physicalDevice, m_device,
+		m_finalOutputUniformBuffer.sizeInBytes, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+		m_finalOutputUniformBuffer.buffer, m_finalOutputUniformBuffer.bufferMemory);
 }
 
 void DeferredRenderer::createDescriptorPoolsAndSets()
@@ -357,9 +403,9 @@ void DeferredRenderer::createDescriptorPoolsAndSets()
 	// create descriptor pool
 	std::array<VkDescriptorPoolSize, 3> poolSizes = {};
 	poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	poolSizes[0].descriptorCount = 2;
+	poolSizes[0].descriptorCount = 3;
 	poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	poolSizes[1].descriptorCount = 2 + m_models.size() * 2; // lighting result + g-buffer + model textures
+	poolSizes[1].descriptorCount = 3 + m_models.size() * 2; // lighting result + g-buffer + depth image + model textures
 	poolSizes[2].type = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
 	poolSizes[2].descriptorCount = 1;
 
@@ -520,11 +566,11 @@ void DeferredRenderer::createGeometryAndLightingRenderPass()
 	attachments[0].format = findDepthFormat();
 	attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
 	attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-	attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 	attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 	attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-	attachments[0].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-	attachments[0].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+	attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	attachments[0].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
 	// Eye space normal + albedo
 	// Normal has been perturbed by normal mapping
@@ -560,9 +606,13 @@ void DeferredRenderer::createGeometryAndLightingRenderPass()
 	lightingInputAttachmentRefs[0].attachment = 1;
 	lightingInputAttachmentRefs[0].layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-	VkAttachmentReference depthAttachmentRef = {};
-	depthAttachmentRef.attachment = 0;
-	depthAttachmentRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+	VkAttachmentReference geomDepthAttachmentRef = {};
+	geomDepthAttachmentRef.attachment = 0;
+	geomDepthAttachmentRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+	VkAttachmentReference lightingDepthAttachmentRef = {};
+	lightingDepthAttachmentRef.attachment = 0;
+	lightingDepthAttachmentRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 
 	// --- Subpasses
 	std::array<VkSubpassDescription, 2> subPasses = {};
@@ -571,7 +621,7 @@ void DeferredRenderer::createGeometryAndLightingRenderPass()
 	subPasses[0].pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
 	subPasses[0].colorAttachmentCount = static_cast<uint32_t>(geomColorAttachmentRefs.size());
 	subPasses[0].pColorAttachments = geomColorAttachmentRefs.data();
-	subPasses[0].pDepthStencilAttachment = &depthAttachmentRef; // at most one depth-stencil attachment
+	subPasses[0].pDepthStencilAttachment = &geomDepthAttachmentRef; // at most one depth-stencil attachment
 
 	// Lighting subpass
 	subPasses[1].pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
@@ -579,7 +629,7 @@ void DeferredRenderer::createGeometryAndLightingRenderPass()
 	subPasses[1].pColorAttachments = lightingColorAttachmentRefs.data();
 	subPasses[1].inputAttachmentCount = static_cast<uint32_t>(lightingInputAttachmentRefs.size());
 	subPasses[1].pInputAttachments = lightingInputAttachmentRefs.data();
-	subPasses[1].pDepthStencilAttachment = &depthAttachmentRef;
+	subPasses[1].pDepthStencilAttachment = &lightingDepthAttachmentRef;
 
 	// --- Subpass dependencies
 	std::array<VkSubpassDependency, 3> dependencies = {};
@@ -763,21 +813,33 @@ void DeferredRenderer::createLightingPassDescriptorSetLayout()
 
 void DeferredRenderer::createFinalOutputDescriptorSetLayout()
 {
-	std::array<VkDescriptorSetLayoutBinding, 2> bindings = {};
+	std::array<VkDescriptorSetLayoutBinding, 4> bindings = {};
 
-	// Final image
+	// Final image, gbuffer, depth image
 	bindings[0].binding = 0;
 	bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	bindings[0].descriptorCount = 1;
 	bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 	bindings[0].pImmutableSamplers = nullptr;
 
-	// G-buffer for debug views
 	bindings[1].binding = 1;
 	bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	bindings[1].descriptorCount = 1;
 	bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 	bindings[1].pImmutableSamplers = nullptr;
+
+	bindings[2].binding = 2;
+	bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	bindings[2].descriptorCount = 1;
+	bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	bindings[2].pImmutableSamplers = nullptr;
+
+	// Uniform buffer
+	bindings[3].binding = 3;
+	bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	bindings[3].descriptorCount = 1;
+	bindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	bindings[3].pImmutableSamplers = nullptr;
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -992,19 +1054,30 @@ void DeferredRenderer::createLightingPassDescriptorSets()
 
 void DeferredRenderer::createFinalOutputPassDescriptorSets()
 {
-	std::array<VkDescriptorImageInfo, 2> imageInfos;
+	VkDescriptorBufferInfo bufferInfo = m_finalOutputUniformBuffer.getDescriptorInfo();
+
+	std::array<VkDescriptorImageInfo, 3> imageInfos;
 	imageInfos[0] = m_lightingResultImage.getDescriptorInfo();
 	imageInfos[1] = m_gbufferImages[0].getDescriptorInfo();
+	imageInfos[2] = m_depthImage.getDescriptorInfo();
 
-	std::array<VkWriteDescriptorSet, 1> descriptorWrites = {};
+	std::array<VkWriteDescriptorSet, 2> descriptorWrites = {};
 
 	descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	descriptorWrites[0].dstSet = m_finalOutputDescriptorSet;
-	descriptorWrites[0].dstBinding = 0;
+	descriptorWrites[0].dstBinding = 3;
 	descriptorWrites[0].dstArrayElement = 0;
-	descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	descriptorWrites[0].descriptorCount = static_cast<uint32_t>(imageInfos.size());
-	descriptorWrites[0].pImageInfo = imageInfos.data();
+	descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	descriptorWrites[0].descriptorCount = 1;
+	descriptorWrites[0].pBufferInfo = &bufferInfo;
+
+	descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	descriptorWrites[1].dstSet = m_finalOutputDescriptorSet;
+	descriptorWrites[1].dstBinding = 0;
+	descriptorWrites[1].dstArrayElement = 0;
+	descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	descriptorWrites[1].descriptorCount = static_cast<uint32_t>(imageInfos.size());
+	descriptorWrites[1].pImageInfo = imageInfos.data();
 
 	vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
 }

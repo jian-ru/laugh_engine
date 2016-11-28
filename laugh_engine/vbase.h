@@ -22,12 +22,24 @@
 #include "tiny_obj_loader.h"
 
 
+enum DisplayMode
+{
+	DISPLAY_MODE_FULL = 0,
+	DISPLAY_MODE_ALBEDO,
+	DISPLAY_MODE_EYE_NORMAL,
+	DISPLAY_MODE_EYE_POSITION,
+	DISPLAY_MODE_DEPTH,
+	DISPLAY_MODE_COUNT
+};
+
 class VBaseGraphics
 {
 public:
 	uint32_t m_width = 1280;
 	uint32_t m_height = 720;
 	std::string m_windowTitle = "VBaseGraphics";
+
+	DisplayMode m_displayMode = DISPLAY_MODE_FULL;
 
 	static bool leftMBDown;
 	static float lastX, lastY;
@@ -96,6 +108,16 @@ public:
 			lastX = xpos;
 			lastY = ypos;
 			app->m_camera.addRotation(-dx * scale, -dy * scale);
+		}
+	}
+
+	static void keyCB(GLFWwindow* window, int key, int scancode, int action, int mods)
+	{
+		VBaseGraphics *app = reinterpret_cast<VBaseGraphics *>(glfwGetWindowUserPointer(window));
+
+		if (key == GLFW_KEY_SPACE && action == GLFW_PRESS)
+		{
+			app->m_displayMode = static_cast<DisplayMode>((app->m_displayMode + 1) % DISPLAY_MODE_COUNT);
 		}
 	}
 
@@ -196,6 +218,7 @@ void VBaseGraphics::initWindow()
 	glfwSetWindowSizeCallback(m_window, VBaseGraphics::onWindowResized);
 	glfwSetMouseButtonCallback(m_window, VBaseGraphics::mouseButtonCB);
 	glfwSetCursorPosCallback(m_window, VBaseGraphics::cursorPositionCB);
+	glfwSetKeyCallback(m_window, VBaseGraphics::keyCB);
 }
 
 std::vector<const char*> VBaseGraphics::getRequiredExtensions()

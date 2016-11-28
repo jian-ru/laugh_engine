@@ -39,7 +39,7 @@ void main()
 	float packedAlbedo = packRGBA(albedo);
 	vec3 nrm = applyNormalMap(surfnrm, surftan, nrmmap);
 	
-	outGbuffer1 = vec4(nrm.xy, packedAlbedo, inEyePos.z);
+	outGbuffer1 = vec4(nrm.xy, packedAlbedo, 0.0);
 	// outGbuffer1 = vec4(albedo.rgb, 1.0);
 	// outGbuffer1 = vec4(nrm, 1.0);
 	// outGbuffer1 = vec4(inEyePos, 1.0);

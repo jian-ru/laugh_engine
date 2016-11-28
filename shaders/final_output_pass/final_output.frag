@@ -4,18 +4,21 @@
 
 layout (binding = 0) uniform sampler2D finalOutput;
 layout (binding = 1) uniform sampler2D gbuffer1;
+layout (binding = 2) uniform sampler2D depthImage;
 
 layout (location = 0) in vec2 inUV;
 
 layout (location = 0) out vec4 outColor;
 
-layout(push_constant) uniform PushConsts
+layout(std140, binding = 3) uniform UBO
 {
 	int displayMode;
 	float imageWidth;
 	float imageHeight;
 	float twoTimesTanHalfFovy;
-} pushConsts;
+	float zNear;
+	float zFar;
+};
 
 
 vec4 unpackRGBA(float packedColor)
@@ -34,7 +37,8 @@ vec3 recoverEyePos(float depth)
 	vec2 extent = vec2(imageWidth, imageHeight);
 	vec3 viewVec = vec3(
 		vec2(pw, ph) * (vec2(inUV.x, 1.0 - inUV.y) * extent - extent * 0.5), -1.0);
-	return viewVec * -depth;
+	float eyeDepth = zFar * zNear / (zFar + depth * (zNear - zFar));
+	return viewVec * eyeDepth;
 }
 
 vec3 recoverEyeNrm(vec2 xy)
@@ -47,10 +51,13 @@ void main()
 {
 	vec4 finalColor = texture(finalOutput, inUV);
 	vec4 gb1 = texture(gbuffer1, inUV);
+	float depth = texture(depthImage, inUV).r;
 	
 	vec3 albedo = unpackRGBA(gb1.z).rgb;
-	vec3 pos = recoverEyePos(gb1.w);
+	vec3 pos = recoverEyePos(depth);
 	vec3 nrm = recoverEyeNrm(gb1.xy);
+	
+	// if (-gb1.w < zNear || -gb1.w > zFar) return;
 	
 	if (displayMode == 0)
 	{
@@ -67,6 +74,10 @@ void main()
 	else if (displayMode == 3)
 	{
 		outColor = vec4(abs(pos), 1.0);
+	}
+	else if (displayMode == 4)
+	{
+		outColor = vec4(vec3(depth), 1.0);
 	}
 }
 

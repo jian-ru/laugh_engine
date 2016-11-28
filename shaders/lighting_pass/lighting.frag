@@ -2,7 +2,8 @@
 
 #extension GL_ARB_separate_shader_objects : enable
 
-layout (input_attachment_index = 0, binding = 1) uniform subpassInput siGbuffer1;
+layout (input_attachment_index = 0, binding = 2) uniform subpassInput siGbuffer1;
+layout (input_attachment_index = 1, binding = 3) uniform subpassInput siDepthImage;
 
 layout (location = 0) in vec2 inUV;
 
@@ -17,11 +18,20 @@ struct Light
 	float radius;
 };
 
-layout (binding = 0) uniform UBO 
+layout (std140, binding = 0) uniform UBO 
 {
-	// vec4 eyePos;
 	Light lights[NUM_LIGHTS];
 } ubo;
+
+layout (std140, binding = 1) uniform UBO2
+{
+	int displayMode; // not used
+	float imageWidth;
+	float imageHeight;
+	float twoTimesTanHalfFovy;
+	float zNear;
+	float zFar;
+};
 
 
 vec4 unpackRGBA(float packedColor)
@@ -33,12 +43,15 @@ vec4 unpackRGBA(float packedColor)
 
 vec3 recoverEyePos(float depth)
 {
-	float oneOverHeight = 1.0 / 720.0;
-	float aspect = 1280.0 / 720.0;
-	float ph = 2.0 * 0.414213562 * oneOverHeight;
+	float oneOverHeight = 1.0 / imageHeight;
+	float aspect = imageWidth * oneOverHeight;
+	float ph = twoTimesTanHalfFovy * oneOverHeight;
 	float pw = ph * aspect;
-	vec3 viewVec = vec3(vec2(pw, ph) * (vec2(inUV.x, 1.0 - inUV.y) * vec2(1280.0, 720.0) - vec2(1280.0, 720.0) * 0.5), -1.0);
-	return viewVec * -depth;
+	vec2 extent = vec2(imageWidth, imageHeight);
+	vec3 viewVec = vec3(
+		vec2(pw, ph) * (vec2(inUV.x, 1.0 - inUV.y) * extent - extent * 0.5), -1.0);
+	float eyeDepth = zFar * zNear / (zFar + depth * (zNear - zFar));
+	return viewVec * eyeDepth;
 }
 
 vec3 recoverEyeNrm(vec2 xy)
@@ -50,8 +63,9 @@ vec3 recoverEyeNrm(vec2 xy)
 void main() 
 {
 	vec4 gb1 = subpassLoad(siGbuffer1);
+	float depth = subpassLoad(siDepthImage).r;
 	
-	vec3 pos = recoverEyePos(gb1.w);
+	vec3 pos = recoverEyePos(depth);
 	vec3 nrm = recoverEyeNrm(gb1.xy);
 	vec3 albedo = unpackRGBA(gb1.z).rgb;
 	
