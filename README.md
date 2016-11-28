@@ -16,9 +16,9 @@ Finished:
 
 ![](docs/demo005.gif)
 
-| Blinn-Phong | Albedo |
+| Albedo | Depth |
 | --- | --- |
-| ![](docs/blinn_phong.png) | ![](docs/albedo.png) |
+| ![](docs/albedo.png) | ![](docs/depth.png) |
 
 
 | Eye Space Normal | Eye Space Position |
