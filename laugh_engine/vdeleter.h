@@ -1,5 +1,4 @@
-#ifndef VDELETER_H
-#define VDELETER_H
+#pragma once
 
 #include <vulkan/vulkan.h>
 
@@ -79,5 +78,3 @@ private:
 		object = VK_NULL_HANDLE;
 	}
 };
-
-#endif

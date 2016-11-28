@@ -1,3 +1,6 @@
+
+#ifdef TUTORIAL
+
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 #define GLM_FORCE_RADIANS
@@ -821,11 +824,11 @@ private:
 		colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 		colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 		colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-		colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED; // we don't care about the initial layout of this attachment image (content may not be preserved)
 		colorAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 
 		VkAttachmentReference colorAttachmentRef = {};
-		colorAttachmentRef.attachment = 0;
+		colorAttachmentRef.attachment = 0; // corresponds to the index of the corresponding element in the pAttachments array of the VkRenderPassCreateInfo structure
 		colorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
 		VkAttachmentDescription depthAttachment = {};
@@ -846,7 +849,7 @@ private:
 		subPass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
 		subPass.colorAttachmentCount = 1;
 		subPass.pColorAttachments = &colorAttachmentRef;
-		subPass.pDepthStencilAttachment = &depthAttachmentRef;
+		subPass.pDepthStencilAttachment = &depthAttachmentRef; // at most one depth-stencil attachment
 
 		VkSubpassDependency dependency = {};
 		dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
@@ -1634,13 +1637,19 @@ private:
 	}
 };
 
+#endif
+
+#define VBASE_IMPLEMENTATION
+#define DEFERED_RENDERER_IMPLEMENTATION
+#include "deferred_renderer.h"
+
 int main()
 {
-	HelloTriangleApplication app;
+	DeferredRenderer renderer;
 
 	try
 	{
-		app.run();
+		renderer.run();
 	}
 	catch (const std::runtime_error& e)
 	{
