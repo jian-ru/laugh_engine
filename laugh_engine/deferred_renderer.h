@@ -163,7 +163,7 @@ void DeferredRenderer::updateUniformBuffers()
 	m_lightingUniformsHostData.pointLights[1] =
 	{
 		V * glm::vec4(0.f, 1.f, -2.f, 1.f),
-		glm::vec3(.1f, .1f, .1f),
+		glm::vec3(0.1f, 0.1f, 0.1f),
 		5.f
 	};
 
@@ -294,7 +294,7 @@ void DeferredRenderer::createDepthResources()
 	createImage(m_physicalDevice, m_device,
 		m_swapChain.swapChainExtent.width, m_swapChain.swapChainExtent.height, depthFormat,
 		VK_IMAGE_TILING_OPTIMAL,
-		VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+		VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
 		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
 		m_depthImage.image, m_depthImage.imageMemory);
 
@@ -403,11 +403,11 @@ void DeferredRenderer::createDescriptorPoolsAndSets()
 	// create descriptor pool
 	std::array<VkDescriptorPoolSize, 3> poolSizes = {};
 	poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	poolSizes[0].descriptorCount = 3;
+	poolSizes[0].descriptorCount = 4;
 	poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	poolSizes[1].descriptorCount = 3 + m_models.size() * 2; // lighting result + g-buffer + depth image + model textures
 	poolSizes[2].type = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
-	poolSizes[2].descriptorCount = 1;
+	poolSizes[2].descriptorCount = 2;
 
 	VkDescriptorPoolCreateInfo poolInfo = {};
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -602,9 +602,11 @@ void DeferredRenderer::createGeometryAndLightingRenderPass()
 	lightingColorAttachmentRefs[0].attachment = 2;
 	lightingColorAttachmentRefs[0].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
-	std::array<VkAttachmentReference, 1> lightingInputAttachmentRefs = {};
+	std::array<VkAttachmentReference, 2> lightingInputAttachmentRefs = {};
 	lightingInputAttachmentRefs[0].attachment = 1;
 	lightingInputAttachmentRefs[0].layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	lightingInputAttachmentRefs[1].attachment = 0;
+	lightingInputAttachmentRefs[1].layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 
 	VkAttachmentReference geomDepthAttachmentRef = {};
 	geomDepthAttachmentRef.attachment = 0;
@@ -784,7 +786,7 @@ void DeferredRenderer::createGeomPassDescriptorSetLayout()
 
 void DeferredRenderer::createLightingPassDescriptorSetLayout()
 {
-	std::array<VkDescriptorSetLayoutBinding, 2> bindings = {};
+	std::array<VkDescriptorSetLayoutBinding, 4> bindings = {};
 
 	// Light information
 	bindings[0].binding = 0;
@@ -793,12 +795,26 @@ void DeferredRenderer::createLightingPassDescriptorSetLayout()
 	bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 	bindings[0].pImmutableSamplers = nullptr; // Optional
 
-	// Eye normal + albedo, (nx, ny, rg, ba)
+	// viewport info
 	bindings[1].binding = 1;
+	bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	bindings[1].descriptorCount = 1;
-	bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
-	bindings[1].pImmutableSamplers = nullptr;
 	bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	bindings[1].pImmutableSamplers = nullptr; // Optional
+
+	// gbuffer
+	bindings[2].binding = 2;
+	bindings[2].descriptorCount = 1;
+	bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
+	bindings[2].pImmutableSamplers = nullptr;
+	bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+	// depth image
+	bindings[3].binding = 3;
+	bindings[3].descriptorCount = 1;
+	bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
+	bindings[3].pImmutableSamplers = nullptr;
+	bindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -1026,10 +1042,13 @@ void DeferredRenderer::createGeomPassDescriptorSets()
 
 void DeferredRenderer::createLightingPassDescriptorSets()
 {
-	VkDescriptorBufferInfo bufferInfo = m_lightingPassUniformBuffer.getDescriptorInfo();
+	std::array<VkDescriptorBufferInfo, 2> bufferInfos = {};
+	bufferInfos[0] = m_lightingPassUniformBuffer.getDescriptorInfo();
+	bufferInfos[1] = m_finalOutputUniformBuffer.getDescriptorInfo();
 
-	std::array<VkDescriptorImageInfo, 1> imageInfos;
+	std::array<VkDescriptorImageInfo, 2> imageInfos = {};
 	imageInfos[0] = m_gbufferImages[0].getDescriptorInfo();
+	imageInfos[1] = m_depthImage.getDescriptorInfo();
 
 	std::array<VkWriteDescriptorSet, 2> descriptorWrites = {};
 
@@ -1038,12 +1057,12 @@ void DeferredRenderer::createLightingPassDescriptorSets()
 	descriptorWrites[0].dstBinding = 0;
 	descriptorWrites[0].dstArrayElement = 0;
 	descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	descriptorWrites[0].descriptorCount = 1;
-	descriptorWrites[0].pBufferInfo = &bufferInfo;
+	descriptorWrites[0].descriptorCount = static_cast<uint32_t>(bufferInfos.size());
+	descriptorWrites[0].pBufferInfo = bufferInfos.data();
 
 	descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	descriptorWrites[1].dstSet = m_lightingDescriptorSet;
-	descriptorWrites[1].dstBinding = 1;
+	descriptorWrites[1].dstBinding = 2;
 	descriptorWrites[1].dstArrayElement = 0;
 	descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
 	descriptorWrites[1].descriptorCount = static_cast<uint32_t>(imageInfos.size());

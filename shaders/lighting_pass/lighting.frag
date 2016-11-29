@@ -20,8 +20,8 @@ struct Light
 
 layout (std140, binding = 0) uniform UBO 
 {
-	Light lights[NUM_LIGHTS];
-} ubo;
+	Light pointLights[NUM_LIGHTS];
+};
 
 layout (std140, binding = 1) uniform UBO2
 {
@@ -69,38 +69,30 @@ void main()
 	vec3 nrm = recoverEyeNrm(gb1.xy);
 	vec3 albedo = unpackRGBA(gb1.z).rgb;
 	
-	// float depth = (100.0 / -99.9 * gb1.w - 10.0 / 99.9) / -gb1.w;
-	// outColor = vec4(depth, depth, depth, 1.0);
-	// return;
+	if (depth >= 1.0 || depth <= 0.0) return;
 	
-	if (-gb1.w > 0.1 && -gb1.w < 100.0)
+	vec3 finalColor = vec3(0.0);
+
+	for (int i = 0; i < NUM_LIGHTS; ++i)
 	{
-		vec3 finalColor = vec3(0.0);
-	
-		for (int i = 0; i < NUM_LIGHTS; ++i)
-		{
-			vec3 lightPos = ubo.lights[i].position.xyz;
-			
-			float dist = distance(lightPos, pos);
-			
-			if (dist < ubo.lights[i].radius)
-			{
-				float scale = (ubo.lights[i].radius - dist) / ubo.lights[i].radius;
-				vec3 v = -pos;
-				vec3 l = lightPos - pos;
-				vec3 h = normalize(v + l);
-				
-				finalColor +=
-					0.5 * albedo * clamp(dot(nrm, l), 0.0, 1.0) +
-					0.5 * ubo.lights[i].color * pow(clamp(dot(nrm, h), 0.0, 1.0), 20.0);
-			}
-		}
+		vec3 lightPos = pointLights[i].position.xyz;
 		
-		outColor = vec4(finalColor, 1.0);
-		// outColor = vec4(nrm, 1.0);
-		// outColor = vec4(albedo, 1.0);
-		// outColor = gb1;
-		// outColor = vec4(abs(pos), 1.0);
-		// outColor = vec4(ubo.eyePos.xyz / 3.0, 1.0);
+		float dist = distance(lightPos, pos);
+		
+		if (dist < pointLights[i].radius)
+		{
+			float scale = (pointLights[i].radius - dist) / pointLights[i].radius;
+			vec3 v = -pos;
+			vec3 l = lightPos - pos;
+			vec3 h = normalize(v + l);
+			
+			// assume specular color is white here
+			finalColor +=
+				(0.5 * albedo * clamp(dot(nrm, l), 0.0, 1.0) +
+				0.5 * pow(clamp(dot(nrm, h), 0.0, 1.0), 20.0)) *
+				pointLights[i].color;
+		}
 	}
+	
+	outColor = vec4(finalColor, 1.0);
 }

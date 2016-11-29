@@ -57,7 +57,13 @@ void main()
 	vec3 pos = recoverEyePos(depth);
 	vec3 nrm = recoverEyeNrm(gb1.xy);
 	
-	// if (-gb1.w < zNear || -gb1.w > zFar) return;
+	if (displayMode == 4)
+	{
+		outColor = vec4(vec3(depth), 1.0);
+		return;
+	}
+	
+	if (depth >= 1.0 || depth <= 0.0) return;
 	
 	if (displayMode == 0)
 	{
@@ -74,10 +80,6 @@ void main()
 	else if (displayMode == 3)
 	{
 		outColor = vec4(abs(pos), 1.0);
-	}
-	else if (displayMode == 4)
-	{
-		outColor = vec4(vec3(depth), 1.0);
 	}
 }
 
