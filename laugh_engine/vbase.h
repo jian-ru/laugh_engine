@@ -174,7 +174,8 @@ protected:
 	virtual void createFramebuffers() = 0;
 	virtual void loadAndPrepareAssets() = 0;
 	virtual void createUniformBuffers() = 0;
-	virtual void createDescriptorPoolsAndSets() = 0;
+	virtual void createDescriptorPools() = 0;
+	virtual void createDescriptorSets() = 0;
 	virtual void createCommandBuffers() = 0;
 	virtual void createSynchronizationObjects() = 0; // semaphores, fences, etc. go in here
 
@@ -202,7 +203,6 @@ protected:
 };
 
 
-//#define VBASE_IMPLEMENTATION // Disable this after development
 #ifdef VBASE_IMPLEMENTATION
 
 bool VBaseGraphics::leftMBDown = false;
@@ -462,7 +462,8 @@ void VBaseGraphics::initVulkan()
 	createFramebuffers();
 	loadAndPrepareAssets();
 	createUniformBuffers();
-	createDescriptorPoolsAndSets();
+	createDescriptorPools();
+	createDescriptorSets();
 	createCommandBuffers();
 	createSynchronizationObjects();
 }
@@ -485,15 +486,24 @@ void VBaseGraphics::mainLoop()
 
 void VBaseGraphics::recreateSwapChain()
 {
+	auto updateCamera = [this]()
+	{
+		m_camera.aspectRatio = m_swapChain.swapChainExtent.width / static_cast<float>(m_swapChain.swapChainExtent.height);
+	};
+
 	vkDeviceWaitIdle(m_device);
 
 	createSwapChain();
+	updateCamera();
 	createSwapChainImageViews();
 	createRenderPasses();
 	createGraphicsPipelines();
 	createDepthResources();
 	createColorAttachmentResources();
 	createFramebuffers();
+	// Image views of G-buffers and lighting result image has changed so
+	// recreation of descriptor sets is necessary
+	createDescriptorSets();
 	createCommandBuffers();
 }
 

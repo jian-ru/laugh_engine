@@ -2,8 +2,8 @@
 
 #extension GL_ARB_separate_shader_objects : enable
 
-layout (input_attachment_index = 0, binding = 2) uniform subpassInput siGbuffer1;
-layout (input_attachment_index = 1, binding = 3) uniform subpassInput siDepthImage;
+layout (input_attachment_index = 0, set = 0, binding = 2) uniform subpassInput siGbuffer1;
+layout (input_attachment_index = 1, set = 0, binding = 3) uniform subpassInput siDepthImage;
 
 layout (location = 0) in vec2 inUV;
 
@@ -18,12 +18,12 @@ struct Light
 	float radius;
 };
 
-layout (std140, binding = 0) uniform UBO 
+layout (std140, set = 0, binding = 0) uniform UBO 
 {
 	Light pointLights[NUM_LIGHTS];
 };
 
-layout (std140, binding = 1) uniform UBO2
+layout (std140, set = 0, binding = 1) uniform UBO2
 {
 	int displayMode; // not used
 	float imageWidth;

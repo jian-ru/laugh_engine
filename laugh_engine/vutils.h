@@ -14,6 +14,70 @@
 #include "vdeleter.h"
 
 
+// A chunck of memory storing all uniforms
+template<size_t maxSizeInBytes>
+class AllUniformBlob
+{
+public:
+	AllUniformBlob(const VkPhysicalDevice &pd) :
+		memory(new char[maxSizeInBytes]), physicalDevice(pd)
+	{}
+
+	virtual ~AllUniformBlob()
+	{
+		delete[] memory;
+	}
+
+	void *alloc(size_t size)
+	{
+		if (minAlignment == std::numeric_limits<VkDeviceSize>::max())
+		{
+			VkPhysicalDeviceProperties properties;
+			vkGetPhysicalDeviceProperties(physicalDevice, &properties);
+			minAlignment = properties.limits.minUniformBufferOffsetAlignment;
+		}
+
+		if (size == 0) throw std::runtime_error("AllUniformBlob::alloc - size can't be zero.");
+
+		size_t actualSize = (size / minAlignment) * minAlignment;
+		actualSize = actualSize < size ? (actualSize + minAlignment) : actualSize;
+
+		if (nextStartingByte + actualSize > maxSizeInBytes) throw std::runtime_error("AllUniformBlob::alloc - out of memory.");
+
+		char *ret = &memory[nextStartingByte];
+		nextStartingByte += actualSize;
+		return ret;
+	}
+
+	size_t size() const
+	{
+		return currentSizeInBytes;
+	}
+
+	const char *operator&() const
+	{
+		return memory;
+	}
+
+	// @ptr should be a pointer to somewhere in @memory
+	size_t offsetOf(const char *ptr) const
+	{
+		return ptr - memory;
+	}
+
+private:
+	char* memory;
+
+	VkDeviceSize minAlignment = std::numeric_limits<VkDeviceSize>::max();
+	union
+	{
+		size_t nextStartingByte = 0;
+		size_t currentSizeInBytes;
+	};
+
+	const VkPhysicalDevice &physicalDevice;
+};
+
 struct ShaderFileNames
 {
 	std::string vs;
@@ -36,12 +100,12 @@ struct BufferWrapper
 		bufferMemory{ device, vkFreeMemory }
 	{}
 
-	VkDescriptorBufferInfo getDescriptorInfo()
+	VkDescriptorBufferInfo getDescriptorInfo(VkDeviceSize offset = 0, VkDeviceSize size = 0)
 	{
 		VkDescriptorBufferInfo bufferInfo = {};
 		bufferInfo.buffer = buffer;
-		bufferInfo.offset = 0;
-		bufferInfo.range = sizeInBytes;
+		bufferInfo.offset = offset;
+		bufferInfo.range = size == 0? sizeInBytes : size;
 		return bufferInfo;
 	}
 };

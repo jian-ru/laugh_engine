@@ -1,11 +1,57 @@
+/**
+ * Notes for myself
+ * 1. How to add a new uniform buffer?
+ *   - Add the uniform buffer in the shaders that use it
+ *   - If it is a uniform buffer, add the new struct with the same layout as the uniform
+ *     somewhere visible to this file
+ *   - Add an instance in the DeferredRenderer class
+ *   - Create a VkBuffer and allocate device memory to interface with the device
+ *   - Increase descriptor pool size accordingly
+ *   - Create a VkDescriptorSetLayoutBinding to put it into descriptor set layouts that use it
+ *   - Create a VkDescriptorBufferInfo and VkWriteDescriptorSet to write the uniform descriptor
+ *     into the sets that use it
+ *   - Allocate host memory in DeferredRenderer::createUniformBuffers
+ *   - Update it in DeferredRenderer::updateUniformBuffers and copy data to device memory
+ *
+ * 2. How to add a new texture sampled in shaders?
+ *   - Load in the texture
+ *   - Create a staging buffer and copy pixel data to it. Buffer usage need to have VK_BUFFER_USAGE_TRANSFER_SRC_BIT set.
+ *     Memory properties are VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+ *   - Create a device local image with the same format and transfer data from staging buffer to it
+ *   - Transfer image layout from VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL to VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+ *   - Create a VkImageView and VkSampler
+ *   - Increase descriptor pool size
+ *   - Add new VkDescriptorSetLayoutBindings to the descriptor set layouts that use the texture
+ *   - Add new VkDescritorImageInfos and VkWriteDescriptorSets to the descriptor sets that use it
+ *   - Add uniform Sampler2D's to shaders and bind desired descriptor sets before draw calls
+ *
+ * 3. How to create an image and use it as an attachment?
+ *   - Create a VkImage, VkDeviceMemory, and VkImageView
+ *   - Image format is usually VK_FORMAT_R8G8B8A8_SFLOAT, VK_FORMAT_R16G16B16A16_SFLOAT, or VK_FORMAT_R32G32B32A32_SFLOAT.
+ *     For depth image, you need to find a format that is supported by your device and prefer the one with higher precision
+ *   - Image usage is VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, or VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT
+ *     depend on how you want to use it
+ *   - Attach it to the framebuffers of the render passes that use this attachment
+ *   - Add VkAttachmentDescriptions and VkAttachmentReferences to the render passes and subpasses that use it
+ *     specify initial, final layouts, and the layouts the image should have during each subpass that uses it
+ *   - Configure pipelines accordingly. For example, enable depth test or color blending
+ *   - If the attachment will be used as an input attachment, you will also need to add VkDescriptorSetLayoutBindings and
+ *     VkWriteDescriptorSets to the layouts and sets that use it. In the shaders, you will need to add a uniform subpassInput
+ *     with the correct input_attachment_index specified in the layout qualifier. The index is the attachment's index in the
+ *     pInputAttachments array of VkSubpassDescription. And instead of using texture(), use subpassLoad() to read the input
+ *     attachment. Input attachment doesn't support magnification, minification, or sampling. So subpasses that use input
+ *     attachments should render into attachments with the same resolution as input attachments
+ *   - Provide a clear value when recording command buffers if the loadOp is VK_LOAD_OP_CLEAR
+ */
+
 #pragma once
 
 #include <array>
 
-//#define VBASE_IMPLEMENTATION
 #include "vbase.h"
 #include "vmesh.h"
 
+#define ALL_UNIFORM_BLOB_SIZE (64 * 1024)
 #define NUM_LIGHTS 2
 
 struct GeomPassUniformBuffer
@@ -26,11 +72,10 @@ struct PointLight
 // only use data types that are vec4 or multiple of vec4's
 struct LightingPassUniformBuffer
 {
-	//glm::vec4 eyePos;
 	PointLight pointLights[NUM_LIGHTS];
 };
 
-struct FinalOutputUniformBuffer
+struct DisplayInfoUniformBuffer
 {
 	typedef int DisplayMode_t;
 	
@@ -71,12 +116,11 @@ protected:
 
 	std::vector<VMesh> m_models;
 
-	GeomPassUniformBuffer m_geomUniformsHostData;
-	BufferWrapper m_geomPassUniformBuffer{ m_device };
-	LightingPassUniformBuffer m_lightingUniformsHostData;
-	BufferWrapper m_lightingPassUniformBuffer{ m_device };
-	FinalOutputUniformBuffer m_finalOutputUniformHostData;
-	BufferWrapper m_finalOutputUniformBuffer{ m_device };
+	AllUniformBlob<ALL_UNIFORM_BLOB_SIZE> m_allUniformHostData{ m_physicalDevice };
+	GeomPassUniformBuffer *m_uTransMats = nullptr;
+	LightingPassUniformBuffer *m_uLightInfo = nullptr;
+	DisplayInfoUniformBuffer *m_uDisplayInfo = nullptr;
+	BufferWrapper m_allUniformBuffer{ m_device };
 
 	std::vector<VkDescriptorSet> m_geomDescriptorSets; // one set per model
 	VkDescriptorSet m_lightingDescriptorSet;
@@ -100,7 +144,8 @@ protected:
 	virtual void createColorAttachmentResources();
 	virtual void loadAndPrepareAssets();
 	virtual void createUniformBuffers();
-	virtual void createDescriptorPoolsAndSets();
+	virtual void createDescriptorPools();
+	virtual void createDescriptorSets();
 	virtual void createFramebuffers();
 	virtual void createCommandBuffers();
 	virtual void createSynchronizationObjects(); // semaphores, fences, etc. go in here
@@ -134,7 +179,6 @@ protected:
 };
 
 
-//#define DEFERED_RENDERER_IMPLEMENTATION
 #ifdef DEFERED_RENDERER_IMPLEMENTATION
 
 void DeferredRenderer::updateUniformBuffers()
@@ -143,36 +187,26 @@ void DeferredRenderer::updateUniformBuffers()
 	glm::mat4 V, P;
 	m_camera.getViewProjMatrix(V, P);
 
-	m_geomUniformsHostData.MV = V;
-	m_geomUniformsHostData.MVP = P * m_geomUniformsHostData.MV;
-	m_geomUniformsHostData.MV_invTrans = glm::transpose(glm::inverse(m_geomUniformsHostData.MV));
-
-	void* data;
-	vkMapMemory(m_device, m_geomPassUniformBuffer.bufferMemory, 0, sizeof(GeomPassUniformBuffer), 0, &data);
-	memcpy(data, &m_geomUniformsHostData, sizeof(GeomPassUniformBuffer));
-	vkUnmapMemory(m_device, m_geomPassUniformBuffer.bufferMemory);
+	m_uTransMats->MV = V;
+	m_uTransMats->MVP = P * m_uTransMats->MV;
+	m_uTransMats->MV_invTrans = glm::transpose(glm::inverse(m_uTransMats->MV));
 
 	// update lighting info
-	//m_lightingUniformsHostData.eyePos = glm::vec4(0.0f, 2.0f, 3.0f, 1.f);
-	m_lightingUniformsHostData.pointLights[0] =
+	m_uLightInfo->pointLights[0] =
 	{
 		V * glm::vec4(2.f, 2.f, 2.f, 1.f),
 		glm::vec3(1.f, 1.f, 1.f),
 		5.f
 	};
-	m_lightingUniformsHostData.pointLights[1] =
+	m_uLightInfo->pointLights[1] =
 	{
 		V * glm::vec4(0.f, 1.f, -2.f, 1.f),
 		glm::vec3(0.1f, 0.1f, 0.1f),
 		5.f
 	};
 
-	vkMapMemory(m_device, m_lightingPassUniformBuffer.bufferMemory, 0, sizeof(LightingPassUniformBuffer), 0, &data);
-	memcpy(data, &m_lightingUniformsHostData, sizeof(LightingPassUniformBuffer));
-	vkUnmapMemory(m_device, m_lightingPassUniformBuffer.bufferMemory);
-
 	// update final output pass info
-	m_finalOutputUniformHostData =
+	*m_uDisplayInfo =
 	{
 		m_displayMode,
 		m_swapChain.swapChainExtent.width,
@@ -182,9 +216,10 @@ void DeferredRenderer::updateUniformBuffers()
 		m_camera.zFar
 	};
 
-	vkMapMemory(m_device, m_finalOutputUniformBuffer.bufferMemory, 0, sizeof(FinalOutputUniformBuffer), 0, &data);
-	memcpy(data, &m_finalOutputUniformHostData, sizeof(FinalOutputUniformBuffer));
-	vkUnmapMemory(m_device, m_finalOutputUniformBuffer.bufferMemory);
+	void* data;
+	vkMapMemory(m_device, m_allUniformBuffer.bufferMemory, 0, m_allUniformBuffer.sizeInBytes, 0, &data);
+	memcpy(data, &m_allUniformHostData, m_allUniformBuffer.sizeInBytes);
+	vkUnmapMemory(m_device, m_allUniformBuffer.bufferMemory);
 }
 
 void DeferredRenderer::drawFrame()
@@ -370,35 +405,23 @@ void DeferredRenderer::loadAndPrepareAssets()
 
 void DeferredRenderer::createUniformBuffers()
 {
-	m_geomPassUniformBuffer.sizeInBytes = sizeof(GeomPassUniformBuffer);
-	m_geomPassUniformBuffer.numElements = 1;
+	// host
+	m_uTransMats = reinterpret_cast<GeomPassUniformBuffer *>(m_allUniformHostData.alloc(sizeof(GeomPassUniformBuffer)));
+	m_uLightInfo = reinterpret_cast<LightingPassUniformBuffer *>(m_allUniformHostData.alloc(sizeof(LightingPassUniformBuffer)));
+	m_uDisplayInfo = reinterpret_cast<DisplayInfoUniformBuffer *>(m_allUniformHostData.alloc(sizeof(DisplayInfoUniformBuffer)));
+
+	// device
+	m_allUniformBuffer.sizeInBytes = m_allUniformHostData.size();
+	m_allUniformBuffer.numElements = 1;
 
 	createBuffer(
 		m_physicalDevice, m_device,
-		m_geomPassUniformBuffer.sizeInBytes, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+		m_allUniformBuffer.sizeInBytes, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
 		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-		m_geomPassUniformBuffer.buffer, m_geomPassUniformBuffer.bufferMemory);
-
-	m_lightingPassUniformBuffer.sizeInBytes = sizeof(GeomPassUniformBuffer);
-	m_lightingPassUniformBuffer.numElements = 1;
-
-	createBuffer(
-		m_physicalDevice, m_device,
-		m_lightingPassUniformBuffer.sizeInBytes, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-		m_lightingPassUniformBuffer.buffer, m_lightingPassUniformBuffer.bufferMemory);
-
-	m_finalOutputUniformBuffer.sizeInBytes = sizeof(FinalOutputUniformBuffer);
-	m_finalOutputUniformBuffer.numElements = 1;
-
-	createBuffer(
-		m_physicalDevice, m_device,
-		m_finalOutputUniformBuffer.sizeInBytes, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-		m_finalOutputUniformBuffer.buffer, m_finalOutputUniformBuffer.bufferMemory);
+		m_allUniformBuffer.buffer, m_allUniformBuffer.bufferMemory);
 }
 
-void DeferredRenderer::createDescriptorPoolsAndSets()
+void DeferredRenderer::createDescriptorPools()
 {
 	// create descriptor pool
 	std::array<VkDescriptorPoolSize, 3> poolSizes = {};
@@ -419,6 +442,11 @@ void DeferredRenderer::createDescriptorPoolsAndSets()
 	{
 		throw std::runtime_error("failed to create descriptor pool!");
 	}
+}
+
+void DeferredRenderer::createDescriptorSets()
+{
+	vkResetDescriptorPool(m_device, m_descriptorPool, 0);
 
 	// create descriptor sets
 	std::vector<VkDescriptorSetLayout> layouts;
@@ -510,13 +538,7 @@ void DeferredRenderer::createFramebuffers()
 void DeferredRenderer::createCommandBuffers()
 {
 	// Allocate command buffers
-	if (m_presentCommandBuffers.size() > 0)
-	{
-		vkFreeCommandBuffers(
-			m_device, m_graphicsCommandPool,
-			static_cast<uint32_t>(m_presentCommandBuffers.size()),
-			m_presentCommandBuffers.data());
-	}
+	vkResetCommandPool(m_device, m_graphicsCommandPool, 0);
 
 	m_presentCommandBuffers.resize(m_swapChain.swapChainImages.size());
 
@@ -1010,7 +1032,9 @@ void DeferredRenderer::createFinalOutputPassPipeline()
 
 void DeferredRenderer::createGeomPassDescriptorSets()
 {
-	VkDescriptorBufferInfo bufferInfo = m_geomPassUniformBuffer.getDescriptorInfo();
+	VkDescriptorBufferInfo bufferInfo = m_allUniformBuffer.getDescriptorInfo(
+		m_allUniformHostData.offsetOf(reinterpret_cast<const char *>(m_uTransMats)),
+		sizeof(GeomPassUniformBuffer));
 
 	for (uint32_t i = 0; i < m_models.size(); ++i)
 	{
@@ -1043,8 +1067,12 @@ void DeferredRenderer::createGeomPassDescriptorSets()
 void DeferredRenderer::createLightingPassDescriptorSets()
 {
 	std::array<VkDescriptorBufferInfo, 2> bufferInfos = {};
-	bufferInfos[0] = m_lightingPassUniformBuffer.getDescriptorInfo();
-	bufferInfos[1] = m_finalOutputUniformBuffer.getDescriptorInfo();
+	bufferInfos[0] = m_allUniformBuffer.getDescriptorInfo(
+		m_allUniformHostData.offsetOf(reinterpret_cast<const char *>(m_uLightInfo)),
+		sizeof(LightingPassUniformBuffer));
+	bufferInfos[1] = m_allUniformBuffer.getDescriptorInfo(
+		m_allUniformHostData.offsetOf(reinterpret_cast<const char *>(m_uDisplayInfo)),
+		sizeof(DisplayInfoUniformBuffer));
 
 	std::array<VkDescriptorImageInfo, 2> imageInfos = {};
 	imageInfos[0] = m_gbufferImages[0].getDescriptorInfo();
@@ -1073,7 +1101,9 @@ void DeferredRenderer::createLightingPassDescriptorSets()
 
 void DeferredRenderer::createFinalOutputPassDescriptorSets()
 {
-	VkDescriptorBufferInfo bufferInfo = m_finalOutputUniformBuffer.getDescriptorInfo();
+	VkDescriptorBufferInfo bufferInfo = m_allUniformBuffer.getDescriptorInfo(
+		m_allUniformHostData.offsetOf(reinterpret_cast<const char *>(m_uDisplayInfo)),
+		sizeof(DisplayInfoUniformBuffer));
 
 	std::array<VkDescriptorImageInfo, 3> imageInfos;
 	imageInfos[0] = m_lightingResultImage.getDescriptorInfo();
