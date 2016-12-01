@@ -3,6 +3,32 @@
 #include <vector>
 #include <fstream>
 #include <stdexcept>
+#include <chrono>
+
+
+class Timer
+{
+public:
+	void start()
+	{
+		tStart = std::chrono::high_resolution_clock::now();
+	}
+
+	void stop()
+	{
+		tEnd = std::chrono::high_resolution_clock::now();
+	}
+
+	template<typename Precision = float, typename Unit = std::milli>
+	Precision timeElapsed()
+	{
+		return std::chrono::duration<Precision, Unit>(tEnd - tStart).count();
+	}
+
+private:
+	std::chrono::time_point<std::chrono::high_resolution_clock> tStart;
+	decltype(tStart) tEnd;
+};
 
 static std::vector<char> readFile(const std::string& filename)
 {
