@@ -10,11 +10,14 @@
 
 #include <string>
 #include <algorithm>
+#include <sstream>
+#include <iomanip>
 
 #include "common_utils.h"
 #include "vdeleter.h"
 #include "vutils.h"
 #include "camera.h"
+#include "vtextoverlay.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
@@ -35,6 +38,9 @@ enum DisplayMode
 class VBaseGraphics
 {
 public:
+	uint32_t m_verNumMajor;
+	uint32_t m_verNumMinor;
+
 	uint32_t m_width = 1280;
 	uint32_t m_height = 720;
 	std::string m_windowTitle = "VBaseGraphics";
@@ -143,8 +149,13 @@ protected:
 
 	VDeleter<VkCommandPool> m_graphicsCommandPool{ m_device, vkDestroyCommandPool };
 	std::vector<VkCommandBuffer> m_presentCommandBuffers;
+	std::vector<VDeleter<VkFramebuffer>> m_finalOutputFramebuffers; // present framebuffers
 
 	VDeleter<VkPipelineCache> m_pipelineCache{ m_device, vkDestroyPipelineCache };
+
+	VTextOverlay m_textOverlay{ m_physicalDevice, m_device, m_queueFamilyIndices, m_graphicsQueue, m_swapChain, m_finalOutputFramebuffers };
+
+	Timer m_perfTimer;
 
 
 	virtual void initVulkan();
@@ -180,6 +191,7 @@ protected:
 	virtual void createSynchronizationObjects() = 0; // semaphores, fences, etc. go in here
 
 	virtual void updateUniformBuffers() = 0;
+	virtual void updateText(uint32_t imageIdx);
 	virtual void drawFrame() = 0;
 
 
@@ -466,6 +478,23 @@ void VBaseGraphics::initVulkan()
 	createDescriptorSets();
 	createCommandBuffers();
 	createSynchronizationObjects();
+	m_textOverlay.prepareResources();
+}
+
+void VBaseGraphics::updateText(uint32_t imageIdx)
+{
+
+	m_textOverlay.beginTextUpdate();
+
+	std::stringstream ss;
+	ss << m_windowTitle << " - ver" << m_verNumMajor << "." << m_verNumMinor;
+	m_textOverlay.addText(ss.str(), 5.0f, 5.0f, VTextOverlay::alignLeft);
+
+	ss.clear();
+	ss << std::fixed << std::setprecision(2) << "Frame time: " << m_perfTimer.timeElapsed() << " ms";
+	m_textOverlay.addText(ss.str(), 5.f, 25.f, VTextOverlay::alignLeft);
+
+	m_textOverlay.endTextUpdate(imageIdx);
 }
 
 void VBaseGraphics::mainLoop()

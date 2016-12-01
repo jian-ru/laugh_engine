@@ -491,8 +491,9 @@ struct DefaultGraphicsPipelineCreateInfo
 	VkPipelineRasterizationStateCreateInfo rasterizerInfo;
 	VkPipelineMultisampleStateCreateInfo multisamplingInfo;
 	VkPipelineDepthStencilStateCreateInfo depthStencilInfo;
-	VkPipelineColorBlendAttachmentState colorBlendAttachmentState;
+	std::vector<VkPipelineColorBlendAttachmentState> colorBlendAttachmentStates;
 	VkPipelineColorBlendStateCreateInfo colorBlendInfo;
+	VkPipelineDynamicStateCreateInfo dynamicStateInfo;
 
 	VkGraphicsPipelineCreateInfo pipelineInfo;
 
@@ -515,8 +516,9 @@ struct DefaultGraphicsPipelineCreateInfo
 		rasterizerInfo = {};
 		multisamplingInfo = {};
 		depthStencilInfo = {};
-		colorBlendAttachmentState = {};
+		colorBlendAttachmentStates = {};
 		colorBlendInfo = {};
+		dynamicStateInfo = {};
 		pipelineInfo = {};
 
 		auto fillShaderStageInfo = [&device, this](
@@ -552,6 +554,8 @@ struct DefaultGraphicsPipelineCreateInfo
 		inputAssemblyInfo.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 
 		viewportStateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+		viewportStateInfo.viewportCount = 1;
+		viewportStateInfo.scissorCount = 1;
 
 		rasterizerInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
 		rasterizerInfo.polygonMode = VK_POLYGON_MODE_FILL;
@@ -567,12 +571,15 @@ struct DefaultGraphicsPipelineCreateInfo
 		depthStencilInfo.depthWriteEnable = VK_TRUE;
 		depthStencilInfo.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
 
-		colorBlendAttachmentState.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-		colorBlendAttachmentState.blendEnable = VK_FALSE;
+		colorBlendAttachmentStates.resize(1);
+		colorBlendAttachmentStates[0].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+		colorBlendAttachmentStates[0].blendEnable = VK_FALSE;
 
 		colorBlendInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
 		colorBlendInfo.attachmentCount = 1;
-		colorBlendInfo.pAttachments = &colorBlendAttachmentState;
+		colorBlendInfo.pAttachments = colorBlendAttachmentStates.data();
+
+		dynamicStateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
 
 		pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
 
@@ -586,20 +593,26 @@ struct DefaultGraphicsPipelineCreateInfo
 		pipelineInfo.pMultisampleState = &multisamplingInfo;
 		pipelineInfo.pDepthStencilState = &depthStencilInfo;
 		pipelineInfo.pColorBlendState = &colorBlendInfo;
+		pipelineInfo.pDynamicState = nullptr;
 	}
 };
 
-static void createCommandPool(VkDevice device, uint32_t queueFamilyIndex, VDeleter<VkCommandPool> &commandPool)
+static void createCommandPool(VkDevice device, uint32_t queueFamilyIndex, VkCommandPoolCreateFlags flags, VDeleter<VkCommandPool> &commandPool)
 {
 	VkCommandPoolCreateInfo poolInfo = {};
 	poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
 	poolInfo.queueFamilyIndex = queueFamilyIndex;
-	poolInfo.flags = 0; // Optional
+	poolInfo.flags = flags;
 
 	if (vkCreateCommandPool(device, &poolInfo, nullptr, commandPool.replace()) != VK_SUCCESS)
 	{
 		throw std::runtime_error("failed to create command pool!");
 	}
+}
+
+static void createCommandPool(VkDevice device, uint32_t queueFamilyIndex, VDeleter<VkCommandPool> &commandPool)
+{
+	createCommandPool(device, queueFamilyIndex, 0, commandPool);
 }
 
 static uint32_t findMemoryType(VkPhysicalDevice physicalDevice, uint32_t typeFilter, VkMemoryPropertyFlags properties)
@@ -874,6 +887,23 @@ static void copyBufferToImage(
 	endSingleTimeCommands(device, commandBuffer, submitQueue, commandPool);
 }
 
+static void copyBufferToImage(
+	VkDevice device, VkCommandPool commandPool, VkQueue submitQueue,
+	const std::vector<VkBufferImageCopy> &bufferCopyRegions, VkBuffer srcBuffer, VkImage dstImage)
+{
+	VkCommandBuffer commandBuffer = beginSingleTimeCommands(device, commandPool);
+
+	vkCmdCopyBufferToImage(
+		commandBuffer,
+		srcBuffer,
+		dstImage,
+		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		static_cast<uint32_t>(bufferCopyRegions.size()),
+		bufferCopyRegions.data());
+
+	endSingleTimeCommands(device, commandBuffer, submitQueue, commandPool);
+}
+
 static void copyBufferToBuffer(
 	VkDevice device, VkCommandPool commandPool, VkQueue submitQueue,
 	VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size)
@@ -1013,4 +1043,28 @@ static void createBufferFromHostData(
 	copyBufferToBuffer(
 		device, commandPool, submitQueue,
 		stagingBuffer.buffer, retBuffer.buffer, sizeInBytes);
+}
+
+static void createStagingBuffer(
+	VkPhysicalDevice physicalDevice, const VDeleter<VkDevice> &device, 
+	const void *hostData, uint32_t numElements, size_t sizeInBytes, 
+	BufferWrapper &retBuffer)
+{
+	retBuffer.sizeInBytes = sizeInBytes;
+	retBuffer.numElements = numElements;
+
+	createBuffer(
+		physicalDevice, device,
+		sizeInBytes,
+		VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+		retBuffer.buffer, retBuffer.bufferMemory);
+
+	if (hostData)
+	{
+		void* data;
+		vkMapMemory(device, retBuffer.bufferMemory, 0, sizeInBytes, 0, &data);
+		memcpy(data, hostData, sizeInBytes);
+		vkUnmapMemory(device, retBuffer.bufferMemory);
+	}
 }

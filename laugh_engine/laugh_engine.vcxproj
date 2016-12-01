@@ -160,6 +160,7 @@
     <ClInclude Include="vbase.h" />
     <ClInclude Include="vdeleter.h" />
     <ClInclude Include="vmesh.h" />
+    <ClInclude Include="vtextoverlay.h" />
     <ClInclude Include="vutils.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

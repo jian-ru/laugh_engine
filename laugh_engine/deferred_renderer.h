@@ -91,7 +91,12 @@ struct DisplayInfoUniformBuffer
 class DeferredRenderer : public VBaseGraphics
 {
 public:
-
+	DeferredRenderer()
+	{
+		m_windowTitle = "Laugh Engine";
+		m_verNumMajor = 0;
+		m_verNumMinor = 1;
+	}
 
 protected:
 	VDeleter<VkRenderPass> m_geomAndLightRenderPass{ m_device, vkDestroyRenderPass };
@@ -127,10 +132,10 @@ protected:
 	VkDescriptorSet m_finalOutputDescriptorSet;
 
 	VDeleter<VkFramebuffer> m_geomAndLightingFramebuffer{ m_device, vkDestroyFramebuffer };
-	std::vector<VDeleter<VkFramebuffer>> m_finalOutputFramebuffers;
 
 	VDeleter<VkSemaphore> m_imageAvailableSemaphore{ m_device, vkDestroySemaphore };
 	VDeleter<VkSemaphore> m_geomAndLightingCompleteSemaphore{ m_device, vkDestroySemaphore };
+	VDeleter<VkSemaphore> m_finalOutputFinishedSemaphore{ m_device, vkDestroySemaphore };
 	VDeleter<VkSemaphore> m_renderFinishedSemaphore{ m_device, vkDestroySemaphore };
 
 	VkCommandBuffer m_geomAndLightingCommandBuffer;
@@ -240,6 +245,8 @@ void DeferredRenderer::drawFrame()
 		throw std::runtime_error("failed to acquire swap chain image!");
 	}
 
+	updateText(imageIndex);
+
 	VkSubmitInfo submitInfos[2] = {};
 
 	VkSemaphore waitSemaphores0[] = { m_imageAvailableSemaphore };
@@ -255,7 +262,7 @@ void DeferredRenderer::drawFrame()
 	submitInfos[0].pCommandBuffers = &m_geomAndLightingCommandBuffer;
 
 	VkSemaphore waitSemaphores1[] = { m_geomAndLightingCompleteSemaphore };
-	VkSemaphore signalSemaphores1[] = { m_renderFinishedSemaphore };
+	VkSemaphore signalSemaphores1[] = { m_finalOutputFinishedSemaphore };
 	VkPipelineStageFlags waitStages1[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
 	submitInfos[1].sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 	submitInfos[1].waitSemaphoreCount = 1;
@@ -271,11 +278,16 @@ void DeferredRenderer::drawFrame()
 		throw std::runtime_error("failed to submit draw command buffer!");
 	}
 
+	std::vector<VkSemaphore> waitSemaphores2 = { m_finalOutputFinishedSemaphore };
+	std::vector<VkSemaphore> signalSemaphores2 = { m_renderFinishedSemaphore };
+	std::vector<VkPipelineStageFlags> waitStages2 = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+	m_textOverlay.submit(imageIndex, waitStages2, waitSemaphores2, signalSemaphores2);
+
 	VkPresentInfoKHR presentInfo = {};
 	presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
 
 	presentInfo.waitSemaphoreCount = 1;
-	presentInfo.pWaitSemaphores = signalSemaphores1;
+	presentInfo.pWaitSemaphores = signalSemaphores2.data();
 
 	VkSwapchainKHR swapChains[] = { m_swapChain.swapChain };
 	presentInfo.swapchainCount = 1;
@@ -446,7 +458,10 @@ void DeferredRenderer::createDescriptorPools()
 
 void DeferredRenderer::createDescriptorSets()
 {
-	vkResetDescriptorPool(m_device, m_descriptorPool, 0);
+	if (vkResetDescriptorPool(m_device, m_descriptorPool, 0) != VK_SUCCESS)
+	{
+		throw std::runtime_error("Cannot reset m_descriptorPool");
+	}
 
 	// create descriptor sets
 	std::vector<VkDescriptorSetLayout> layouts;
@@ -538,7 +553,10 @@ void DeferredRenderer::createFramebuffers()
 void DeferredRenderer::createCommandBuffers()
 {
 	// Allocate command buffers
-	vkResetCommandPool(m_device, m_graphicsCommandPool, 0);
+	if (vkResetCommandPool(m_device, m_graphicsCommandPool, VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT) != VK_SUCCESS)
+	{
+		throw std::runtime_error("Cannot reset m_graphicsCommandPool");
+	}
 
 	m_presentCommandBuffers.resize(m_swapChain.swapChainImages.size());
 
@@ -573,6 +591,7 @@ void DeferredRenderer::createSynchronizationObjects()
 
 	if (vkCreateSemaphore(m_device, &semaphoreInfo, nullptr, m_imageAvailableSemaphore.replace()) != VK_SUCCESS ||
 		vkCreateSemaphore(m_device, &semaphoreInfo, nullptr, m_geomAndLightingCompleteSemaphore.replace()) != VK_SUCCESS ||
+		vkCreateSemaphore(m_device, &semaphoreInfo, nullptr, m_finalOutputFinishedSemaphore.replace()) != VK_SUCCESS ||
 		vkCreateSemaphore(m_device, &semaphoreInfo, nullptr, m_renderFinishedSemaphore.replace()) != VK_SUCCESS)
 	{
 		throw std::runtime_error("failed to create semaphores!");
