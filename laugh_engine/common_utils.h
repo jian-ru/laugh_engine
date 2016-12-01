@@ -9,6 +9,11 @@
 class Timer
 {
 public:
+	Timer(uint32_t ac = 100) :
+		averageCount{ac},
+		timeIntervals(ac, 0.f)
+	{}
+
 	void start()
 	{
 		tStart = std::chrono::high_resolution_clock::now();
@@ -17,17 +22,31 @@ public:
 	void stop()
 	{
 		tEnd = std::chrono::high_resolution_clock::now();
+		float te = timeElapsed();
+		total -= timeIntervals[nextIdx];
+		timeIntervals[nextIdx] = te;
+		total += te;
+		nextIdx = (nextIdx + 1) % averageCount;
 	}
 
-	template<typename Precision = float, typename Unit = std::milli>
-	Precision timeElapsed()
+	float timeElapsed() const
 	{
-		return std::chrono::duration<Precision, Unit>(tEnd - tStart).count();
+		return std::chrono::duration<float, std::milli>(tEnd - tStart).count();
+	}
+
+	float getAverageTime() const
+	{
+		return total / averageCount;
 	}
 
 private:
 	std::chrono::time_point<std::chrono::high_resolution_clock> tStart;
 	decltype(tStart) tEnd;
+
+	uint32_t averageCount;
+	uint32_t nextIdx = 0;
+	float total = 0.f;
+	std::vector<float> timeIntervals;
 };
 
 static std::vector<char> readFile(const std::string& filename)

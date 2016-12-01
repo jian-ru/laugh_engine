@@ -245,7 +245,8 @@ void DeferredRenderer::drawFrame()
 		throw std::runtime_error("failed to acquire swap chain image!");
 	}
 
-	updateText(imageIndex);
+	updateText(imageIndex, &m_perfTimer);
+	m_perfTimer.start();
 
 	VkSubmitInfo submitInfos[2] = {};
 

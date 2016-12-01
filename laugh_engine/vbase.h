@@ -191,7 +191,7 @@ protected:
 	virtual void createSynchronizationObjects() = 0; // semaphores, fences, etc. go in here
 
 	virtual void updateUniformBuffers() = 0;
-	virtual void updateText(uint32_t imageIdx);
+	virtual void updateText(uint32_t imageIdx, Timer *timer = nullptr);
 	virtual void drawFrame() = 0;
 
 
@@ -481,8 +481,10 @@ void VBaseGraphics::initVulkan()
 	m_textOverlay.prepareResources();
 }
 
-void VBaseGraphics::updateText(uint32_t imageIdx)
+void VBaseGraphics::updateText(uint32_t imageIdx, Timer *timer)
 {
+	m_textOverlay.waitForFence(imageIdx);
+	if (timer) timer->stop();
 
 	m_textOverlay.beginTextUpdate();
 
@@ -490,8 +492,8 @@ void VBaseGraphics::updateText(uint32_t imageIdx)
 	ss << m_windowTitle << " - ver" << m_verNumMajor << "." << m_verNumMinor;
 	m_textOverlay.addText(ss.str(), 5.0f, 5.0f, VTextOverlay::alignLeft);
 
-	ss.clear();
-	ss << std::fixed << std::setprecision(2) << "Frame time: " << m_perfTimer.timeElapsed() << " ms";
+	ss = std::stringstream();
+	ss << std::fixed << std::setprecision(2) << "Frame time: " << m_perfTimer.getAverageTime() << " ms";
 	m_textOverlay.addText(ss.str(), 5.f, 25.f, VTextOverlay::alignLeft);
 
 	m_textOverlay.endTextUpdate(imageIdx);

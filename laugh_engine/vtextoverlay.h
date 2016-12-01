@@ -149,7 +149,6 @@ public:
 
 		renderPassBeginInfo.framebuffer = framebuffers[imageIdx];
 
-		waitForFence(imageIdx);
 		vkBeginCommandBuffer(commandBuffers[imageIdx], &cmdBufInfo);
 
 		vkCmdBeginRenderPass(commandBuffers[imageIdx], &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
@@ -205,6 +204,12 @@ public:
 		{
 			throw std::runtime_error("failed to submit draw command buffer!");
 		}
+	}
+
+	void waitForFence(uint32_t idx)
+	{
+		vkWaitForFences(device, 1, &fences[idx], VK_TRUE, std::numeric_limits<uint64_t>::max());
+		vkResetFences(device, 1, &fences[idx]);
 	}
 
 private:
@@ -263,12 +268,6 @@ private:
 			return attributeDescriptions;
 		}
 	};
-
-	void waitForFence(uint32_t idx)
-	{
-		vkWaitForFences(device, 1, &fences[idx], VK_TRUE, std::numeric_limits<uint64_t>::max());
-		vkResetFences(device, 1, &fences[idx]);
-	}
 
 	void createFences()
 	{
