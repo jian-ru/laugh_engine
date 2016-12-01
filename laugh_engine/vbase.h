@@ -493,7 +493,8 @@ void VBaseGraphics::updateText(uint32_t imageIdx, Timer *timer)
 	m_textOverlay.addText(ss.str(), 5.0f, 5.0f, VTextOverlay::alignLeft);
 
 	ss = std::stringstream();
-	ss << std::fixed << std::setprecision(2) << "Frame time: " << m_perfTimer.getAverageTime() << " ms";
+	float averageMsPerFrame = m_perfTimer.getAverageTime();
+	ss << std::fixed << std::setprecision(2) << "Frame time: " << averageMsPerFrame << " ms (" << 1000.f / averageMsPerFrame << " FPS)";
 	m_textOverlay.addText(ss.str(), 5.f, 25.f, VTextOverlay::alignLeft);
 
 	m_textOverlay.endTextUpdate(imageIdx);

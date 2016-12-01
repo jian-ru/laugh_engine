@@ -10,6 +10,8 @@ class Timer
 {
 public:
 	Timer(uint32_t ac = 100) :
+		tStart(std::chrono::high_resolution_clock::now()),
+		tEnd(tStart),
 		averageCount{ac},
 		timeIntervals(ac, 0.f)
 	{}
