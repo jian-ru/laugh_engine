@@ -392,9 +392,9 @@ void DeferredRenderer::createColorAttachmentResources()
 void DeferredRenderer::loadAndPrepareAssets()
 {
 	// TODO: implement scene file to allow flexible model loading
-	std::string modelFileName = "C:/Users/Jian Ru/Documents/CIS565/final_project/laugh_engine/models/armor.obj";
-	std::string albedoMapName = "C:/Users/Jian Ru/Documents/CIS565/final_project/laugh_engine/textures/armor_a.ktx";
-	std::string normalMapName = "C:/Users/Jian Ru/Documents/CIS565/final_project/laugh_engine/textures/armor_n.ktx";
+	std::string modelFileName = "../models/armor.obj";
+	std::string albedoMapName = "../textures/armor_a.ktx";
+	std::string normalMapName = "../textures/armor_n.ktx";
 
 	m_models.resize(1, { m_device });
 	m_models[0].load(
