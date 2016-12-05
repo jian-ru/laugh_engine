@@ -214,8 +214,8 @@ void DeferredRenderer::updateUniformBuffers()
 	*m_uDisplayInfo =
 	{
 		m_displayMode,
-		m_swapChain.swapChainExtent.width,
-		m_swapChain.swapChainExtent.height,
+		static_cast<float>(m_swapChain.swapChainExtent.width),
+		static_cast<float>(m_swapChain.swapChainExtent.height),
 		2.f * tanf(m_camera.fovy * .5f),
 		m_camera.zNear,
 		m_camera.zFar

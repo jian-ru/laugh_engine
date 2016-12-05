@@ -6,3 +6,4 @@ laugh_engine/x64/*
 *.opensdf
 *.suo
 *.VC.db
+*.VC.opendb
