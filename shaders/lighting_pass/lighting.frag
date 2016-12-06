@@ -45,11 +45,6 @@ vec4 unpackRGBA(float packedColor)
 		* 0.0039215686274509803921568627451;
 }
 
-vec3 recoverWorldNrm(vec2 xy)
-{
-	return vec3(xy, sqrt(1.0 - max(0.0, dot(xy, xy))));
-}
-
 
 void main() 
 {
@@ -60,11 +55,11 @@ void main()
 	if (depth >= 1.0 || depth <= 0.0) return;
 	
 	vec3 pos = gb2.xyz;
-	vec3 nrm = recoverWorldNrm(gb1.xy);
-	vec3 albedo = unpackRGBA(gb1.z).rgb;
+	vec3 nrm = gb1.xyz;
+	vec3 albedo = unpackRGBA(gb1.w).rgb;
 	albedo = pow(albedo, vec3(2.2)); // to linear space
 	
-	vec4 RMI = unpackRGBA(gb1.w); // (roughness, metalness, material id, unused)
+	vec4 RMI = unpackRGBA(gb2.w); // (roughness, metalness, material id, unused)
 	float roughness = clamp(RMI.x, 0.0, 1.0);
 	float metalness = clamp(RMI.y, 0.0, 1.0);
 	uint matId = uint(round(RMI.z * 255.0));
@@ -113,11 +108,16 @@ void main()
 		vec3 diffColor = albedo * (1.0 - metalness); // if it is metal, no diffuse color
 		vec3 specColor = mix(dielectricF0, albedo, metalness); // since metal has no albedo, we use the space to store its F0
 		
-		// finalColor = diffColor * diffIr + specIr * (specColor * brdfTerm.x + brdfTerm.y);
+		finalColor = diffColor * diffIr + specIr * (specColor * brdfTerm.x + brdfTerm.y);
 		// finalColor = nrm;
 		// finalColor = abs(pos);
 		// finalColor = eyePos.xyz;
-		finalColor = vec3(brdfTerm, 0.0);
+		// finalColor = vec3(brdfTerm, 0.0);
+		// finalColor = vec3(NoV);
+		// finalColor = v;
+		// finalColor = vec3(lessThan(vec3(dot(nrm, v)), vec3(0.0)));
+		// finalColor = diffColor * diffIr;
+		// finalColor = specIr * (specColor * brdfTerm.x + brdfTerm.y);
 	}
 	
 	outColor = vec4(finalColor, 1.0);

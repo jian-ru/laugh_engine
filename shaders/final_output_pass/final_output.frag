@@ -24,11 +24,6 @@ vec4 unpackRGBA(float packedColor)
 		* 0.0039215686274509803921568627451;
 }
 
-vec3 recoverWorldNrm(vec2 xy)
-{
-	return vec3(xy, sqrt(1.0 - max(0.0, dot(xy, xy))));
-}
-
 vec3 filmicTonemap(vec3 x)
 {
     float A = 0.15;
@@ -57,10 +52,10 @@ void main()
 	vec4 gb2 = texture(gbuffer2, inUV);
 	float depth = texture(depthImage, inUV).r;
 	
-	vec3 albedo = unpackRGBA(gb1.z).rgb;
+	vec3 albedo = unpackRGBA(gb1.w).rgb;
 	vec3 pos = gb2.xyz;
-	vec3 nrm = recoverWorldNrm(gb1.xy);
-	vec4 RMI = unpackRGBA(gb1.w);
+	vec3 nrm = gb1.xyz;
+	vec4 RMI = unpackRGBA(gb2.w);
 	
 	if (displayMode == 4)
 	{
@@ -72,9 +67,9 @@ void main()
 	
 	if (displayMode == 0)
 	{
-		// finalColor = applyFilmicToneMap(finalColor);
-		// outColor = vec4(pow(finalColor, vec3(1.0 / 2.2)), 1.0);
-		outColor = vec4(finalColor, 1.0);
+		finalColor = applyFilmicToneMap(finalColor);
+		outColor = vec4(pow(finalColor, vec3(1.0 / 2.2)), 1.0);
+		// outColor = vec4(finalColor, 1.0);
 	}
 	else if (displayMode == 1) // albedo
 	{

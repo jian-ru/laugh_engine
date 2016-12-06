@@ -57,6 +57,6 @@ void main()
 	vec3 nrm = normalize(tbn * (2.0 * nrmmap - 1.0));
 	float RMI = packRGBA(vec4(roughness, metalness, float(pcs.materialId) / 255.0, 0.0));
 	
-	outGbuffer1 = vec4(nrm.xy, packedAlbedo, RMI);
-	outGbuffer2 = vec4(inWorldPos, 0.0);
+	outGbuffer1 = vec4(nrm, packedAlbedo);
+	outGbuffer2 = vec4(inWorldPos, RMI);
 }
