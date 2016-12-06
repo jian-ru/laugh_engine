@@ -140,6 +140,8 @@ struct ImageWrapper
 	}
 };
 
+typedef ImageWrapper BakedBRDF;
+
 struct SwapChainWrapper
 {
 	VDeleter<VkSwapchainKHR> swapChain;
@@ -494,6 +496,7 @@ struct DefaultGraphicsPipelineCreateInfo
 	std::vector<VkPipelineColorBlendAttachmentState> colorBlendAttachmentStates;
 	VkPipelineColorBlendStateCreateInfo colorBlendInfo;
 	VkPipelineDynamicStateCreateInfo dynamicStateInfo;
+	std::vector<VkPushConstantRange> pushConstantRanges;
 
 	VkGraphicsPipelineCreateInfo pipelineInfo;
 
@@ -943,6 +946,13 @@ static void loadTexture(
 	VkCommandPool commandPool, VkQueue submitQueue,
 	const std::string &fn, ImageWrapper &texture)
 {
+	std::string ext = getFileExtension(fn);
+	if (ext != "ktx" && ext != "dds")
+	{
+		throw std::runtime_error("texture type ." + ext + " is not supported.");
+	}
+
+
 	gli::texture2d textureSrc(gli::load(fn.c_str()));
 
 	if (textureSrc.empty())
@@ -958,6 +968,22 @@ static void loadTexture(
 	else
 	{
 		textureMipmapped = textureSrc;
+	}
+
+	VkFormat format;
+	switch (textureMipmapped.format())
+	{
+	case gli::FORMAT_RGBA8_UNORM_PACK8:
+		format = VK_FORMAT_R8G8B8A8_UNORM;
+		break;
+	case gli::FORMAT_RGBA32_SFLOAT_PACK32:
+		format = VK_FORMAT_R32G32B32A32_SFLOAT;
+		break;
+	case gli::FORMAT_RGBA_DXT5_UNORM_BLOCK16:
+		format = VK_FORMAT_BC3_UNORM_BLOCK;
+		break;
+	default:
+		throw std::runtime_error("texture format is not supported.");
 	}
 
 	int width = textureMipmapped.extent().x;
@@ -976,10 +1002,12 @@ static void loadTexture(
 	memcpy(data, textureMipmapped.data(), (size_t)sizeInBytes);
 	vkUnmapMemory(device, stagingBuffer.bufferMemory);
 
+	texture.format = format;
+
 	createImage(
 		physicalDevice, device,
 		width, height, mipLevels,
-		VK_FORMAT_BC3_UNORM_BLOCK,
+		format,
 		VK_IMAGE_TILING_OPTIMAL,
 		VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
 		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
@@ -988,17 +1016,17 @@ static void loadTexture(
 
 	transitionImageLayout(
 		device, commandPool, submitQueue,
-		texture.image, VK_FORMAT_BC3_UNORM_BLOCK, mipLevels,
+		texture.image, format, mipLevels,
 		VK_IMAGE_LAYOUT_PREINITIALIZED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
 	copyBufferToImage(device, commandPool, submitQueue, textureMipmapped, stagingBuffer.buffer, texture.image);
 	
 	transitionImageLayout(
 		device, commandPool, submitQueue,
-		texture.image, VK_FORMAT_BC3_UNORM_BLOCK, mipLevels,
+		texture.image, format, mipLevels,
 		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
-	createImageView2D(device, texture.image, VK_FORMAT_BC3_UNORM_BLOCK, VK_IMAGE_ASPECT_COLOR_BIT, mipLevels, texture.imageView);
+	createImageView2D(device, texture.image, format, VK_IMAGE_ASPECT_COLOR_BIT, mipLevels, texture.imageView);
 
 	VkSamplerCreateInfo samplerInfo = {};
 	getDefaultSamplerCreateInfo(samplerInfo);

@@ -18,14 +18,12 @@ struct Vertex
 {
 	glm::vec3 pos;
 	glm::vec3 normal;
-	glm::vec3 tangent;
 	glm::vec2 texCoord;
 
 	bool operator==(const Vertex& other) const
 	{
 		return pos == other.pos &&
 			normal == other.normal &&
-			tangent == other.tangent &&
 			texCoord == other.texCoord;
 	}
 
@@ -39,9 +37,9 @@ struct Vertex
 		return bindingDescription;
 	}
 
-	static std::array<VkVertexInputAttributeDescription, 4> getAttributeDescriptions()
+	static std::array<VkVertexInputAttributeDescription, 3> getAttributeDescriptions()
 	{
-		std::array<VkVertexInputAttributeDescription, 4> attributeDescriptions = {};
+		std::array<VkVertexInputAttributeDescription, 3> attributeDescriptions = {};
 
 		attributeDescriptions[0].binding = 0;
 		attributeDescriptions[0].location = 0;
@@ -55,13 +53,8 @@ struct Vertex
 
 		attributeDescriptions[2].binding = 0;
 		attributeDescriptions[2].location = 2;
-		attributeDescriptions[2].format = VK_FORMAT_R32G32B32_SFLOAT;
-		attributeDescriptions[2].offset = offsetof(Vertex, tangent);
-
-		attributeDescriptions[3].binding = 0;
-		attributeDescriptions[3].location = 3;
-		attributeDescriptions[3].format = VK_FORMAT_R32G32_SFLOAT;
-		attributeDescriptions[3].offset = offsetof(Vertex, texCoord);
+		attributeDescriptions[2].format = VK_FORMAT_R32G32_SFLOAT;
+		attributeDescriptions[2].offset = offsetof(Vertex, texCoord);
 
 		return attributeDescriptions;
 	}
@@ -76,22 +69,35 @@ namespace std
 			size_t seed = 0;
 			hash_combine(seed, vertex.pos);
 			hash_combine(seed, vertex.normal);
-			hash_combine(seed, vertex.tangent);
 			hash_combine(seed, vertex.texCoord);
 			return seed;
 		}
 	};
 }
 
+enum MaterialType
+{
+	MATERIAL_TYPE_HDR_PROBE = 0,
+	MATERIAL_TYPE_FSCHLICK_DGGX_GSMITH,
+	MATERIAL_TYPE_COUNT
+};
+
+typedef uint32_t MaterialType_t;
 
 class VMesh
 {
 public:
+	const static uint32_t numMapsPerMesh = 4;
+
 	BufferWrapper vertexBuffer;
 	BufferWrapper indexBuffer;
 
 	ImageWrapper albedoMap;
 	ImageWrapper normalMap;
+	ImageWrapper roughnessMap;
+	ImageWrapper metalnessMap;
+
+	MaterialType_t materialType = MATERIAL_TYPE_FSCHLICK_DGGX_GSMITH;
 
 	static void loadMeshIntoHostBuffers(
 		const std::string &modelFileName,
@@ -104,7 +110,7 @@ public:
 			aiProcess_FlipWindingOrder |
 			aiProcess_Triangulate |
 			aiProcess_PreTransformVertices |
-			aiProcess_CalcTangentSpace |
+			//aiProcess_CalcTangentSpace |
 			aiProcess_GenSmoothNormals;
 
 		scene = meshImporter.ReadFile(modelFileName, defaultFlags);
@@ -116,11 +122,10 @@ public:
 			const aiMesh *mesh = scene->mMeshes[i];
 			const aiVector3D *vertices = mesh->mVertices;
 			const aiVector3D *normals = mesh->mNormals;
-			const aiVector3D *tangents = mesh->mTangents;
 			const aiVector3D *texCoords = mesh->mTextureCoords[0];
 			const auto *faces = mesh->mFaces;
 
-			if (!normals || !tangents || !texCoords)
+			if (!normals || !texCoords)
 			{
 				throw std::runtime_error("model must have normals, tangents, and uvs.");
 			}
@@ -136,14 +141,12 @@ public:
 					uint32_t idx = face.mIndices[k];
 					const aiVector3D &pos = vertices[idx];
 					const aiVector3D &nrm = normals[idx];
-					const aiVector3D &tangent = tangents[idx];
 					const aiVector3D &texCoord = texCoords[idx];
 
 					Vertex vert =
 					{
 						glm::vec3(pos.x, pos.y, pos.z),
 						glm::vec3(nrm.x, nrm.y, nrm.z),
-						glm::vec3(tangent.x, tangent.y, tangent.z),
 						glm::vec2(texCoord.x, 1.f - texCoord.y)
 					};
 
@@ -168,7 +171,9 @@ public:
 		vertexBuffer{ device },
 		indexBuffer{ device },
 		albedoMap{ device },
-		normalMap{ device }
+		normalMap{ device },
+		roughnessMap{ device },
+		metalnessMap{ device }
 	{}
 
 	void load(
@@ -178,11 +183,15 @@ public:
 		VkQueue submitQueue,
 		const std::string &modelFileName,
 		const std::string &albedoMapName,
-		const std::string &normalMapName)
+		const std::string &normalMapName,
+		const std::string &roughnessMapName,
+		const std::string &metalnessMapName)
 	{
 		// load textures
 		loadTexture(physicalDevice, device, commandPool, submitQueue, albedoMapName, albedoMap);
 		loadTexture(physicalDevice, device, commandPool, submitQueue, normalMapName, normalMap);
+		loadTexture(physicalDevice, device, commandPool, submitQueue, roughnessMapName, roughnessMap);
+		loadTexture(physicalDevice, device, commandPool, submitQueue, metalnessMapName, metalnessMap);
 
 		// load mesh
 		std::vector<Vertex> hostVerts;

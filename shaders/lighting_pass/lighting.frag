@@ -5,6 +5,8 @@
 layout (input_attachment_index = 0, set = 0, binding = 2) uniform subpassInput siGbuffer1;
 layout (input_attachment_index = 1, set = 0, binding = 3) uniform subpassInput siDepthImage;
 
+// layout (set = 0, binding = 4) uniform sampler2D brdfLut;
+
 layout (location = 0) in vec2 inUV;
 
 layout (location = 0) out vec4 outColor;
@@ -90,7 +92,7 @@ void main()
 			finalColor +=
 				(0.5 * albedo * clamp(dot(nrm, l), 0.0, 1.0) +
 				0.5 * pow(clamp(dot(nrm, h), 0.0, 1.0), 20.0)) *
-				pointLights[i].color;
+				pointLights[i].color * scale;
 		}
 	}
 	

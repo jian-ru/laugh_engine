@@ -77,3 +77,9 @@ inline void hash_combine(std::size_t& seed, const T& v)
 	std::hash<T> hasher;
 	seed ^= hasher(v) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
 }
+
+inline std::string getFileExtension(const std::string &fn)
+{
+	size_t pos = fn.find_last_of('.');
+	if (pos == std::string::npos) return ""; else return fn.substr(pos + 1);
+}

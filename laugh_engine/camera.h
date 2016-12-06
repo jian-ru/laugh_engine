@@ -12,6 +12,7 @@ class Camera
 {
 public:
 	const float thetaLimit = .1f * PI;
+	const float minDistance = .1f;
 
 	float fovy;
 	float aspectRatio;
@@ -63,6 +64,25 @@ public:
 		glm::vec3 newDir = glm::vec3(sinf(newPhi) * sinf(newTheta), cosf(newTheta), cosf(newPhi) * sinf(newTheta));
 		float dist = glm::distance(position, lookAtPos);
 		position = lookAtPos + newDir * dist;
+	}
+
+	void addPan(float x, float y)
+	{
+		glm::vec3 view = glm::normalize(glm::vec3(lookAtPos - position));
+		glm::vec3 up(0.f, 1.f, 0.f);
+		up = glm::normalize(up - view * glm::dot(view, up));
+		glm::vec3 right = glm::normalize(glm::cross(view, up));
+
+		position += x * right + y * up;
+		lookAtPos += x * right + y * up;
+	}
+
+	void addZoom(float d)
+	{
+		glm::vec3 view = glm::normalize(glm::vec3(lookAtPos - position));
+		float dist = glm::distance(lookAtPos, position);
+		d = fmin(d, dist - minDistance);
+		position += d * view;
 	}
 };
 

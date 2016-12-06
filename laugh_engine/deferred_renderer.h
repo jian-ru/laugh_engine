@@ -49,7 +49,6 @@
 #include <array>
 
 #include "vbase.h"
-#include "vmesh.h"
 
 #define ALL_UNIFORM_BLOB_SIZE (64 * 1024)
 #define NUM_LIGHTS 2
@@ -118,8 +117,6 @@ protected:
 	ImageWrapper m_depthImage{ m_device };
 	ImageWrapper m_lightingResultImage{ m_device, VK_FORMAT_R16G16B16A16_SFLOAT };
 	std::vector<ImageWrapper> m_gbufferImages{ { { m_device, VK_FORMAT_R32G32B32A32_SFLOAT } } };
-
-	std::vector<VMesh> m_models;
 
 	AllUniformBlob<ALL_UNIFORM_BLOB_SIZE> m_allUniformHostData{ m_physicalDevice };
 	GeomPassUniformBuffer *m_uTransMats = nullptr;
@@ -199,14 +196,14 @@ void DeferredRenderer::updateUniformBuffers()
 	// update lighting info
 	m_uLightInfo->pointLights[0] =
 	{
-		V * glm::vec4(2.f, 2.f, 2.f, 1.f),
-		glm::vec3(1.f, 1.f, 1.f),
+		V * glm::vec4(2.f, 2.f, 1.f, 1.f),
+		glm::vec3(2.f, 2.f, 2.f),
 		5.f
 	};
 	m_uLightInfo->pointLights[1] =
 	{
-		V * glm::vec4(0.f, 1.f, -2.f, 1.f),
-		glm::vec3(0.1f, 0.1f, 0.1f),
+		V * glm::vec4(-2.f, -1.f, -.5f, 1.f),
+		glm::vec3(.2f, .2f, .2f),
 		5.f
 	};
 
@@ -405,15 +402,22 @@ void DeferredRenderer::createColorAttachmentResources()
 void DeferredRenderer::loadAndPrepareAssets()
 {
 	// TODO: implement scene file to allow flexible model loading
-	std::string modelFileName = "../models/armor.obj";
-	std::string albedoMapName = "../textures/armor_a.ktx";
-	std::string normalMapName = "../textures/armor_n.ktx";
+	std::string brdfFileName = "../textures/BRDF_LUTs/FSchlick_DGGX_GSmith.dds";
+
+	m_bakedBRDFs.resize(1, { m_device });
+	loadTexture(m_physicalDevice, m_device, m_graphicsCommandPool, m_graphicsQueue, brdfFileName, m_bakedBRDFs[0]);
+
+	std::string modelFileName = "../models/cerberus.obj";
+	std::string albedoMapName = "../textures/Cerberus/A.dds";
+	std::string normalMapName = "../textures/Cerberus/N.dds";
+	std::string roughnessMapName = "../textures/Cerberus/R.dds";
+	std::string metalnessMapName = "../textures/Cerberus/M.dds";
 
 	m_models.resize(1, { m_device });
 	m_models[0].load(
 		m_physicalDevice, m_device,
 		m_graphicsCommandPool, m_graphicsQueue,
-		modelFileName, albedoMapName, normalMapName);
+		modelFileName, albedoMapName, normalMapName, roughnessMapName, metalnessMapName);
 }
 
 void DeferredRenderer::createUniformBuffers()
@@ -441,7 +445,7 @@ void DeferredRenderer::createDescriptorPools()
 	poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	poolSizes[0].descriptorCount = 4;
 	poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	poolSizes[1].descriptorCount = 3 + m_models.size() * 2; // lighting result + g-buffer + depth image + model textures
+	poolSizes[1].descriptorCount = 3 + m_models.size() * VMesh::numMapsPerMesh; // lighting result + g-buffer + depth image + model textures
 	poolSizes[2].type = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
 	poolSizes[2].descriptorCount = 2;
 
@@ -792,7 +796,7 @@ void DeferredRenderer::createFinalOutputRenderPass()
 
 void DeferredRenderer::createGeomPassDescriptorSetLayout()
 {
-	std::array<VkDescriptorSetLayoutBinding, 3> bindings = {};
+	std::array<VkDescriptorSetLayoutBinding, 5> bindings = {};
 
 	// Transformation matrices
 	bindings[0].binding = 0;
@@ -814,6 +818,20 @@ void DeferredRenderer::createGeomPassDescriptorSetLayout()
 	bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	bindings[2].pImmutableSamplers = nullptr;
 	bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+	// Roughness map
+	bindings[3].binding = 3;
+	bindings[3].descriptorCount = 1;
+	bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	bindings[3].pImmutableSamplers = nullptr;
+	bindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+	// Metalness map
+	bindings[4].binding = 4;
+	bindings[4].descriptorCount = 1;
+	bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	bindings[4].pImmutableSamplers = nullptr;
+	bindings[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -939,6 +957,14 @@ void DeferredRenderer::createGeomPassPipeline()
 	infos.pipelineLayoutInfo.setLayoutCount = 1;
 	infos.pipelineLayoutInfo.pSetLayouts = setLayouts;
 
+	infos.pushConstantRanges.resize(1);
+	infos.pushConstantRanges[0].offset = 0;
+	infos.pushConstantRanges[0].size = sizeof(uint32_t);
+	infos.pushConstantRanges[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+	infos.pipelineLayoutInfo.pushConstantRangeCount = static_cast<uint32_t>(infos.pushConstantRanges.size());
+	infos.pipelineLayoutInfo.pPushConstantRanges = infos.pushConstantRanges.data();
+
 	if (vkCreatePipelineLayout(m_device, &infos.pipelineLayoutInfo, nullptr, m_geomPipelineLayout.replace()) != VK_SUCCESS)
 	{
 		throw std::runtime_error("failed to create geom pipeline layout!");
@@ -1058,9 +1084,11 @@ void DeferredRenderer::createGeomPassDescriptorSets()
 
 	for (uint32_t i = 0; i < m_models.size(); ++i)
 	{
-		std::array<VkDescriptorImageInfo, 2> imageInfos;
+		std::array<VkDescriptorImageInfo, 4> imageInfos;
 		imageInfos[0] = m_models[i].albedoMap.getDescriptorInfo();
 		imageInfos[1] = m_models[i].normalMap.getDescriptorInfo();
+		imageInfos[2] = m_models[i].roughnessMap.getDescriptorInfo();
+		imageInfos[3] = m_models[i].metalnessMap.getDescriptorInfo();
 
 		std::array<VkWriteDescriptorSet, 2> descriptorWrites = {};
 
@@ -1189,6 +1217,7 @@ void DeferredRenderer::createGeomAndLightingCommandBuffer()
 		vkCmdBindIndexBuffer(m_geomAndLightingCommandBuffer, m_models[j].indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
 
 		vkCmdBindDescriptorSets(m_geomAndLightingCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_geomPipelineLayout, 0, 1, &m_geomDescriptorSets[j], 0, nullptr);
+		vkCmdPushConstants(m_geomAndLightingCommandBuffer, m_geomPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(uint32_t), &m_models[j].materialType);
 
 		vkCmdDrawIndexed(m_geomAndLightingCommandBuffer, static_cast<uint32_t>(m_models[j].indexBuffer.numElements), 1, 0, 0, 0);
 	}

@@ -56,6 +56,7 @@ void main()
 	vec3 albedo = unpackRGBA(gb1.z).rgb;
 	vec3 pos = recoverEyePos(depth);
 	vec3 nrm = recoverEyeNrm(gb1.xy);
+	vec4 RMI = unpackRGBA(gb1.w);
 	
 	if (displayMode == 4)
 	{
@@ -69,17 +70,25 @@ void main()
 	{
 		outColor = finalColor;
 	}
-	else if (displayMode == 1)
+	else if (displayMode == 1) // albedo
 	{
 		outColor = vec4(albedo, 1.0);
 	}
-	else if (displayMode == 2)
+	else if (displayMode == 2) // eye normal
 	{
 		outColor = vec4(nrm, 1.0);
 	}
-	else if (displayMode == 3)
+	else if (displayMode == 3) // eye position
 	{
 		outColor = vec4(abs(pos), 1.0);
+	}
+	else if (displayMode == 5) // roughness
+	{
+		outColor = vec4(RMI.xxx, 1.0);
+	}
+	else if (displayMode == 6) // metalness
+	{
+		outColor = vec4(RMI.yyy, 1.0);
 	}
 }
 

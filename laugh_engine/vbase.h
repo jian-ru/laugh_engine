@@ -18,6 +18,7 @@
 #include "vutils.h"
 #include "camera.h"
 #include "vtextoverlay.h"
+#include "vmesh.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
@@ -32,6 +33,8 @@ enum DisplayMode
 	DISPLAY_MODE_EYE_NORMAL,
 	DISPLAY_MODE_EYE_POSITION,
 	DISPLAY_MODE_DEPTH,
+	DISPLAY_MODE_ROUGHNESS,
+	DISPLAY_MODE_METALNESS,
 	DISPLAY_MODE_COUNT
 };
 
@@ -47,10 +50,10 @@ public:
 
 	DisplayMode m_displayMode = DISPLAY_MODE_FULL;
 
-	static bool leftMBDown;
+	static bool leftMBDown, middleMBDown;
 	static float lastX, lastY;
 
-	Camera m_camera{ glm::vec3(0.f, 2.f, 3.f), glm::vec3(0.f, 1.f, 0.f), glm::radians(45.f), float(m_width) / m_height, .1f, 100.f };
+	Camera m_camera{ glm::vec3(0.f, 1.f, 3.f), glm::vec3(0.f, 0.f, 0.f), glm::radians(45.f), float(m_width) / m_height, .1f, 100.f };
 
 #ifdef NDEBUG
 	bool enableValidationLayers = false;
@@ -87,34 +90,64 @@ public:
 
 	static void mouseButtonCB(GLFWwindow* window, int button, int action, int mods)
 	{
-		if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS)
+		auto recordCurrentCursorPos = [window]()
 		{
-			leftMBDown = true;
-
 			double xpos, ypos;
 			glfwGetCursorPos(window, &xpos, &ypos);
 			lastX = static_cast<float>(xpos);
 			lastY = static_cast<float>(ypos);
+		};
+
+		if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS && !middleMBDown)
+		{
+			leftMBDown = true;
+			recordCurrentCursorPos();
 		}
 		else if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_RELEASE)
 		{
 			leftMBDown = false;
 		}
+		else if (button == GLFW_MOUSE_BUTTON_MIDDLE && action == GLFW_PRESS && !leftMBDown)
+		{
+			middleMBDown = true;
+			recordCurrentCursorPos();
+		}
+		else if (button == GLFW_MOUSE_BUTTON_MIDDLE && action == GLFW_RELEASE)
+		{
+			middleMBDown = false;
+		}
 	}
 
 	static void cursorPositionCB(GLFWwindow* window, double xpos, double ypos)
 	{
-		if (leftMBDown)
+		if (leftMBDown || middleMBDown)
 		{
 			VBaseGraphics *app = reinterpret_cast<VBaseGraphics *>(glfwGetWindowUserPointer(window));
 
-			const float scale = .01f;
+			const float rotScale = .01f;
+			const float panScale = .002f;
+
 			float dx = xpos - lastX;
 			float dy = ypos - lastY;
 			lastX = xpos;
 			lastY = ypos;
-			app->m_camera.addRotation(-dx * scale, -dy * scale);
+			
+			if (leftMBDown)
+			{
+				app->m_camera.addRotation(-dx * rotScale, -dy * rotScale);
+			}
+			else
+			{
+				app->m_camera.addPan(-dx * panScale, dy * panScale);
+			}
 		}
+	}
+
+	static void scrollCB(GLFWwindow *window, double xoffset, double yoffset)
+	{
+		VBaseGraphics *app = reinterpret_cast<VBaseGraphics *>(glfwGetWindowUserPointer(window));
+		const float scale = .2f;
+		app->m_camera.addZoom(scale * yoffset);
 	}
 
 	static void keyCB(GLFWwindow* window, int key, int scancode, int action, int mods)
@@ -153,8 +186,10 @@ protected:
 
 	VDeleter<VkPipelineCache> m_pipelineCache{ m_device, vkDestroyPipelineCache };
 
-	VTextOverlay m_textOverlay{ m_physicalDevice, m_device, m_queueFamilyIndices, m_graphicsQueue, m_swapChain, m_finalOutputFramebuffers };
+	std::vector<VMesh> m_models;
+	std::vector<BakedBRDF> m_bakedBRDFs;
 
+	VTextOverlay m_textOverlay{ m_physicalDevice, m_device, m_queueFamilyIndices, m_graphicsQueue, m_swapChain, m_finalOutputFramebuffers };
 	Timer m_perfTimer;
 
 
@@ -218,6 +253,7 @@ protected:
 #ifdef VBASE_IMPLEMENTATION
 
 bool VBaseGraphics::leftMBDown = false;
+bool VBaseGraphics::middleMBDown = false;
 float VBaseGraphics::lastX;
 float VBaseGraphics::lastY;
 
@@ -231,6 +267,7 @@ void VBaseGraphics::initWindow()
 	glfwSetMouseButtonCallback(m_window, VBaseGraphics::mouseButtonCB);
 	glfwSetCursorPosCallback(m_window, VBaseGraphics::cursorPositionCB);
 	glfwSetKeyCallback(m_window, VBaseGraphics::keyCB);
+	glfwSetScrollCallback(m_window, VBaseGraphics::scrollCB);
 }
 
 std::vector<const char*> VBaseGraphics::getRequiredExtensions()
