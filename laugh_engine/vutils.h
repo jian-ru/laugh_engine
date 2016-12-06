@@ -117,6 +117,7 @@ struct ImageWrapper
 	VDeleter<VkImageView> imageView;
 	VDeleter<VkSampler> sampler;
 	VkFormat format;
+	uint32_t mipLevels = 0;
 
 	ImageWrapper(const VDeleter<VkDevice> &device) :
 		ImageWrapper(device, VK_FORMAT_UNDEFINED)
@@ -686,6 +687,49 @@ static void createImage(
 	createImage(physicalDevice, device, width, height, 1, format, tiling, usage, properties, image, imageMemory);
 }
 
+static void createCubemapImage(
+	VkPhysicalDevice physicalDevice, VkDevice device,
+	uint32_t width, uint32_t height, uint32_t mipLevels, VkFormat format,
+	VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties,
+	VDeleter<VkImage>& image, VDeleter<VkDeviceMemory>& imageMemory)
+{
+	VkImageCreateInfo imageInfo = {};
+	imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+	imageInfo.imageType = VK_IMAGE_TYPE_2D;
+	imageInfo.extent.width = width;
+	imageInfo.extent.height = height;
+	imageInfo.extent.depth = 1;
+	imageInfo.mipLevels = mipLevels;
+	imageInfo.arrayLayers = 6; // 6 faces
+	imageInfo.format = format;
+	imageInfo.tiling = tiling;
+	imageInfo.initialLayout = VK_IMAGE_LAYOUT_PREINITIALIZED;
+	imageInfo.usage = usage;
+	imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+	imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	imageInfo.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT; // This flag is required for cube map images
+
+	if (vkCreateImage(device, &imageInfo, nullptr, image.replace()) != VK_SUCCESS)
+	{
+		throw std::runtime_error("failed to create image!");
+	}
+
+	VkMemoryRequirements memRequirements;
+	vkGetImageMemoryRequirements(device, image, &memRequirements);
+
+	VkMemoryAllocateInfo allocInfo = {};
+	allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+	allocInfo.allocationSize = memRequirements.size;
+	allocInfo.memoryTypeIndex = findMemoryType(physicalDevice, memRequirements.memoryTypeBits, properties);
+
+	if (vkAllocateMemory(device, &allocInfo, nullptr, imageMemory.replace()) != VK_SUCCESS)
+	{
+		throw std::runtime_error("failed to allocate image memory!");
+	}
+
+	vkBindImageMemory(device, image, imageMemory, 0);
+}
+
 static void createImageView2D(VkDevice device, 
 	VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, uint32_t mipLevelCount,
 	VDeleter<VkImageView>& imageView)
@@ -700,6 +744,27 @@ static void createImageView2D(VkDevice device,
 	viewInfo.subresourceRange.levelCount = mipLevelCount;
 	viewInfo.subresourceRange.baseArrayLayer = 0;
 	viewInfo.subresourceRange.layerCount = 1;
+
+	if (vkCreateImageView(device, &viewInfo, nullptr, imageView.replace()) != VK_SUCCESS)
+	{
+		throw std::runtime_error("failed to create texture image view!");
+	}
+}
+
+static void createImageViewCube(VkDevice device,
+	VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, uint32_t mipLevelCount,
+	VDeleter<VkImageView>& imageView)
+{
+	VkImageViewCreateInfo viewInfo = {};
+	viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+	viewInfo.image = image;
+	viewInfo.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
+	viewInfo.format = format;
+	viewInfo.subresourceRange.aspectMask = aspectFlags;
+	viewInfo.subresourceRange.baseMipLevel = 0;
+	viewInfo.subresourceRange.levelCount = mipLevelCount;
+	viewInfo.subresourceRange.baseArrayLayer = 0;
+	viewInfo.subresourceRange.layerCount = 6;
 
 	if (vkCreateImageView(device, &viewInfo, nullptr, imageView.replace()) != VK_SUCCESS)
 	{
@@ -748,7 +813,7 @@ static bool hasStencilComponent(VkFormat format)
 }
 
 static void transitionImageLayout(VkDevice device, VkCommandPool commandPool, VkQueue submitQueue,
-	VkImage image, VkFormat format, uint32_t mipLevelCount, VkImageLayout oldLayout, VkImageLayout newLayout)
+	VkImage image, VkFormat format, uint32_t layerCount, uint32_t mipLevelCount, VkImageLayout oldLayout, VkImageLayout newLayout)
 {
 	VkCommandBuffer commandBuffer = beginSingleTimeCommands(device, commandPool);
 
@@ -775,7 +840,7 @@ static void transitionImageLayout(VkDevice device, VkCommandPool commandPool, Vk
 	barrier.subresourceRange.baseMipLevel = 0;
 	barrier.subresourceRange.levelCount = mipLevelCount;
 	barrier.subresourceRange.baseArrayLayer = 0;
-	barrier.subresourceRange.layerCount = 1;
+	barrier.subresourceRange.layerCount = layerCount;
 
 	// barrier.srcAccessMask - operations involving the resource that must happen before the barrier
 	// barrier.dstAccessMask - operations involving the resource that must wait on the barrier
@@ -814,6 +879,12 @@ static void transitionImageLayout(VkDevice device, VkCommandPool commandPool, Vk
 		);
 
 	endSingleTimeCommands(device, commandBuffer, submitQueue, commandPool);
+}
+
+static void transitionImageLayout(VkDevice device, VkCommandPool commandPool, VkQueue submitQueue,
+	VkImage image, VkFormat format, uint32_t mipLevelCount, VkImageLayout oldLayout, VkImageLayout newLayout)
+{
+	transitionImageLayout(device, commandPool, submitQueue, image, format, 1, mipLevelCount, oldLayout, newLayout);
 }
 
 static void createBuffer(
@@ -892,6 +963,47 @@ static void copyBufferToImage(
 
 static void copyBufferToImage(
 	VkDevice device, VkCommandPool commandPool, VkQueue submitQueue,
+	const gli::texture_cube &srcCubemap, VkBuffer srcBuffer, VkImage dstImage)
+{
+	VkCommandBuffer commandBuffer = beginSingleTimeCommands(device, commandPool);
+
+	// Copy mip levels from staging buffer
+	std::vector<VkBufferImageCopy> bufferCopyRegions;
+	uint32_t offset = 0;
+
+	for (uint32_t face = 0; face < 6; face++)
+	{
+		for (uint32_t level = 0; level < srcCubemap.levels(); level++)
+		{
+			VkBufferImageCopy bufferCopyRegion = {};
+			bufferCopyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			bufferCopyRegion.imageSubresource.mipLevel = level;
+			bufferCopyRegion.imageSubresource.baseArrayLayer = face;
+			bufferCopyRegion.imageSubresource.layerCount = 1;
+			bufferCopyRegion.imageExtent.width = static_cast<uint32_t>(srcCubemap[face][level].extent().x);
+			bufferCopyRegion.imageExtent.height = static_cast<uint32_t>(srcCubemap[face][level].extent().y);
+			bufferCopyRegion.imageExtent.depth = 1;
+			bufferCopyRegion.bufferOffset = offset;
+
+			bufferCopyRegions.push_back(bufferCopyRegion);
+
+			offset += static_cast<uint32_t>(srcCubemap[face][level].size());
+		}
+	}
+
+	vkCmdCopyBufferToImage(
+		commandBuffer,
+		srcBuffer,
+		dstImage,
+		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		static_cast<uint32_t>(bufferCopyRegions.size()),
+		bufferCopyRegions.data());
+
+	endSingleTimeCommands(device, commandBuffer, submitQueue, commandPool);
+}
+
+static void copyBufferToImage(
+	VkDevice device, VkCommandPool commandPool, VkQueue submitQueue,
 	const std::vector<VkBufferImageCopy> &bufferCopyRegions, VkBuffer srcBuffer, VkImage dstImage)
 {
 	VkCommandBuffer commandBuffer = beginSingleTimeCommands(device, commandPool);
@@ -930,7 +1042,7 @@ static void getDefaultSamplerCreateInfo(VkSamplerCreateInfo &samplerInfo)
 	samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
 	samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
 	samplerInfo.anisotropyEnable = VK_TRUE;
-	samplerInfo.maxAnisotropy = 8;
+	samplerInfo.maxAnisotropy = 16.f;
 	samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
 	samplerInfo.unnormalizedCoordinates = VK_FALSE;
 	samplerInfo.compareEnable = VK_FALSE;
@@ -941,9 +1053,10 @@ static void getDefaultSamplerCreateInfo(VkSamplerCreateInfo &samplerInfo)
 	samplerInfo.maxLod = 0.0f;
 }
 
-static void loadTexture(
+static void loadTextureNoSampler(
 	VkPhysicalDevice physicalDevice, const VDeleter<VkDevice> &device,
 	VkCommandPool commandPool, VkQueue submitQueue,
+	bool generateMipLevels,
 	const std::string &fn, ImageWrapper &texture)
 {
 	std::string ext = getFileExtension(fn);
@@ -951,7 +1064,6 @@ static void loadTexture(
 	{
 		throw std::runtime_error("texture type ." + ext + " is not supported.");
 	}
-
 
 	gli::texture2d textureSrc(gli::load(fn.c_str()));
 
@@ -961,7 +1073,7 @@ static void loadTexture(
 	}
 
 	gli::texture2d textureMipmapped;
-	if (textureSrc.levels() == 1)
+	if (textureSrc.levels() == 1 && generateMipLevels)
 	{
 		textureMipmapped = gli::generate_mipmaps(textureSrc, gli::FILTER_LINEAR);
 	}
@@ -1003,6 +1115,7 @@ static void loadTexture(
 	vkUnmapMemory(device, stagingBuffer.bufferMemory);
 
 	texture.format = format;
+	texture.mipLevels = mipLevels;
 
 	createImage(
 		physicalDevice, device,
@@ -1020,21 +1133,55 @@ static void loadTexture(
 		VK_IMAGE_LAYOUT_PREINITIALIZED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
 	copyBufferToImage(device, commandPool, submitQueue, textureMipmapped, stagingBuffer.buffer, texture.image);
-	
+
 	transitionImageLayout(
 		device, commandPool, submitQueue,
 		texture.image, format, mipLevels,
 		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
 	createImageView2D(device, texture.image, format, VK_IMAGE_ASPECT_COLOR_BIT, mipLevels, texture.imageView);
+}
 
-	VkSamplerCreateInfo samplerInfo = {};
-	getDefaultSamplerCreateInfo(samplerInfo);
+static void loadTextureWithSampler(
+	VkPhysicalDevice physicalDevice, const VDeleter<VkDevice> &device,
+	VkCommandPool commandPool, VkQueue submitQueue,
+	bool generateMipLevels, VkSamplerCreateInfo &samplerInfo,
+	const std::string &fn, ImageWrapper &texture)
+{
+	loadTextureNoSampler(physicalDevice, device, commandPool, submitQueue, generateMipLevels, fn, texture);
+	samplerInfo.maxLod = static_cast<float>(texture.mipLevels - 1);
 
 	if (vkCreateSampler(device, &samplerInfo, nullptr, texture.sampler.replace()) != VK_SUCCESS)
 	{
 		throw std::runtime_error("failed to create texture sampler!");
 	}
+}
+
+static void loadTexture(
+	VkPhysicalDevice physicalDevice, const VDeleter<VkDevice> &device,
+	VkCommandPool commandPool, VkQueue submitQueue,
+	bool generateMipLevels,
+	const std::string &fn, ImageWrapper &texture)
+{
+	loadTextureNoSampler(physicalDevice, device, commandPool, submitQueue, generateMipLevels, fn, texture);
+
+	VkSamplerCreateInfo samplerInfo = {};
+	getDefaultSamplerCreateInfo(samplerInfo);
+	samplerInfo.maxLod = static_cast<float>(texture.mipLevels - 1);
+
+	if (vkCreateSampler(device, &samplerInfo, nullptr, texture.sampler.replace()) != VK_SUCCESS)
+	{
+		throw std::runtime_error("failed to create texture sampler!");
+	}
+}
+
+
+static void loadTexture(
+	VkPhysicalDevice physicalDevice, const VDeleter<VkDevice> &device,
+	VkCommandPool commandPool, VkQueue submitQueue,
+	const std::string &fn, ImageWrapper &texture)
+{
+	loadTexture(physicalDevice, device, commandPool, submitQueue, true, fn, texture);
 }
 
 static void createBufferFromHostData(
@@ -1094,5 +1241,95 @@ static void createStagingBuffer(
 		vkMapMemory(device, retBuffer.bufferMemory, 0, sizeInBytes, 0, &data);
 		memcpy(data, hostData, sizeInBytes);
 		vkUnmapMemory(device, retBuffer.bufferMemory);
+	}
+}
+
+static void loadCubemap(
+	VkPhysicalDevice physicalDevice, const VDeleter<VkDevice> &device,
+	VkCommandPool commandPool, VkQueue submitQueue,
+	const std::string &fn, ImageWrapper &texture)
+{
+	std::string ext = getFileExtension(fn);
+	if (ext != "ktx" && ext != "dds")
+	{
+		throw std::runtime_error("texture type ." + ext + " is not supported.");
+	}
+
+	gli::texture_cube texCube(gli::load(fn.c_str()));
+
+	if (texCube.empty())
+	{
+		throw std::runtime_error("cannot load texture.");
+	}
+
+	VkFormat format;
+	switch (texCube.format())
+	{
+	case gli::FORMAT_RGBA8_UNORM_PACK8:
+		format = VK_FORMAT_R8G8B8A8_UNORM;
+		break;
+	case gli::FORMAT_RGBA32_SFLOAT_PACK32:
+		format = VK_FORMAT_R32G32B32A32_SFLOAT;
+		break;
+	case gli::FORMAT_RGBA_DXT5_UNORM_BLOCK16:
+		format = VK_FORMAT_BC3_UNORM_BLOCK;
+		break;
+	default:
+		throw std::runtime_error("texture format is not supported.");
+	}
+
+	int width = texCube.extent().x;
+	int height = texCube.extent().y;
+	int mipLevels = texCube.levels();
+	int sizeInBytes = texCube.size();
+
+	BufferWrapper stagingBuffer{ device };
+
+	createBuffer(physicalDevice, device, sizeInBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+		stagingBuffer.buffer, stagingBuffer.bufferMemory);
+
+	void* data;
+	vkMapMemory(device, stagingBuffer.bufferMemory, 0, sizeInBytes, 0, &data);
+	memcpy(data, texCube.data(), (size_t)sizeInBytes);
+	vkUnmapMemory(device, stagingBuffer.bufferMemory);
+
+	texture.format = format;
+	texture.mipLevels = mipLevels;
+
+	createCubemapImage(
+		physicalDevice, device,
+		width, height, mipLevels,
+		format,
+		VK_IMAGE_TILING_OPTIMAL,
+		VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+		texture.image,
+		texture.imageMemory);
+
+	transitionImageLayout(
+		device, commandPool, submitQueue,
+		texture.image, format, 6, mipLevels,
+		VK_IMAGE_LAYOUT_PREINITIALIZED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+	copyBufferToImage(device, commandPool, submitQueue, texCube, stagingBuffer.buffer, texture.image);
+
+	transitionImageLayout(
+		device, commandPool, submitQueue,
+		texture.image, format, 6, mipLevels,
+		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+	createImageViewCube(device, texture.image, format, VK_IMAGE_ASPECT_COLOR_BIT, mipLevels, texture.imageView);
+
+	VkSamplerCreateInfo samplerInfo = {};
+	getDefaultSamplerCreateInfo(samplerInfo);
+	samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+	samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+	samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+	samplerInfo.maxLod = static_cast<float>(texture.mipLevels - 1);
+
+	if (vkCreateSampler(device, &samplerInfo, nullptr, texture.sampler.replace()) != VK_SUCCESS)
+	{
+		throw std::runtime_error("failed to create texture sampler!");
 	}
 }

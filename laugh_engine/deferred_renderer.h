@@ -56,8 +56,8 @@
 struct GeomPassUniformBuffer
 {
 	glm::mat4 MVP;
-	glm::mat4 MV;
-	glm::mat4 MV_invTrans;
+	glm::mat4 M;
+	glm::mat4 M_invTrans;
 };
 
 struct PointLight
@@ -71,6 +71,7 @@ struct PointLight
 // only use data types that are vec4 or multiple of vec4's
 struct LightingPassUniformBuffer
 {
+	glm::vec4 eyePos;
 	PointLight pointLights[NUM_LIGHTS];
 };
 
@@ -79,11 +80,6 @@ struct DisplayInfoUniformBuffer
 	typedef int DisplayMode_t;
 	
 	DisplayMode_t displayMode;
-	float imageWidth;
-	float imageHeight;
-	float twoTimesTanHalfFovy;
-	float zNear;
-	float zFar;
 };
 
 
@@ -101,10 +97,13 @@ protected:
 	VDeleter<VkRenderPass> m_geomAndLightRenderPass{ m_device, vkDestroyRenderPass };
 	VDeleter<VkRenderPass> m_finalOutputRenderPass{ m_device, vkDestroyRenderPass };
 
+	VDeleter<VkDescriptorSetLayout> m_skyboxDescriptorSetLayout{ m_device, vkDestroyDescriptorSetLayout };
 	VDeleter<VkDescriptorSetLayout> m_geomDescriptorSetLayout{ m_device, vkDestroyDescriptorSetLayout };
 	VDeleter<VkDescriptorSetLayout> m_lightingDescriptorSetLayout{ m_device, vkDestroyDescriptorSetLayout };
 	VDeleter<VkDescriptorSetLayout> m_finalOutputDescriptorSetLayout{ m_device, vkDestroyDescriptorSetLayout };
 
+	VDeleter<VkPipelineLayout> m_skyboxPipelineLayout{ m_device, vkDestroyPipelineLayout };
+	VDeleter<VkPipeline> m_skyboxPipeline{ m_device, vkDestroyPipeline };
 	VDeleter<VkPipelineLayout> m_geomPipelineLayout{ m_device, vkDestroyPipelineLayout };
 	VDeleter<VkPipeline> m_geomPipeline{ m_device, vkDestroyPipeline };
 
@@ -116,7 +115,7 @@ protected:
 
 	ImageWrapper m_depthImage{ m_device };
 	ImageWrapper m_lightingResultImage{ m_device, VK_FORMAT_R16G16B16A16_SFLOAT };
-	std::vector<ImageWrapper> m_gbufferImages{ { { m_device, VK_FORMAT_R32G32B32A32_SFLOAT } } };
+	std::vector<ImageWrapper> m_gbufferImages = { { m_device, VK_FORMAT_R32G32B32A32_SFLOAT }, { m_device, VK_FORMAT_R32G32B32A32_SFLOAT } };
 
 	AllUniformBlob<ALL_UNIFORM_BLOB_SIZE> m_allUniformHostData{ m_physicalDevice };
 	GeomPassUniformBuffer *m_uTransMats = nullptr;
@@ -124,6 +123,7 @@ protected:
 	DisplayInfoUniformBuffer *m_uDisplayInfo = nullptr;
 	BufferWrapper m_allUniformBuffer{ m_device };
 
+	VkDescriptorSet m_skyboxDescriptorSet;
 	std::vector<VkDescriptorSet> m_geomDescriptorSets; // one set per model
 	VkDescriptorSet m_lightingDescriptorSet;
 	VkDescriptorSet m_finalOutputDescriptorSet;
@@ -159,10 +159,14 @@ protected:
 	virtual void createGeometryAndLightingRenderPass();
 	virtual void createFinalOutputRenderPass();
 
+	virtual void createSkyboxDescriptorSetLayout();
+	virtual void createStaticMeshDescriptorSetLayout();
 	virtual void createGeomPassDescriptorSetLayout();
 	virtual void createLightingPassDescriptorSetLayout();
 	virtual void createFinalOutputDescriptorSetLayout();
 
+	virtual void createSkyboxPipeline();
+	virtual void createStaticMeshPipeline();
 	virtual void createGeomPassPipeline();
 	virtual void createLightingPassPipeline();
 	virtual void createFinalOutputPassPipeline();
@@ -170,6 +174,8 @@ protected:
 	// Descriptor sets cannot be altered once they are bound until execution of all related
 	// commands complete. So each model will need a different descriptor set because they use
 	// different textures
+	virtual void createSkyboxDescriptorSet();
+	virtual void createStaticMeshDescriptorSet();
 	virtual void createGeomPassDescriptorSets();
 	virtual void createLightingPassDescriptorSets();
 	virtual void createFinalOutputPassDescriptorSets();
@@ -189,9 +195,9 @@ void DeferredRenderer::updateUniformBuffers()
 	glm::mat4 V, P;
 	m_camera.getViewProjMatrix(V, P);
 
-	m_uTransMats->MV = V;
-	m_uTransMats->MVP = P * m_uTransMats->MV;
-	m_uTransMats->MV_invTrans = glm::transpose(glm::inverse(m_uTransMats->MV));
+	m_uTransMats->M = glm::mat4(1.f);
+	m_uTransMats->MVP = P * V;
+	m_uTransMats->M_invTrans = glm::mat4(1.f);
 
 	// update lighting info
 	m_uLightInfo->pointLights[0] =
@@ -206,16 +212,12 @@ void DeferredRenderer::updateUniformBuffers()
 		glm::vec3(.2f, .2f, .2f),
 		5.f
 	};
+	m_uLightInfo->eyePos = glm::vec4(m_camera.position, 1.0f);
 
 	// update final output pass info
 	*m_uDisplayInfo =
 	{
 		m_displayMode,
-		static_cast<float>(m_swapChain.swapChainExtent.width),
-		static_cast<float>(m_swapChain.swapChainExtent.height),
-		2.f * tanf(m_camera.fovy * .5f),
-		m_camera.zNear,
-		m_camera.zFar
 	};
 
 	void* data;
@@ -404,8 +406,24 @@ void DeferredRenderer::loadAndPrepareAssets()
 	// TODO: implement scene file to allow flexible model loading
 	std::string brdfFileName = "../textures/BRDF_LUTs/FSchlick_DGGX_GSmith.dds";
 
+	VkSamplerCreateInfo clampedSampler = {};
+	getDefaultSamplerCreateInfo(clampedSampler);
+	clampedSampler.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+	clampedSampler.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+	clampedSampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+	clampedSampler.anisotropyEnable = VK_FALSE;
+	clampedSampler.maxAnisotropy = 0.f;
+
 	m_bakedBRDFs.resize(1, { m_device });
-	loadTexture(m_physicalDevice, m_device, m_graphicsCommandPool, m_graphicsQueue, brdfFileName, m_bakedBRDFs[0]);
+	// Do not generate mip levels for BRDF LUTs
+	loadTextureWithSampler(m_physicalDevice, m_device, m_graphicsCommandPool, m_graphicsQueue, false, clampedSampler, brdfFileName, m_bakedBRDFs[0]);
+
+	std::string skyboxFileName = "../models/sky_sphere.obj";
+	std::string unfilteredProbeFileName = "../textures/Environment/PaperMill/Unfiltered_HDR.dds";
+	std::string specProbeFileName = "../textures/Environment/PaperMill/Specular_HDR.dds";
+	std::string diffuseProbeFileName = "../textures/Environment/PaperMill/Diffuse_HDR.dds";
+
+	m_skybox.load(m_physicalDevice, m_device, m_graphicsCommandPool, m_graphicsQueue, skyboxFileName, unfilteredProbeFileName, specProbeFileName, diffuseProbeFileName);
 
 	std::string modelFileName = "../models/cerberus.obj";
 	std::string albedoMapName = "../textures/Cerberus/A.dds";
@@ -443,17 +461,18 @@ void DeferredRenderer::createDescriptorPools()
 	// create descriptor pool
 	std::array<VkDescriptorPoolSize, 3> poolSizes = {};
 	poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	poolSizes[0].descriptorCount = 4;
+	poolSizes[0].descriptorCount = 6;
 	poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	poolSizes[1].descriptorCount = 3 + m_models.size() * VMesh::numMapsPerMesh; // lighting result + g-buffer + depth image + model textures
+	// BRDF LUTs + radiance map + diffuse irradiance map + specular irradiance map + lighting result + g-buffers + depth image + model textures
+	poolSizes[1].descriptorCount = 8 + m_models.size() * VMesh::numMapsPerMesh + m_bakedBRDFs.size();
 	poolSizes[2].type = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
-	poolSizes[2].descriptorCount = 2;
+	poolSizes[2].descriptorCount = 3;
 
 	VkDescriptorPoolCreateInfo poolInfo = {};
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 	poolInfo.poolSizeCount = poolSizes.size();
 	poolInfo.pPoolSizes = poolSizes.data();
-	poolInfo.maxSets = 2 + m_models.size();
+	poolInfo.maxSets = 3 + m_models.size();
 
 	if (vkCreateDescriptorPool(m_device, &poolInfo, nullptr, m_descriptorPool.replace()) != VK_SUCCESS)
 	{
@@ -470,6 +489,7 @@ void DeferredRenderer::createDescriptorSets()
 
 	// create descriptor sets
 	std::vector<VkDescriptorSetLayout> layouts;
+	layouts.push_back(m_skyboxDescriptorSetLayout);
 	layouts.push_back(m_lightingDescriptorSetLayout);
 	layouts.push_back(m_finalOutputDescriptorSetLayout);
 	for (uint32_t i = 0; i < m_models.size(); ++i)
@@ -477,7 +497,7 @@ void DeferredRenderer::createDescriptorSets()
 		layouts.push_back(m_geomDescriptorSetLayout);
 	}
 
-	std::vector<VkDescriptorSet> sets(2 + m_models.size());
+	std::vector<VkDescriptorSet> sets(3 + m_models.size());
 
 	VkDescriptorSetAllocateInfo allocInfo = {};
 	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -490,12 +510,13 @@ void DeferredRenderer::createDescriptorSets()
 		throw std::runtime_error("failed to allocate descriptor set!");
 	}
 
-	m_lightingDescriptorSet = sets[0];
-	m_finalOutputDescriptorSet = sets[1];
+	m_skyboxDescriptorSet = sets[0];
+	m_lightingDescriptorSet = sets[1];
+	m_finalOutputDescriptorSet = sets[2];
 	m_geomDescriptorSets.resize(m_models.size());
 	for (uint32_t i = 0; i < m_models.size(); ++i)
 	{
-		m_geomDescriptorSets[i] = sets[2 + i];
+		m_geomDescriptorSets[i] = sets[3 + i];
 	}
 
 	// geometry pass descriptor set will be updated for every model
@@ -507,13 +528,12 @@ void DeferredRenderer::createDescriptorSets()
 
 void DeferredRenderer::createFramebuffers()
 {
-	m_finalOutputFramebuffers.resize(m_swapChain.swapChainImages.size(), VDeleter<VkFramebuffer>{m_device, vkDestroyFramebuffer});
-
 	// Used in geometry and lighting pass
-	std::array<VkImageView, 3> attachments =
+	std::array<VkImageView, 4> attachments =
 	{
 		m_depthImage.imageView,
 		m_gbufferImages[0].imageView,
+		m_gbufferImages[1].imageView,
 		m_lightingResultImage.imageView
 	};
 
@@ -532,6 +552,8 @@ void DeferredRenderer::createFramebuffers()
 	}
 
 	// Used in final output pass
+	m_finalOutputFramebuffers.resize(m_swapChain.swapChainImages.size(), VDeleter<VkFramebuffer>{m_device, vkDestroyFramebuffer});
+
 	for (size_t i = 0; i < m_finalOutputFramebuffers.size(); ++i)
 	{
 		std::array<VkImageView, 1> attachments =
@@ -606,7 +628,7 @@ void DeferredRenderer::createSynchronizationObjects()
 void DeferredRenderer::createGeometryAndLightingRenderPass()
 {
 	// --- Attachments used in this render pass
-	std::array<VkAttachmentDescription, 3> attachments = {};
+	std::array<VkAttachmentDescription, 4> attachments = {};
 
 	// Depth
 	attachments[0].format = findDepthFormat();
@@ -618,7 +640,7 @@ void DeferredRenderer::createGeometryAndLightingRenderPass()
 	attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 	attachments[0].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-	// Eye space normal + albedo
+	// World space normal + albedo
 	// Normal has been perturbed by normal mapping
 	attachments[1].format = m_gbufferImages[0].format;
 	attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
@@ -629,30 +651,44 @@ void DeferredRenderer::createGeometryAndLightingRenderPass()
 	attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED; // we don't care about the initial layout of this attachment image (content may not be preserved)
 	attachments[1].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-	// Lighting result
-	attachments[2].format = m_lightingResultImage.format;
+	// World postion
+	attachments[2].format = m_gbufferImages[1].format;
 	attachments[2].samples = VK_SAMPLE_COUNT_1_BIT;
-	attachments[2].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+	attachments[2].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; // only happen in the FIRST subpass that uses this attachment
 	attachments[2].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 	attachments[2].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 	attachments[2].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-	attachments[2].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	attachments[2].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED; // we don't care about the initial layout of this attachment image (content may not be preserved)
 	attachments[2].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
+	// Lighting result
+	attachments[3].format = m_lightingResultImage.format;
+	attachments[3].samples = VK_SAMPLE_COUNT_1_BIT;
+	attachments[3].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+	attachments[3].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+	attachments[3].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+	attachments[3].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	attachments[3].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	attachments[3].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
 	// --- Reference to render pass attachments used in each subpass
-	std::array<VkAttachmentReference, 1> geomColorAttachmentRefs = {};
+	std::array<VkAttachmentReference, 2> geomColorAttachmentRefs = {};
 	geomColorAttachmentRefs[0].attachment = 1; // corresponds to the index of the corresponding element in the pAttachments array of the VkRenderPassCreateInfo structure
 	geomColorAttachmentRefs[0].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+	geomColorAttachmentRefs[1].attachment = 2;
+	geomColorAttachmentRefs[1].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
 	std::array<VkAttachmentReference, 1> lightingColorAttachmentRefs = {};
-	lightingColorAttachmentRefs[0].attachment = 2;
+	lightingColorAttachmentRefs[0].attachment = 3;
 	lightingColorAttachmentRefs[0].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
-	std::array<VkAttachmentReference, 2> lightingInputAttachmentRefs = {};
+	std::array<VkAttachmentReference, 3> lightingInputAttachmentRefs = {};
 	lightingInputAttachmentRefs[0].attachment = 1;
 	lightingInputAttachmentRefs[0].layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-	lightingInputAttachmentRefs[1].attachment = 0;
-	lightingInputAttachmentRefs[1].layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+	lightingInputAttachmentRefs[1].attachment = 2;
+	lightingInputAttachmentRefs[1].layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	lightingInputAttachmentRefs[2].attachment = 0;
+	lightingInputAttachmentRefs[2].layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 
 	VkAttachmentReference geomDepthAttachmentRef = {};
 	geomDepthAttachmentRef.attachment = 0;
@@ -796,6 +832,41 @@ void DeferredRenderer::createFinalOutputRenderPass()
 
 void DeferredRenderer::createGeomPassDescriptorSetLayout()
 {
+	createStaticMeshDescriptorSetLayout();
+	createSkyboxDescriptorSetLayout();
+}
+
+void DeferredRenderer::createSkyboxDescriptorSetLayout()
+{
+	std::array<VkDescriptorSetLayoutBinding, 2> bindings = {};
+
+	// Transformation matrices
+	bindings[0].binding = 0;
+	bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	bindings[0].descriptorCount = 1;
+	bindings[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+	bindings[0].pImmutableSamplers = nullptr; // Optional
+
+	// Albedo map
+	bindings[1].binding = 1;
+	bindings[1].descriptorCount = 1;
+	bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	bindings[1].pImmutableSamplers = nullptr;
+	bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
+	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	layoutInfo.bindingCount = bindings.size();
+	layoutInfo.pBindings = bindings.data();
+
+	if (vkCreateDescriptorSetLayout(m_device, &layoutInfo, nullptr, m_skyboxDescriptorSetLayout.replace()) != VK_SUCCESS)
+	{
+		throw std::runtime_error("failed to create descriptor set layout!");
+	}
+}
+
+void DeferredRenderer::createStaticMeshDescriptorSetLayout()
+{
 	std::array<VkDescriptorSetLayoutBinding, 5> bindings = {};
 
 	// Transformation matrices
@@ -846,7 +917,7 @@ void DeferredRenderer::createGeomPassDescriptorSetLayout()
 
 void DeferredRenderer::createLightingPassDescriptorSetLayout()
 {
-	std::array<VkDescriptorSetLayoutBinding, 4> bindings = {};
+	std::array<VkDescriptorSetLayoutBinding, 7> bindings = {};
 
 	// Light information
 	bindings[0].binding = 0;
@@ -855,14 +926,14 @@ void DeferredRenderer::createLightingPassDescriptorSetLayout()
 	bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 	bindings[0].pImmutableSamplers = nullptr; // Optional
 
-	// viewport info
+	// gbuffer 1
 	bindings[1].binding = 1;
-	bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	bindings[1].descriptorCount = 1;
+	bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
+	bindings[1].pImmutableSamplers = nullptr;
 	bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-	bindings[1].pImmutableSamplers = nullptr; // Optional
 
-	// gbuffer
+	// gbuffer 2
 	bindings[2].binding = 2;
 	bindings[2].descriptorCount = 1;
 	bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
@@ -875,6 +946,27 @@ void DeferredRenderer::createLightingPassDescriptorSetLayout()
 	bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
 	bindings[3].pImmutableSamplers = nullptr;
 	bindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+	// diffuse irradiance map
+	bindings[4].binding = 4;
+	bindings[4].descriptorCount = 1;
+	bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	bindings[4].pImmutableSamplers = nullptr;
+	bindings[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+	// specular irradiance map (prefiltered environment map)
+	bindings[5].binding = 5;
+	bindings[5].descriptorCount = 1;
+	bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	bindings[5].pImmutableSamplers = nullptr;
+	bindings[5].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+	// BRDF LUT
+	bindings[6].binding = 6;
+	bindings[6].descriptorCount = 1;
+	bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	bindings[6].pImmutableSamplers = nullptr;
+	bindings[6].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -889,7 +981,7 @@ void DeferredRenderer::createLightingPassDescriptorSetLayout()
 
 void DeferredRenderer::createFinalOutputDescriptorSetLayout()
 {
-	std::array<VkDescriptorSetLayoutBinding, 4> bindings = {};
+	std::array<VkDescriptorSetLayoutBinding, 5> bindings = {};
 
 	// Final image, gbuffer, depth image
 	bindings[0].binding = 0;
@@ -910,12 +1002,18 @@ void DeferredRenderer::createFinalOutputDescriptorSetLayout()
 	bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 	bindings[2].pImmutableSamplers = nullptr;
 
-	// Uniform buffer
 	bindings[3].binding = 3;
-	bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	bindings[3].descriptorCount = 1;
 	bindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 	bindings[3].pImmutableSamplers = nullptr;
+
+	// Uniform buffer
+	bindings[4].binding = 4;
+	bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	bindings[4].descriptorCount = 1;
+	bindings[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	bindings[4].pImmutableSamplers = nullptr;
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -929,6 +1027,73 @@ void DeferredRenderer::createFinalOutputDescriptorSetLayout()
 }
 
 void DeferredRenderer::createGeomPassPipeline()
+{
+	createSkyboxPipeline();
+	createStaticMeshPipeline();
+}
+
+void DeferredRenderer::createSkyboxPipeline()
+{
+	ShaderFileNames shaderFiles;
+	shaderFiles.vs = "../shaders/geom_pass/skybox.vert.spv";
+	shaderFiles.fs = "../shaders/geom_pass/skybox.frag.spv";
+
+	DefaultGraphicsPipelineCreateInfo infos{ m_device, shaderFiles };
+
+	auto bindingDescription = Vertex::getBindingDescription();
+	auto attributeDescriptions = Vertex::getAttributeDescriptions();
+
+	infos.vertexInputInfo.vertexBindingDescriptionCount = 1;
+	infos.vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
+	infos.vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+	infos.vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
+
+	VkViewport viewport;
+	VkRect2D scissor;
+	defaultViewportAndScissor(m_swapChain.swapChainExtent, viewport, scissor);
+
+	infos.viewportStateInfo.viewportCount = 1;
+	infos.viewportStateInfo.pViewports = &viewport;
+	infos.viewportStateInfo.scissorCount = 1;
+	infos.viewportStateInfo.pScissors = &scissor;
+
+	infos.rasterizerInfo.cullMode = VK_CULL_MODE_NONE;
+
+	infos.colorBlendAttachmentStates.resize(2);
+	infos.colorBlendAttachmentStates[1].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+	infos.colorBlendAttachmentStates[1].blendEnable = VK_FALSE;
+
+	infos.colorBlendInfo.attachmentCount = 2;
+	infos.colorBlendInfo.pAttachments = infos.colorBlendAttachmentStates.data();
+
+	VkDescriptorSetLayout setLayouts[] = { m_skyboxDescriptorSetLayout };
+	infos.pipelineLayoutInfo.setLayoutCount = 1;
+	infos.pipelineLayoutInfo.pSetLayouts = setLayouts;
+
+	infos.pushConstantRanges.resize(1);
+	infos.pushConstantRanges[0].offset = 0;
+	infos.pushConstantRanges[0].size = sizeof(uint32_t);
+	infos.pushConstantRanges[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+	infos.pipelineLayoutInfo.pushConstantRangeCount = static_cast<uint32_t>(infos.pushConstantRanges.size());
+	infos.pipelineLayoutInfo.pPushConstantRanges = infos.pushConstantRanges.data();
+
+	if (vkCreatePipelineLayout(m_device, &infos.pipelineLayoutInfo, nullptr, m_skyboxPipelineLayout.replace()) != VK_SUCCESS)
+	{
+		throw std::runtime_error("failed to create geom pipeline layout!");
+	}
+
+	infos.pipelineInfo.layout = m_skyboxPipelineLayout;
+	infos.pipelineInfo.renderPass = m_geomAndLightRenderPass;
+	infos.pipelineInfo.subpass = 0;
+
+	if (vkCreateGraphicsPipelines(m_device, m_pipelineCache, 1, &infos.pipelineInfo, nullptr, m_skyboxPipeline.replace()) != VK_SUCCESS)
+	{
+		throw std::runtime_error("failed to create geom pipeline!");
+	}
+}
+
+void DeferredRenderer::createStaticMeshPipeline()
 {
 	ShaderFileNames shaderFiles;
 	shaderFiles.vs = "../shaders/geom_pass/geom.vert.spv";
@@ -952,6 +1117,13 @@ void DeferredRenderer::createGeomPassPipeline()
 	infos.viewportStateInfo.pViewports = &viewport;
 	infos.viewportStateInfo.scissorCount = 1;
 	infos.viewportStateInfo.pScissors = &scissor;
+
+	infos.colorBlendAttachmentStates.resize(2);
+	infos.colorBlendAttachmentStates[1].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+	infos.colorBlendAttachmentStates[1].blendEnable = VK_FALSE;
+
+	infos.colorBlendInfo.attachmentCount = 2;
+	infos.colorBlendInfo.pAttachments = infos.colorBlendAttachmentStates.data();
 
 	VkDescriptorSetLayout setLayouts[] = { m_geomDescriptorSetLayout };
 	infos.pipelineLayoutInfo.setLayoutCount = 1;
@@ -1021,6 +1193,14 @@ void DeferredRenderer::createLightingPassPipeline()
 	infos.pipelineLayoutInfo.setLayoutCount = 1;
 	infos.pipelineLayoutInfo.pSetLayouts = setLayouts;
 
+	infos.pushConstantRanges.resize(1);
+	infos.pushConstantRanges[0].offset = 0;
+	infos.pushConstantRanges[0].size = sizeof(uint32_t);
+	infos.pushConstantRanges[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+	infos.pipelineLayoutInfo.pushConstantRangeCount = static_cast<uint32_t>(infos.pushConstantRanges.size());
+	infos.pipelineLayoutInfo.pPushConstantRanges = infos.pushConstantRanges.data();
+
 	if (vkCreatePipelineLayout(m_device, &infos.pipelineLayoutInfo, nullptr, m_lightingPipelineLayout.replace()) != VK_SUCCESS)
 	{
 		throw std::runtime_error("failed to create lighting pipeline layout!");
@@ -1078,6 +1258,42 @@ void DeferredRenderer::createFinalOutputPassPipeline()
 
 void DeferredRenderer::createGeomPassDescriptorSets()
 {
+	createSkyboxDescriptorSet();
+	createStaticMeshDescriptorSet();
+}
+
+void DeferredRenderer::createSkyboxDescriptorSet()
+{
+	VkDescriptorBufferInfo bufferInfo = m_allUniformBuffer.getDescriptorInfo(
+		m_allUniformHostData.offsetOf(reinterpret_cast<const char *>(m_uTransMats)),
+		sizeof(DisplayInfoUniformBuffer));
+
+	std::array<VkDescriptorImageInfo, 1> imageInfos;
+	imageInfos[0] = m_skybox.radianceMap.getDescriptorInfo();
+
+	std::array<VkWriteDescriptorSet, 2> descriptorWrites = {};
+
+	descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	descriptorWrites[0].dstSet = m_skyboxDescriptorSet;
+	descriptorWrites[0].dstBinding = 0;
+	descriptorWrites[0].dstArrayElement = 0;
+	descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	descriptorWrites[0].descriptorCount = 1;
+	descriptorWrites[0].pBufferInfo = &bufferInfo;
+
+	descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	descriptorWrites[1].dstSet = m_skyboxDescriptorSet;
+	descriptorWrites[1].dstBinding = 1;
+	descriptorWrites[1].dstArrayElement = 0;
+	descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	descriptorWrites[1].descriptorCount = static_cast<uint32_t>(imageInfos.size());
+	descriptorWrites[1].pImageInfo = imageInfos.data();
+
+	vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
+}
+
+void DeferredRenderer::createStaticMeshDescriptorSet()
+{
 	VkDescriptorBufferInfo bufferInfo = m_allUniformBuffer.getDescriptorInfo(
 		m_allUniformHostData.offsetOf(reinterpret_cast<const char *>(m_uTransMats)),
 		sizeof(GeomPassUniformBuffer));
@@ -1114,19 +1330,22 @@ void DeferredRenderer::createGeomPassDescriptorSets()
 
 void DeferredRenderer::createLightingPassDescriptorSets()
 {
-	std::array<VkDescriptorBufferInfo, 2> bufferInfos = {};
+	std::array<VkDescriptorBufferInfo, 1> bufferInfos = {};
 	bufferInfos[0] = m_allUniformBuffer.getDescriptorInfo(
 		m_allUniformHostData.offsetOf(reinterpret_cast<const char *>(m_uLightInfo)),
 		sizeof(LightingPassUniformBuffer));
-	bufferInfos[1] = m_allUniformBuffer.getDescriptorInfo(
-		m_allUniformHostData.offsetOf(reinterpret_cast<const char *>(m_uDisplayInfo)),
-		sizeof(DisplayInfoUniformBuffer));
 
-	std::array<VkDescriptorImageInfo, 2> imageInfos = {};
-	imageInfos[0] = m_gbufferImages[0].getDescriptorInfo();
-	imageInfos[1] = m_depthImage.getDescriptorInfo();
+	std::array<VkDescriptorImageInfo, 3> inputAttachmentImageInfos = {};
+	inputAttachmentImageInfos[0] = m_gbufferImages[0].getDescriptorInfo();
+	inputAttachmentImageInfos[1] = m_gbufferImages[1].getDescriptorInfo();
+	inputAttachmentImageInfos[2] = m_depthImage.getDescriptorInfo();
 
-	std::array<VkWriteDescriptorSet, 2> descriptorWrites = {};
+	std::array<VkDescriptorImageInfo, 3> samplerImageInfos = {};
+	samplerImageInfos[0] = m_skybox.diffuseIrradianceMap.getDescriptorInfo();
+	samplerImageInfos[1] = m_skybox.specularIrradianceMap.getDescriptorInfo();
+	samplerImageInfos[2] = m_bakedBRDFs[0].getDescriptorInfo();
+
+	std::array<VkWriteDescriptorSet, 3> descriptorWrites = {};
 
 	descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	descriptorWrites[0].dstSet = m_lightingDescriptorSet;
@@ -1138,11 +1357,19 @@ void DeferredRenderer::createLightingPassDescriptorSets()
 
 	descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	descriptorWrites[1].dstSet = m_lightingDescriptorSet;
-	descriptorWrites[1].dstBinding = 2;
+	descriptorWrites[1].dstBinding = 1;
 	descriptorWrites[1].dstArrayElement = 0;
 	descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
-	descriptorWrites[1].descriptorCount = static_cast<uint32_t>(imageInfos.size());
-	descriptorWrites[1].pImageInfo = imageInfos.data();
+	descriptorWrites[1].descriptorCount = static_cast<uint32_t>(inputAttachmentImageInfos.size());
+	descriptorWrites[1].pImageInfo = inputAttachmentImageInfos.data();
+
+	descriptorWrites[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	descriptorWrites[2].dstSet = m_lightingDescriptorSet;
+	descriptorWrites[2].dstBinding = 4;
+	descriptorWrites[2].dstArrayElement = 0;
+	descriptorWrites[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	descriptorWrites[2].descriptorCount = static_cast<uint32_t>(samplerImageInfos.size());
+	descriptorWrites[2].pImageInfo = samplerImageInfos.data();
 
 	vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
 }
@@ -1153,16 +1380,17 @@ void DeferredRenderer::createFinalOutputPassDescriptorSets()
 		m_allUniformHostData.offsetOf(reinterpret_cast<const char *>(m_uDisplayInfo)),
 		sizeof(DisplayInfoUniformBuffer));
 
-	std::array<VkDescriptorImageInfo, 3> imageInfos;
+	std::array<VkDescriptorImageInfo, 4> imageInfos;
 	imageInfos[0] = m_lightingResultImage.getDescriptorInfo();
 	imageInfos[1] = m_gbufferImages[0].getDescriptorInfo();
-	imageInfos[2] = m_depthImage.getDescriptorInfo();
+	imageInfos[2] = m_gbufferImages[1].getDescriptorInfo();
+	imageInfos[3] = m_depthImage.getDescriptorInfo();
 
 	std::array<VkWriteDescriptorSet, 2> descriptorWrites = {};
 
 	descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	descriptorWrites[0].dstSet = m_finalOutputDescriptorSet;
-	descriptorWrites[0].dstBinding = 3;
+	descriptorWrites[0].dstBinding = 4;
 	descriptorWrites[0].dstArrayElement = 0;
 	descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	descriptorWrites[0].descriptorCount = 1;
@@ -1195,10 +1423,11 @@ void DeferredRenderer::createGeomAndLightingCommandBuffer()
 	renderPassInfo.renderArea.offset = { 0, 0 };
 	renderPassInfo.renderArea.extent = m_swapChain.swapChainExtent;
 
-	std::array<VkClearValue, 3> clearValues = {};
+	std::array<VkClearValue, 4> clearValues = {};
 	clearValues[0].depthStencil = { 1.0f, 0 };
 	clearValues[1].color = { { 0.0f, 0.0f, 0.0f, 0.0f } }; // g-buffer 1
-	clearValues[2].color = { { 0.0f, 0.0f, 0.0f, 0.0f } }; // lighting result
+	clearValues[2].color = { { 0.0f, 0.0f, 0.0f, 0.0f } }; // g-buffer 2
+	clearValues[3].color = { { 0.0f, 0.0f, 0.0f, 0.0f } }; // lighting result
 
 	renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
 	renderPassInfo.pClearValues = clearValues.data();
@@ -1206,6 +1435,21 @@ void DeferredRenderer::createGeomAndLightingCommandBuffer()
 	vkCmdBeginRenderPass(m_geomAndLightingCommandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
 	// Geometry pass
+	{
+		vkCmdBindPipeline(m_geomAndLightingCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_skyboxPipeline);
+
+		VkBuffer vertexBuffers[] = { m_skybox.vertexBuffer.buffer };
+		VkDeviceSize offsets[] = { 0 };
+
+		vkCmdBindVertexBuffers(m_geomAndLightingCommandBuffer, 0, 1, vertexBuffers, offsets);
+		vkCmdBindIndexBuffer(m_geomAndLightingCommandBuffer, m_skybox.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+
+		vkCmdBindDescriptorSets(m_geomAndLightingCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_skyboxPipelineLayout, 0, 1, &m_skyboxDescriptorSet, 0, nullptr);
+		vkCmdPushConstants(m_geomAndLightingCommandBuffer, m_skyboxPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(uint32_t), &m_skybox.materialType);
+
+		vkCmdDrawIndexed(m_geomAndLightingCommandBuffer, static_cast<uint32_t>(m_skybox.indexBuffer.numElements), 1, 0, 0, 0);
+	}
+
 	vkCmdBindPipeline(m_geomAndLightingCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_geomPipeline);
 
 	for (uint32_t j = 0; j < m_models.size(); ++j)
@@ -1227,6 +1471,9 @@ void DeferredRenderer::createGeomAndLightingCommandBuffer()
 
 	vkCmdBindPipeline(m_geomAndLightingCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_lightingPipeline);
 	vkCmdBindDescriptorSets(m_geomAndLightingCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_lightingPipelineLayout, 0, 1, &m_lightingDescriptorSet, 0, nullptr);
+	vkCmdPushConstants(m_geomAndLightingCommandBuffer, m_lightingPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
+		0, sizeof(uint32_t), &m_skybox.specularIrradianceMap.mipLevels);
+
 	vkCmdDraw(m_geomAndLightingCommandBuffer, 3, 1, 0, 0);
 
 	vkCmdEndRenderPass(m_geomAndLightingCommandBuffer);

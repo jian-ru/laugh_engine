@@ -12,11 +12,12 @@ layout (push_constant) uniform pushConstants
 	uint materialId;
 } pcs;
 
-layout (location = 0) in vec3 inEyePos;
-layout (location = 1) in vec3 inEyeNormal;
+layout (location = 0) in vec3 inWorldPos;
+layout (location = 1) in vec3 inWorldNormal;
 layout (location = 2) in vec2 inTexcoord;
 
 layout (location = 0) out vec4 outGbuffer1;
+layout (location = 1) out vec4 outGbuffer2;
 
 
 float packRGBA(vec4 color)
@@ -26,11 +27,11 @@ float packRGBA(vec4 color)
 }
 
 // Compute a matrix that transform a vector from tangent space
-// to eye space
+// to world space
 mat3 computeTBN(vec3 n)
 {
-	vec3 e1 = dFdx(inEyePos);
-	vec3 e2 = dFdy(inEyePos);
+	vec3 e1 = dFdx(inWorldPos);
+	vec3 e2 = dFdy(inWorldPos);
 	vec2 duv1 = dFdx(inTexcoord);
 	vec2 duv2 = dFdy(inTexcoord);
 	
@@ -49,7 +50,7 @@ void main()
 	float roughness = texture(samplerRoughness, inTexcoord).r;
 	float metalness = texture(samplerMetalness, inTexcoord).r;
 
-	vec3 surfnrm = normalize(inEyeNormal);
+	vec3 surfnrm = normalize(inWorldNormal);
 	mat3 tbn = computeTBN(surfnrm);
 	
 	float packedAlbedo = packRGBA(albedo);
@@ -57,4 +58,5 @@ void main()
 	float RMI = packRGBA(vec4(roughness, metalness, float(pcs.materialId) / 255.0, 0.0));
 	
 	outGbuffer1 = vec4(nrm.xy, packedAlbedo, RMI);
+	outGbuffer2 = vec4(inWorldPos, 0.0);
 }

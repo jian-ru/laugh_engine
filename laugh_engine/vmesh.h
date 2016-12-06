@@ -188,10 +188,22 @@ public:
 		const std::string &metalnessMapName)
 	{
 		// load textures
-		loadTexture(physicalDevice, device, commandPool, submitQueue, albedoMapName, albedoMap);
-		loadTexture(physicalDevice, device, commandPool, submitQueue, normalMapName, normalMap);
-		loadTexture(physicalDevice, device, commandPool, submitQueue, roughnessMapName, roughnessMap);
-		loadTexture(physicalDevice, device, commandPool, submitQueue, metalnessMapName, metalnessMap);
+		if (albedoMapName != "")
+		{
+			loadTexture(physicalDevice, device, commandPool, submitQueue, albedoMapName, albedoMap);
+		}
+		if (normalMapName != "")
+		{
+			loadTexture(physicalDevice, device, commandPool, submitQueue, normalMapName, normalMap);
+		}
+		if (roughnessMapName != "")
+		{
+			loadTexture(physicalDevice, device, commandPool, submitQueue, roughnessMapName, roughnessMap);
+		}
+		if (metalnessMapName != "")
+		{
+			loadTexture(physicalDevice, device, commandPool, submitQueue, metalnessMapName, metalnessMap);
+		}
 
 		// load mesh
 		std::vector<Vertex> hostVerts;
@@ -211,5 +223,48 @@ public:
 			hostIndices.data(), hostIndices.size(), sizeof(hostIndices[0]) * hostIndices.size(),
 			VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
 			indexBuffer);
+	}
+};
+
+class Skybox : public VMesh
+{
+public:
+	ImageWrapper radianceMap; // unfiltered map
+	ImageWrapper specularIrradianceMap;
+	ImageWrapper diffuseIrradianceMap; // TODO: use spherical harmonics instead
+
+	Skybox(const VDeleter<VkDevice> &device) :
+		VMesh{ device },
+		radianceMap{ device },
+		specularIrradianceMap{ device },
+		diffuseIrradianceMap{ device }
+	{
+		materialType = MATERIAL_TYPE_HDR_PROBE;
+	}
+
+	void load(
+		VkPhysicalDevice physicalDevice,
+		const VDeleter<VkDevice> &device,
+		VkCommandPool commandPool,
+		VkQueue submitQueue,
+		const std::string &modelFileName,
+		const std::string &radianceMapName,
+		const std::string &specMapName,
+		const std::string &diffuseMapName)
+	{
+		if (radianceMapName != "")
+		{
+			loadCubemap(physicalDevice, device, commandPool, submitQueue, radianceMapName, radianceMap);
+		}
+		if (specMapName != "")
+		{
+			loadCubemap(physicalDevice, device, commandPool, submitQueue, specMapName, specularIrradianceMap);
+		}
+		if (diffuseMapName != "")
+		{
+			loadCubemap(physicalDevice, device, commandPool, submitQueue, diffuseMapName, diffuseIrradianceMap);
+		}
+
+		VMesh::load(physicalDevice, device, commandPool, submitQueue, modelFileName, "", "", "", "");
 	}
 };

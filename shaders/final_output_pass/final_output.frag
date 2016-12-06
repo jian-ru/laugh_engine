@@ -4,20 +4,16 @@
 
 layout (set = 0, binding = 0) uniform sampler2D finalOutput;
 layout (set = 0, binding = 1) uniform sampler2D gbuffer1;
-layout (set = 0, binding = 2) uniform sampler2D depthImage;
+layout (set = 0, binding = 2) uniform sampler2D gbuffer2;
+layout (set = 0, binding = 3) uniform sampler2D depthImage;
 
 layout (location = 0) in vec2 inUV;
 
 layout (location = 0) out vec4 outColor;
 
-layout(std140, set = 0, binding = 3) uniform UBO
+layout(std140, set = 0, binding = 4) uniform UBO
 {
 	int displayMode;
-	float imageWidth;
-	float imageHeight;
-	float twoTimesTanHalfFovy;
-	float zNear;
-	float zFar;
 };
 
 
@@ -28,34 +24,42 @@ vec4 unpackRGBA(float packedColor)
 		* 0.0039215686274509803921568627451;
 }
 
-vec3 recoverEyePos(float depth)
-{
-	float oneOverHeight = 1.0 / imageHeight;
-	float aspect = imageWidth * oneOverHeight;
-	float ph = twoTimesTanHalfFovy * oneOverHeight;
-	float pw = ph * aspect;
-	vec2 extent = vec2(imageWidth, imageHeight);
-	vec3 viewVec = vec3(
-		vec2(pw, ph) * (vec2(inUV.x, 1.0 - inUV.y) * extent - extent * 0.5), -1.0);
-	float eyeDepth = zFar * zNear / (zFar + depth * (zNear - zFar));
-	return viewVec * eyeDepth;
-}
-
-vec3 recoverEyeNrm(vec2 xy)
+vec3 recoverWorldNrm(vec2 xy)
 {
 	return vec3(xy, sqrt(1.0 - max(0.0, dot(xy, xy))));
+}
+
+vec3 filmicTonemap(vec3 x)
+{
+    float A = 0.15;
+    float B = 0.50;
+    float C = 0.10;
+    float D = 0.20;
+    float E = 0.02;
+    float F = 0.30;
+    float W = 11.2;
+    return ((x*(A*x+C*B)+D*E) / (x*(A*x+B)+D*F))- E / F;
+}
+
+vec3 applyFilmicToneMap(vec3 color) 
+{
+    color = 2.0 * filmicTonemap(color);
+    vec3 whiteScale = 1.0 / filmicTonemap(vec3(11.2));
+    color *= whiteScale;
+    return color;
 }
 
 
 void main() 
 {
-	vec4 finalColor = texture(finalOutput, inUV);
+	vec3 finalColor = texture(finalOutput, inUV).rgb;
 	vec4 gb1 = texture(gbuffer1, inUV);
+	vec4 gb2 = texture(gbuffer2, inUV);
 	float depth = texture(depthImage, inUV).r;
 	
 	vec3 albedo = unpackRGBA(gb1.z).rgb;
-	vec3 pos = recoverEyePos(depth);
-	vec3 nrm = recoverEyeNrm(gb1.xy);
+	vec3 pos = gb2.xyz;
+	vec3 nrm = recoverWorldNrm(gb1.xy);
 	vec4 RMI = unpackRGBA(gb1.w);
 	
 	if (displayMode == 4)
@@ -68,7 +72,9 @@ void main()
 	
 	if (displayMode == 0)
 	{
-		outColor = finalColor;
+		// finalColor = applyFilmicToneMap(finalColor);
+		// outColor = vec4(pow(finalColor, vec3(1.0 / 2.2)), 1.0);
+		outColor = vec4(finalColor, 1.0);
 	}
 	else if (displayMode == 1) // albedo
 	{

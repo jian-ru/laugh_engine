@@ -186,6 +186,7 @@ protected:
 
 	VDeleter<VkPipelineCache> m_pipelineCache{ m_device, vkDestroyPipelineCache };
 
+	Skybox m_skybox{ m_device };
 	std::vector<VMesh> m_models;
 	std::vector<BakedBRDF> m_bakedBRDFs;
 
