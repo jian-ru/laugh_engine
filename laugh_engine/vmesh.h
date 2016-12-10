@@ -84,10 +84,22 @@ enum MaterialType
 
 typedef uint32_t MaterialType_t;
 
+struct PerModelUniformBuffer
+{
+	glm::mat4 M;
+	glm::mat4 M_invTrans;
+};
+
 class VMesh
 {
 public:
 	const static uint32_t numMapsPerMesh = 4;
+
+	PerModelUniformBuffer *uPerModelInfo = nullptr;
+
+	glm::vec3 worldPosition{ 0.f, 0.f, 0.f };
+	glm::quat worldRotation{ glm::vec3(0.f, 0.f, 0.f) }; // Euler angles to quaternion
+	float scale = 1.f;
 
 	BufferWrapper vertexBuffer;
 	BufferWrapper indexBuffer;
@@ -223,6 +235,13 @@ public:
 			hostIndices.data(), hostIndices.size(), sizeof(hostIndices[0]) * hostIndices.size(),
 			VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
 			indexBuffer);
+	}
+
+	virtual void updateHostUniformBuffer()
+	{
+		assert(uPerModelInfo);
+		uPerModelInfo->M = glm::translate(glm::mat4_cast(worldRotation) * glm::scale(glm::mat4(), glm::vec3(scale)), worldPosition);
+		uPerModelInfo->M_invTrans = glm::transpose(glm::inverse(uPerModelInfo->M));
 	}
 };
 

@@ -56,6 +56,7 @@ void main()
 	vec3 pos = gb2.xyz;
 	vec3 nrm = gb1.xyz;
 	vec4 RMI = unpackRGBA(gb2.w);
+	uint matId = uint(round(RMI.z * 255.0));
 	
 	if (displayMode == 4)
 	{
@@ -77,7 +78,7 @@ void main()
 	}
 	else if (displayMode == 2) // eye normal
 	{
-		outColor = vec4(nrm, 1.0);
+		if (matId != 0) outColor = vec4(nrm, 1.0);
 	}
 	else if (displayMode == 3) // eye position
 	{

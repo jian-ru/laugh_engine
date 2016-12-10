@@ -13,4 +13,6 @@ C:/VulkanSDK/1.0.30.0/Bin/glslangValidator.exe -V text_pass/text.frag -o text_pa
 
 C:/VulkanSDK/1.0.30.0/Bin/glslangValidator.exe -V fullscreen.vert -o fullscreen.vert.spv
 
+C:/VulkanSDK/1.0.30.0/Bin/glslangValidator.exe -V brdf_lut_pass/brdf_lut.comp -o brdf_lut_pass/brdf_lut.comp.spv
+
 pause

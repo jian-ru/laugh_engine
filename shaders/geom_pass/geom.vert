@@ -8,7 +8,11 @@ layout (location = 2) in vec2 inTexcoord;
 
 layout (std140, set = 0, binding = 0) uniform UBO 
 {
-	mat4 MVP;
+	mat4 VP;
+};
+
+layout (std140, set = 0, binding = 1) uniform UBO_per_model
+{
 	mat4 M;
 	mat4 M_invTrans;
 };
@@ -25,7 +29,7 @@ out gl_PerVertex
 
 void main() 
 {
-	gl_Position = MVP * vec4(inPosition, 1.0);
+	gl_Position = VP * M * vec4(inPosition, 1.0);
 	
 	outWorldPos = vec3(M * vec4(inPosition, 1.0));
 	outWorldNormal = normalize(vec3(M_invTrans * vec4(inNormal, 0.0)));

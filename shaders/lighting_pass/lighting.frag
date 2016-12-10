@@ -102,7 +102,7 @@ void main()
 		vec3 specIr = textureLod(specularIrradianceMap, r, specMipLevel).rgb;
 		
 		float NoV = clamp(dot(nrm, v), 0.0, 1.0);
-		vec2 brdfTerm = textureLod(brdfLuts[0], vec2(NoV, clamp(1.0 - roughness, 0.0, 1.0)), 0).rg;
+		vec2 brdfTerm = textureLod(brdfLuts[0], vec2(NoV, clamp(roughness, 0.0, 1.0)), 0).rg;
 		
 		const vec3 dielectricF0 = vec3(0.04);
 		vec3 diffColor = albedo * (1.0 - metalness); // if it is metal, no diffuse color
@@ -118,6 +118,7 @@ void main()
 		// finalColor = vec3(lessThan(vec3(dot(nrm, v)), vec3(0.0)));
 		// finalColor = diffColor * diffIr;
 		// finalColor = specIr * (specColor * brdfTerm.x + brdfTerm.y);
+		// finalColor = vec3(float(textureLod(brdfLuts[0], vec2(0, 0), 0).r > 0.4));
 	}
 	
 	outColor = vec4(finalColor, 1.0);

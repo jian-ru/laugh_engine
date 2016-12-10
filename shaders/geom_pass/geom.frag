@@ -2,10 +2,10 @@
 
 #extension GL_ARB_separate_shader_objects : enable
 
-layout (binding = 1) uniform sampler2D samplerAlbedo;
-layout (binding = 2) uniform sampler2D samplerNormal;
-layout (binding = 3) uniform sampler2D samplerRoughness;
-layout (binding = 4) uniform sampler2D samplerMetalness;
+layout (binding = 2) uniform sampler2D samplerAlbedo;
+layout (binding = 3) uniform sampler2D samplerNormal;
+layout (binding = 4) uniform sampler2D samplerRoughness;
+layout (binding = 5) uniform sampler2D samplerMetalness;
 
 layout (push_constant) uniform pushConstants
 {

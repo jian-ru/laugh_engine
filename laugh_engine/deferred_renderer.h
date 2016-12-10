@@ -50,14 +50,14 @@
 
 #include "vbase.h"
 
+#define BRDF_LUT_SIZE 256
 #define ALL_UNIFORM_BLOB_SIZE (64 * 1024)
 #define NUM_LIGHTS 2
 
-struct GeomPassUniformBuffer
+
+struct TransMatsUniformBuffer
 {
-	glm::mat4 MVP;
-	glm::mat4 M;
-	glm::mat4 M_invTrans;
+	glm::mat4 VP;
 };
 
 struct PointLight
@@ -93,15 +93,20 @@ public:
 		m_verNumMinor = 1;
 	}
 
+	virtual void run();
+
 protected:
 	VDeleter<VkRenderPass> m_geomAndLightRenderPass{ m_device, vkDestroyRenderPass };
 	VDeleter<VkRenderPass> m_finalOutputRenderPass{ m_device, vkDestroyRenderPass };
 
+	VDeleter<VkDescriptorSetLayout> m_brdfLutDescriptorSetLayout{ m_device, vkDestroyDescriptorSetLayout };
 	VDeleter<VkDescriptorSetLayout> m_skyboxDescriptorSetLayout{ m_device, vkDestroyDescriptorSetLayout };
 	VDeleter<VkDescriptorSetLayout> m_geomDescriptorSetLayout{ m_device, vkDestroyDescriptorSetLayout };
 	VDeleter<VkDescriptorSetLayout> m_lightingDescriptorSetLayout{ m_device, vkDestroyDescriptorSetLayout };
 	VDeleter<VkDescriptorSetLayout> m_finalOutputDescriptorSetLayout{ m_device, vkDestroyDescriptorSetLayout };
 
+	VDeleter<VkPipelineLayout> m_brdfLutPipelineLayout{ m_device, vkDestroyPipelineLayout };
+	VDeleter<VkPipeline> m_brdfLutPipeline{ m_device, vkDestroyPipeline };
 	VDeleter<VkPipelineLayout> m_skyboxPipelineLayout{ m_device, vkDestroyPipelineLayout };
 	VDeleter<VkPipeline> m_skyboxPipeline{ m_device, vkDestroyPipeline };
 	VDeleter<VkPipelineLayout> m_geomPipelineLayout{ m_device, vkDestroyPipelineLayout };
@@ -113,16 +118,19 @@ protected:
 	VDeleter<VkPipelineLayout> m_finalOutputPipelineLayout{ m_device, vkDestroyPipelineLayout };
 	VDeleter<VkPipeline> m_finalOutputPipeline{ m_device, vkDestroyPipeline };
 
+	ImageWrapper m_brdfLutImage{ m_device }; // used as compute shader output
+
 	ImageWrapper m_depthImage{ m_device };
 	ImageWrapper m_lightingResultImage{ m_device, VK_FORMAT_R16G16B16A16_SFLOAT };
 	std::vector<ImageWrapper> m_gbufferImages = { { m_device, VK_FORMAT_R32G32B32A32_SFLOAT }, { m_device, VK_FORMAT_R32G32B32A32_SFLOAT } };
 
 	AllUniformBlob<ALL_UNIFORM_BLOB_SIZE> m_allUniformHostData{ m_physicalDevice };
-	GeomPassUniformBuffer *m_uTransMats = nullptr;
+	TransMatsUniformBuffer *m_uTransMats = nullptr;
 	LightingPassUniformBuffer *m_uLightInfo = nullptr;
 	DisplayInfoUniformBuffer *m_uDisplayInfo = nullptr;
 	BufferWrapper m_allUniformBuffer{ m_device };
 
+	VkDescriptorSet m_brdfLutDescriptorSet;
 	VkDescriptorSet m_skyboxDescriptorSet;
 	std::vector<VkDescriptorSet> m_geomDescriptorSets; // one set per model
 	VkDescriptorSet m_lightingDescriptorSet;
@@ -135,13 +143,18 @@ protected:
 	VDeleter<VkSemaphore> m_finalOutputFinishedSemaphore{ m_device, vkDestroySemaphore };
 	VDeleter<VkSemaphore> m_renderFinishedSemaphore{ m_device, vkDestroySemaphore };
 
+	VDeleter<VkFence> m_brdfLutFence{ m_device, vkDestroyFence };
+
+	VkCommandBuffer m_brdfLutCommandBuffer;
 	VkCommandBuffer m_geomAndLightingCommandBuffer;
 
 
 	virtual void createRenderPasses();
 	virtual void createDescriptorSetLayouts();
+	virtual void createComputePipelines();
 	virtual void createGraphicsPipelines();
 	virtual void createCommandPools();
+	virtual void createComputeResources();
 	virtual void createDepthResources();
 	virtual void createColorAttachmentResources();
 	virtual void loadAndPrepareAssets();
@@ -159,12 +172,14 @@ protected:
 	virtual void createGeometryAndLightingRenderPass();
 	virtual void createFinalOutputRenderPass();
 
+	virtual void createBrdfLutDescriptorSetLayout();
 	virtual void createSkyboxDescriptorSetLayout();
 	virtual void createStaticMeshDescriptorSetLayout();
 	virtual void createGeomPassDescriptorSetLayout();
 	virtual void createLightingPassDescriptorSetLayout();
 	virtual void createFinalOutputDescriptorSetLayout();
 
+	virtual void createBrdfLutPipeline();
 	virtual void createSkyboxPipeline();
 	virtual void createStaticMeshPipeline();
 	virtual void createGeomPassPipeline();
@@ -174,14 +189,18 @@ protected:
 	// Descriptor sets cannot be altered once they are bound until execution of all related
 	// commands complete. So each model will need a different descriptor set because they use
 	// different textures
+	virtual void createBrdfLutDescriptorSet();
 	virtual void createSkyboxDescriptorSet();
 	virtual void createStaticMeshDescriptorSet();
 	virtual void createGeomPassDescriptorSets();
 	virtual void createLightingPassDescriptorSets();
 	virtual void createFinalOutputPassDescriptorSets();
 
+	virtual void createBrdfLutCommandBuffer();
 	virtual void createGeomAndLightingCommandBuffer();
 	virtual void createPresentCommandBuffers();
+
+	virtual void prefilterEnvironmentAndComputeBrdfLut();
 
 	virtual VkFormat findDepthFormat();
 };
@@ -189,15 +208,27 @@ protected:
 
 #ifdef DEFERED_RENDERER_IMPLEMENTATION
 
+void DeferredRenderer::run()
+{
+	initWindow();
+	initVulkan();
+	prefilterEnvironmentAndComputeBrdfLut();
+	mainLoop();
+}
+
 void DeferredRenderer::updateUniformBuffers()
 {
+	// update per model information
+	for (auto &model : m_models)
+	{
+		model.updateHostUniformBuffer();
+	}
+
 	// update transformation matrices
 	glm::mat4 V, P;
 	m_camera.getViewProjMatrix(V, P);
 
-	m_uTransMats->M = glm::mat4(1.f);
-	m_uTransMats->MVP = P * V;
-	m_uTransMats->M_invTrans = glm::mat4(1.f);
+	m_uTransMats->VP = P * V;
 
 	// update lighting info
 	m_uLightInfo->pointLights[0] =
@@ -315,9 +346,15 @@ void DeferredRenderer::createRenderPasses()
 
 void DeferredRenderer::createDescriptorSetLayouts()
 {
+	createBrdfLutDescriptorSetLayout();
 	createGeomPassDescriptorSetLayout();
 	createLightingPassDescriptorSetLayout();
 	createFinalOutputDescriptorSetLayout();
+}
+
+void DeferredRenderer::createComputePipelines()
+{
+	createBrdfLutPipeline();
 }
 
 void DeferredRenderer::createGraphicsPipelines()
@@ -330,6 +367,27 @@ void DeferredRenderer::createGraphicsPipelines()
 void DeferredRenderer::createCommandPools()
 {
 	createCommandPool(m_device, m_queueFamilyIndices.graphicsFamily, m_graphicsCommandPool);
+	createCommandPool(m_device, m_queueFamilyIndices.computeFamily, m_computeCommandPool);
+}
+
+void DeferredRenderer::createComputeResources()
+{
+	// BRDF LUT
+	m_brdfLutImage.mipLevels = 1;
+	m_brdfLutImage.format = VK_FORMAT_R32G32_SFLOAT;
+
+	createImage(
+		m_physicalDevice, m_device,
+		BRDF_LUT_SIZE, BRDF_LUT_SIZE, m_brdfLutImage.format,
+		VK_IMAGE_TILING_OPTIMAL,
+		VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, // want to read back and store to disk
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+		m_brdfLutImage.image, m_brdfLutImage.imageMemory);
+
+	transitionImageLayout(m_device, m_graphicsCommandPool, m_graphicsQueue,
+		m_brdfLutImage.image, m_brdfLutImage.format, 1, VK_IMAGE_LAYOUT_PREINITIALIZED, VK_IMAGE_LAYOUT_GENERAL);
+
+	createImageView2D(m_device, m_brdfLutImage.image, m_brdfLutImage.format, VK_IMAGE_ASPECT_COLOR_BIT, 1, m_brdfLutImage.imageView);
 }
 
 void DeferredRenderer::createDepthResources()
@@ -436,14 +494,25 @@ void DeferredRenderer::loadAndPrepareAssets()
 		m_physicalDevice, m_device,
 		m_graphicsCommandPool, m_graphicsQueue,
 		modelFileName, albedoMapName, normalMapName, roughnessMapName, metalnessMapName);
+	m_models[0].worldRotation = glm::quat(glm::vec3(0.f, glm::pi<float>(), 0.f));
+	//m_models[1].load(
+	//	m_physicalDevice, m_device,
+	//	m_graphicsCommandPool, m_graphicsQueue,
+	//	modelFileName, albedoMapName, normalMapName, roughnessMapName, metalnessMapName);
+	//m_models[1].worldPosition = glm::vec3(1.f, 0.f, 0.f);
 }
 
 void DeferredRenderer::createUniformBuffers()
 {
 	// host
-	m_uTransMats = reinterpret_cast<GeomPassUniformBuffer *>(m_allUniformHostData.alloc(sizeof(GeomPassUniformBuffer)));
+	m_uTransMats = reinterpret_cast<TransMatsUniformBuffer *>(m_allUniformHostData.alloc(sizeof(TransMatsUniformBuffer)));
 	m_uLightInfo = reinterpret_cast<LightingPassUniformBuffer *>(m_allUniformHostData.alloc(sizeof(LightingPassUniformBuffer)));
 	m_uDisplayInfo = reinterpret_cast<DisplayInfoUniformBuffer *>(m_allUniformHostData.alloc(sizeof(DisplayInfoUniformBuffer)));
+
+	for (auto &model : m_models)
+	{
+		model.uPerModelInfo = reinterpret_cast<PerModelUniformBuffer *>(m_allUniformHostData.alloc(sizeof(PerModelUniformBuffer)));
+	}
 
 	// device
 	m_allUniformBuffer.sizeInBytes = m_allUniformHostData.size();
@@ -459,20 +528,25 @@ void DeferredRenderer::createUniformBuffers()
 void DeferredRenderer::createDescriptorPools()
 {
 	// create descriptor pool
-	std::array<VkDescriptorPoolSize, 3> poolSizes = {};
+	std::array<VkDescriptorPoolSize, 4> poolSizes = {};
 	poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	poolSizes[0].descriptorCount = 6;
+	poolSizes[0].descriptorCount = 5 + 2 * m_models.size();
+
 	poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	// BRDF LUTs + radiance map + diffuse irradiance map + specular irradiance map + lighting result + g-buffers + depth image + model textures
 	poolSizes[1].descriptorCount = 8 + m_models.size() * VMesh::numMapsPerMesh + m_bakedBRDFs.size();
+
 	poolSizes[2].type = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
 	poolSizes[2].descriptorCount = 3;
+
+	poolSizes[3].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	poolSizes[3].descriptorCount = 1;
 
 	VkDescriptorPoolCreateInfo poolInfo = {};
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 	poolInfo.poolSizeCount = poolSizes.size();
 	poolInfo.pPoolSizes = poolSizes.data();
-	poolInfo.maxSets = 3 + m_models.size();
+	poolInfo.maxSets = 4 + m_models.size();
 
 	if (vkCreateDescriptorPool(m_device, &poolInfo, nullptr, m_descriptorPool.replace()) != VK_SUCCESS)
 	{
@@ -489,6 +563,7 @@ void DeferredRenderer::createDescriptorSets()
 
 	// create descriptor sets
 	std::vector<VkDescriptorSetLayout> layouts;
+	layouts.push_back(m_brdfLutDescriptorSetLayout);
 	layouts.push_back(m_skyboxDescriptorSetLayout);
 	layouts.push_back(m_lightingDescriptorSetLayout);
 	layouts.push_back(m_finalOutputDescriptorSetLayout);
@@ -497,7 +572,7 @@ void DeferredRenderer::createDescriptorSets()
 		layouts.push_back(m_geomDescriptorSetLayout);
 	}
 
-	std::vector<VkDescriptorSet> sets(3 + m_models.size());
+	std::vector<VkDescriptorSet> sets(4 + m_models.size());
 
 	VkDescriptorSetAllocateInfo allocInfo = {};
 	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -510,17 +585,19 @@ void DeferredRenderer::createDescriptorSets()
 		throw std::runtime_error("failed to allocate descriptor set!");
 	}
 
-	m_skyboxDescriptorSet = sets[0];
-	m_lightingDescriptorSet = sets[1];
-	m_finalOutputDescriptorSet = sets[2];
+	m_brdfLutDescriptorSet = sets[0];
+	m_skyboxDescriptorSet = sets[1];
+	m_lightingDescriptorSet = sets[2];
+	m_finalOutputDescriptorSet = sets[3];
 	m_geomDescriptorSets.resize(m_models.size());
 	for (uint32_t i = 0; i < m_models.size(); ++i)
 	{
-		m_geomDescriptorSets[i] = sets[3 + i];
+		m_geomDescriptorSets[i] = sets[4 + i];
 	}
 
 	// geometry pass descriptor set will be updated for every model
 	// so there is no need to pre-initialize it
+	createBrdfLutDescriptorSet();
 	createGeomPassDescriptorSets();
 	createLightingPassDescriptorSets();
 	createFinalOutputPassDescriptorSets();
@@ -579,7 +656,7 @@ void DeferredRenderer::createFramebuffers()
 
 void DeferredRenderer::createCommandBuffers()
 {
-	// Allocate command buffers
+	// Allocate graphics command buffers
 	if (vkResetCommandPool(m_device, m_graphicsCommandPool, VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT) != VK_SUCCESS)
 	{
 		throw std::runtime_error("Cannot reset m_graphicsCommandPool");
@@ -609,6 +686,27 @@ void DeferredRenderer::createCommandBuffers()
 	// Create command buffers for different purposes
 	createGeomAndLightingCommandBuffer();
 	createPresentCommandBuffers();
+
+	// compute command buffers
+	if (vkResetCommandPool(m_device, m_computeCommandPool, VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT) != VK_SUCCESS)
+	{
+		throw std::runtime_error("Cannot reset m_computeCommandPool");
+	}
+
+	allocInfo.commandPool = m_computeCommandPool;
+	allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+	allocInfo.commandBufferCount = 1;
+
+	commandBuffers.clear();
+	commandBuffers.resize(allocInfo.commandBufferCount);
+	if (vkAllocateCommandBuffers(m_device, &allocInfo, commandBuffers.data()) != VK_SUCCESS)
+	{
+		throw std::runtime_error("failed to allocate command buffers!");
+	}
+
+	m_brdfLutCommandBuffer = commandBuffers[0];
+
+	createBrdfLutCommandBuffer();
 }
 
 void DeferredRenderer::createSynchronizationObjects()
@@ -622,6 +720,14 @@ void DeferredRenderer::createSynchronizationObjects()
 		vkCreateSemaphore(m_device, &semaphoreInfo, nullptr, m_renderFinishedSemaphore.replace()) != VK_SUCCESS)
 	{
 		throw std::runtime_error("failed to create semaphores!");
+	}
+
+	VkFenceCreateInfo fenceInfo = {};
+	fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+
+	if (vkCreateFence(m_device, &fenceInfo, nullptr, m_brdfLutFence.replace()) != VK_SUCCESS)
+	{
+		throw std::runtime_error("failed to create brdf lut fence!");
 	}
 }
 
@@ -830,6 +936,28 @@ void DeferredRenderer::createFinalOutputRenderPass()
 	}
 }
 
+void DeferredRenderer::createBrdfLutDescriptorSetLayout()
+{
+	std::array<VkDescriptorSetLayoutBinding, 1> bindings = {};
+
+	// output buffer
+	bindings[0].binding = 0;
+	bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	bindings[0].descriptorCount = 1;
+	bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	bindings[0].pImmutableSamplers = nullptr;
+
+	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
+	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	layoutInfo.bindingCount = bindings.size();
+	layoutInfo.pBindings = bindings.data();
+
+	if (vkCreateDescriptorSetLayout(m_device, &layoutInfo, nullptr, m_brdfLutDescriptorSetLayout.replace()) != VK_SUCCESS)
+	{
+		throw std::runtime_error("failed to create descriptor set layout!");
+	}
+}
+
 void DeferredRenderer::createGeomPassDescriptorSetLayout()
 {
 	createStaticMeshDescriptorSetLayout();
@@ -867,7 +995,7 @@ void DeferredRenderer::createSkyboxDescriptorSetLayout()
 
 void DeferredRenderer::createStaticMeshDescriptorSetLayout()
 {
-	std::array<VkDescriptorSetLayoutBinding, 5> bindings = {};
+	std::array<VkDescriptorSetLayoutBinding, 6> bindings = {};
 
 	// Transformation matrices
 	bindings[0].binding = 0;
@@ -876,33 +1004,40 @@ void DeferredRenderer::createStaticMeshDescriptorSetLayout()
 	bindings[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 	bindings[0].pImmutableSamplers = nullptr; // Optional
 
-	// Albedo map
+	// Per model information
 	bindings[1].binding = 1;
+	bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	bindings[1].descriptorCount = 1;
-	bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	bindings[1].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 	bindings[1].pImmutableSamplers = nullptr;
-	bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-	// Normal map
+	// Albedo map
 	bindings[2].binding = 2;
 	bindings[2].descriptorCount = 1;
 	bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	bindings[2].pImmutableSamplers = nullptr;
 	bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-	// Roughness map
+	// Normal map
 	bindings[3].binding = 3;
 	bindings[3].descriptorCount = 1;
 	bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	bindings[3].pImmutableSamplers = nullptr;
 	bindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-	// Metalness map
+	// Roughness map
 	bindings[4].binding = 4;
 	bindings[4].descriptorCount = 1;
 	bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	bindings[4].pImmutableSamplers = nullptr;
 	bindings[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+	// Metalness map
+	bindings[5].binding = 5;
+	bindings[5].descriptorCount = 1;
+	bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	bindings[5].pImmutableSamplers = nullptr;
+	bindings[5].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -1023,6 +1158,29 @@ void DeferredRenderer::createFinalOutputDescriptorSetLayout()
 	if (vkCreateDescriptorSetLayout(m_device, &layoutInfo, nullptr, m_finalOutputDescriptorSetLayout.replace()) != VK_SUCCESS)
 	{
 		throw std::runtime_error("failed to create descriptor set layout!");
+	}
+}
+
+void DeferredRenderer::createBrdfLutPipeline()
+{
+	ShaderFileNames shaderFiles;
+	shaderFiles.cs = "../shaders/brdf_lut_pass/brdf_lut.comp.spv";
+
+	DefaultComputePipelineCreateInfo infos{ m_device, shaderFiles };
+
+	infos.pipelineLayoutInfo.setLayoutCount = 1;
+	infos.pipelineLayoutInfo.pSetLayouts = &m_brdfLutDescriptorSetLayout;
+
+	if (vkCreatePipelineLayout(m_device, &infos.pipelineLayoutInfo, nullptr, m_brdfLutPipelineLayout.replace()) != VK_SUCCESS)
+	{
+		throw std::runtime_error("failed to create brdf lut pass pipeline layout!");
+	}
+
+	infos.pipelineInfo.layout = m_brdfLutPipelineLayout;
+
+	if (vkCreateComputePipelines(m_device, m_pipelineCache, 1, &infos.pipelineInfo, nullptr, m_brdfLutPipeline.replace()) != VK_SUCCESS)
+	{
+		throw std::runtime_error("failed to create brdf lut pass pipeline!");
 	}
 }
 
@@ -1256,6 +1414,26 @@ void DeferredRenderer::createFinalOutputPassPipeline()
 	}
 }
 
+void DeferredRenderer::createBrdfLutDescriptorSet()
+{
+	std::vector<VkDescriptorImageInfo> imageInfos =
+	{
+		m_brdfLutImage.getDescriptorInfo(VK_IMAGE_LAYOUT_GENERAL)
+	};
+
+	std::array<VkWriteDescriptorSet, 1> descriptorWrites = {};
+
+	descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	descriptorWrites[0].dstSet = m_brdfLutDescriptorSet;
+	descriptorWrites[0].dstBinding = 0;
+	descriptorWrites[0].dstArrayElement = 0;
+	descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	descriptorWrites[0].descriptorCount = static_cast<uint32_t>(imageInfos.size());
+	descriptorWrites[0].pImageInfo = imageInfos.data();
+
+	vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
+}
+
 void DeferredRenderer::createGeomPassDescriptorSets()
 {
 	createSkyboxDescriptorSet();
@@ -1294,17 +1472,25 @@ void DeferredRenderer::createSkyboxDescriptorSet()
 
 void DeferredRenderer::createStaticMeshDescriptorSet()
 {
-	VkDescriptorBufferInfo bufferInfo = m_allUniformBuffer.getDescriptorInfo(
-		m_allUniformHostData.offsetOf(reinterpret_cast<const char *>(m_uTransMats)),
-		sizeof(GeomPassUniformBuffer));
-
 	for (uint32_t i = 0; i < m_models.size(); ++i)
 	{
-		std::array<VkDescriptorImageInfo, 4> imageInfos;
-		imageInfos[0] = m_models[i].albedoMap.getDescriptorInfo();
-		imageInfos[1] = m_models[i].normalMap.getDescriptorInfo();
-		imageInfos[2] = m_models[i].roughnessMap.getDescriptorInfo();
-		imageInfos[3] = m_models[i].metalnessMap.getDescriptorInfo();
+		std::vector<VkDescriptorImageInfo> imageInfos =
+		{
+			m_models[i].albedoMap.getDescriptorInfo(),
+			m_models[i].normalMap.getDescriptorInfo(),
+			m_models[i].roughnessMap.getDescriptorInfo(),
+			m_models[i].metalnessMap.getDescriptorInfo()
+		};
+
+		std::vector<VkDescriptorBufferInfo> bufferInfos =
+		{
+			m_allUniformBuffer.getDescriptorInfo(
+				m_allUniformHostData.offsetOf(reinterpret_cast<const char *>(m_uTransMats)),
+				sizeof(TransMatsUniformBuffer)),
+			m_allUniformBuffer.getDescriptorInfo(
+				m_allUniformHostData.offsetOf(reinterpret_cast<const char *>(m_models[i].uPerModelInfo)),
+				sizeof(PerModelUniformBuffer))
+		};
 
 		std::array<VkWriteDescriptorSet, 2> descriptorWrites = {};
 
@@ -1313,12 +1499,12 @@ void DeferredRenderer::createStaticMeshDescriptorSet()
 		descriptorWrites[0].dstBinding = 0;
 		descriptorWrites[0].dstArrayElement = 0;
 		descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-		descriptorWrites[0].descriptorCount = 1;
-		descriptorWrites[0].pBufferInfo = &bufferInfo;
+		descriptorWrites[0].descriptorCount = static_cast<uint32_t>(bufferInfos.size());
+		descriptorWrites[0].pBufferInfo = bufferInfos.data();
 
 		descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		descriptorWrites[1].dstSet = m_geomDescriptorSets[i];
-		descriptorWrites[1].dstBinding = 1;
+		descriptorWrites[1].dstBinding = 2;
 		descriptorWrites[1].dstArrayElement = 0;
 		descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 		descriptorWrites[1].descriptorCount = static_cast<uint32_t>(imageInfos.size());
@@ -1405,6 +1591,25 @@ void DeferredRenderer::createFinalOutputPassDescriptorSets()
 	descriptorWrites[1].pImageInfo = imageInfos.data();
 
 	vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
+}
+
+void DeferredRenderer::createBrdfLutCommandBuffer()
+{
+	vkQueueWaitIdle(m_computeQueue);
+
+	VkCommandBufferBeginInfo beginInfo = {};
+	beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+
+	vkBeginCommandBuffer(m_brdfLutCommandBuffer, &beginInfo);
+
+	vkCmdBindPipeline(m_brdfLutCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_brdfLutPipeline);
+	vkCmdBindDescriptorSets(m_brdfLutCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_brdfLutPipelineLayout, 0, 1, &m_brdfLutDescriptorSet, 0, nullptr);
+
+	const uint32_t bsx = 16, bsy = 16;
+	const uint32_t brdfLutSizeX = BRDF_LUT_SIZE, brdfLutSizeY = BRDF_LUT_SIZE;
+	vkCmdDispatch(m_brdfLutCommandBuffer, brdfLutSizeX / bsx, brdfLutSizeY / bsy, 1);
+
+	vkEndCommandBuffer(m_brdfLutCommandBuffer);
 }
 
 void DeferredRenderer::createGeomAndLightingCommandBuffer()
@@ -1523,6 +1728,61 @@ void DeferredRenderer::createPresentCommandBuffers()
 			throw std::runtime_error("failed to record command buffer!");
 		}
 	}
+}
+
+void DeferredRenderer::prefilterEnvironmentAndComputeBrdfLut()
+{
+	// References:
+	//   [1] http://blog.selfshadow.com/publications/s2013-shading-course/karis/s2013_pbs_epic_notes_v2.pdf
+	//   [2] https://github.com/derkreature/IBLBaker
+
+	// Bake BRDF terms
+	VkSubmitInfo submitInfo = {};
+	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+	submitInfo.commandBufferCount = 1;
+	submitInfo.pCommandBuffers = &m_brdfLutCommandBuffer;
+	
+	if (vkQueueSubmit(m_computeQueue, 1, &submitInfo, m_brdfLutFence) != VK_SUCCESS)
+	{
+		throw std::runtime_error("failed to submit brdf lut command buffer.");
+	}
+
+	std::vector<VkFence> fences =
+	{
+		m_brdfLutFence
+	};
+	vkWaitForFences(m_device, static_cast<uint32_t>(fences.size()), fences.data(), VK_TRUE, std::numeric_limits<uint64_t>::max());
+	vkResetFences(m_device, static_cast<uint32_t>(fences.size()), fences.data());
+
+	// read back computation results and save to disk
+	transitionImageLayout(m_device, m_graphicsCommandPool, m_graphicsQueue,
+		m_brdfLutImage.image, m_brdfLutImage.format, m_brdfLutImage.mipLevels,
+		VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+	BufferWrapper stagingBuffer{ m_device };
+	VkDeviceSize sizeInBytes = BRDF_LUT_SIZE * BRDF_LUT_SIZE * sizeof(glm::vec2);
+
+	createBuffer(m_physicalDevice, m_device, sizeInBytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+		stagingBuffer.buffer, stagingBuffer.bufferMemory);
+
+	VkBufferImageCopy imageCopyRegion = {};
+	imageCopyRegion.imageExtent = { BRDF_LUT_SIZE, BRDF_LUT_SIZE, 1 };
+	imageCopyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	imageCopyRegion.imageSubresource.layerCount = 1;
+	imageCopyRegion.imageSubresource.mipLevel = 0;
+
+	// Tiling mode difference is handled by Vulkan automatically
+	copyImageToBuffer(m_device, m_graphicsCommandPool, m_graphicsQueue, { imageCopyRegion }, m_brdfLutImage.image, stagingBuffer.buffer);
+
+	void* data;
+	std::vector<glm::vec2> hostBrdfLutPixels(BRDF_LUT_SIZE * BRDF_LUT_SIZE);
+	vkMapMemory(m_device, stagingBuffer.bufferMemory, 0, sizeInBytes, 0, &data);
+	memcpy(&hostBrdfLutPixels[0], data, sizeInBytes);
+	vkUnmapMemory(m_device, stagingBuffer.bufferMemory);
+
+	saveImage2D("../textures/BRDF_LUTs/FSchlick_DGGX_GSmith.dds", BRDF_LUT_SIZE, BRDF_LUT_SIZE, sizeof(glm::vec2), 1, gli::FORMAT_RG32_SFLOAT_PACK32, hostBrdfLutPixels.data());
+	hostBrdfLutPixels.clear();
 }
 
 VkFormat DeferredRenderer::findDepthFormat()

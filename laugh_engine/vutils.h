@@ -131,11 +131,11 @@ struct ImageWrapper
 		format{ format }
 	{}
 
-	VkDescriptorImageInfo getDescriptorInfo()
+	VkDescriptorImageInfo getDescriptorInfo(VkImageLayout layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
 	{
 		VkDescriptorImageInfo imageInfo = {};
 		imageInfo.imageView = imageView;
-		imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		imageInfo.imageLayout = layout;
 		imageInfo.sampler = sampler;
 		return imageInfo;
 	}
@@ -178,7 +178,7 @@ struct QueueFamilyIndices
 	void findQueueFamilies(
 		VkPhysicalDevice device,
 		VkSurfaceKHR surface,
-		VkQueueFlagBits desiredFamilies = VK_QUEUE_GRAPHICS_BIT)
+		VkQueueFlags desiredFamilies = VK_QUEUE_GRAPHICS_BIT)
 	{
 		bool wantGraphics = desiredFamilies & VK_QUEUE_GRAPHICS_BIT;
 		bool dedicatedCompute = desiredFamilies & VK_QUEUE_COMPUTE_BIT;
@@ -230,6 +230,12 @@ struct QueueFamilyIndices
 					break;
 				}
 			}
+
+			// fall back to using graphcis queue if no dedicated comptue queue is available
+			if (computeFamily < 0)
+			{
+				computeFamily = graphicsFamily;
+			}
 		}
 		else
 		{
@@ -252,6 +258,11 @@ struct QueueFamilyIndices
 					transferFamily = i;
 					break;
 				}
+			}
+
+			if (transferFamily < 0)
+			{
+				transferFamily = graphicsFamily < 0 ? computeFamily : graphicsFamily;
 			}
 		}
 		else
@@ -483,6 +494,37 @@ static void createShaderModule(VkDevice device, const std::vector<char>& code, V
 		throw std::runtime_error("failed to create shader module!");
 	}
 }
+
+struct DefaultComputePipelineCreateInfo
+{
+	VkPipelineLayoutCreateInfo pipelineLayoutInfo;
+
+	VkComputePipelineCreateInfo pipelineInfo;
+
+	VDeleter<VkShaderModule> computeShaderModule;
+
+	DefaultComputePipelineCreateInfo(
+		const VDeleter<VkDevice> &device,
+		const ShaderFileNames &shaderFiles) :
+		computeShaderModule{ device, vkDestroyShaderModule }
+	{
+		assert(!shaderFiles.cs.empty());
+
+		pipelineLayoutInfo = {};
+		pipelineInfo = {};
+
+		pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+
+		auto shaderCode = readFile(shaderFiles.cs.c_str());
+		createShaderModule(device, shaderCode, computeShaderModule);
+
+		pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+		pipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+		pipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+		pipelineInfo.stage.module = computeShaderModule;
+		pipelineInfo.stage.pName = "main";
+	}
+};
 
 struct DefaultGraphicsPipelineCreateInfo
 {
@@ -864,6 +906,16 @@ static void transitionImageLayout(VkDevice device, VkCommandPool commandPool, Vk
 		barrier.srcAccessMask = 0;
 		barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 	}
+	else if (oldLayout == VK_IMAGE_LAYOUT_PREINITIALIZED && newLayout == VK_IMAGE_LAYOUT_GENERAL)
+	{
+		barrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
+		barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+	}
+	else if (oldLayout == VK_IMAGE_LAYOUT_GENERAL && newLayout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
+	{
+		barrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+		barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+	}
 	else
 	{
 		throw std::invalid_argument("unsupported layout transition!");
@@ -1032,6 +1084,18 @@ static void copyBufferToBuffer(
 	endSingleTimeCommands(device, commandBuffer, submitQueue, commandPool);
 }
 
+static void copyImageToBuffer(
+	VkDevice device, VkCommandPool commandPool, VkQueue submitQueue,
+	const std::vector<VkBufferImageCopy> &imageCopyRegions, VkImage srcImage, VkBuffer dstBuffer)
+{
+	VkCommandBuffer commandBuffer = beginSingleTimeCommands(device, commandPool);
+
+	vkCmdCopyImageToBuffer(commandBuffer, srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+		dstBuffer, static_cast<uint32_t>(imageCopyRegions.size()), imageCopyRegions.data());
+
+	endSingleTimeCommands(device, commandBuffer, submitQueue, commandPool);
+}
+
 static void getDefaultSamplerCreateInfo(VkSamplerCreateInfo &samplerInfo)
 {
 	samplerInfo = {};
@@ -1093,6 +1157,9 @@ static void loadTextureNoSampler(
 		break;
 	case gli::FORMAT_RGBA_DXT5_UNORM_BLOCK16:
 		format = VK_FORMAT_BC3_UNORM_BLOCK;
+		break;
+	case gli::FORMAT_RG32_SFLOAT_PACK32:
+		format = VK_FORMAT_R32G32_SFLOAT;
 		break;
 	default:
 		throw std::runtime_error("texture format is not supported.");
@@ -1331,5 +1398,30 @@ static void loadCubemap(
 	if (vkCreateSampler(device, &samplerInfo, nullptr, texture.sampler.replace()) != VK_SUCCESS)
 	{
 		throw std::runtime_error("failed to create texture sampler!");
+	}
+}
+
+// Address computation: layerIdx * layerSize + faceIdx * faceSize + levelSize(0) + ... + levelSize(levelIdx - 1)
+// layerCount is always 1 for 2D image (you need a texture2d_array to use layers)
+// faceCount is always 1 for 2D image
+static void saveImage2D(
+	const std::string &fileName,
+	uint32_t width, uint32_t height, uint32_t bytesPerPixel,
+	uint32_t mipLevels, gli::format format,
+	const void *pixelData)
+{
+	assert(width > 0 && height > 0);
+	assert(mipLevels > 0);
+	assert(pixelData);
+
+	gli::extent2d extent = { width, height };
+	gli::texture2d image(gli::FORMAT_RG32_SFLOAT_PACK32, extent, mipLevels);
+
+	size_t sizeInBytes = width * height * bytesPerPixel;
+	memcpy(image.data(), pixelData, sizeInBytes);
+
+	if (!gli::save(image, fileName))
+	{
+		throw std::runtime_error("unable to save image " + fileName);
 	}
 }

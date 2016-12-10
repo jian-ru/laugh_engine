@@ -8,9 +8,7 @@ layout (location = 2) in vec2 inTexcoord;
 
 layout (std140, set = 0, binding = 0) uniform UBO 
 {
-	mat4 MVP;
-	mat4 M;
-	mat4 M_invTrans;
+	mat4 VP;
 };
 
 layout (location = 0) out vec3 outUVW;
@@ -23,7 +21,7 @@ out gl_PerVertex
 
 void main() 
 {
-	gl_Position = MVP * vec4(inPosition, 1.0);
+	gl_Position = VP * vec4(inPosition, 1.0);
 	
 	outUVW = inPosition;
 }

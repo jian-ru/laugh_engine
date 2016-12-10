@@ -53,7 +53,10 @@ public:
 	static bool leftMBDown, middleMBDown;
 	static float lastX, lastY;
 
-	Camera m_camera{ glm::vec3(0.f, 1.f, 3.f), glm::vec3(0.f, 0.f, 0.f), glm::radians(45.f), float(m_width) / m_height, .1f, 100.f };
+	Camera m_camera{
+		glm::vec3(-1.74542487f, 1.01875722f, -2.32838178f),
+		glm::vec3(0.326926917f, 0.0790613592f, -0.198676541f),
+		glm::radians(45.f), float(m_width) / m_height, .1f, 100.f };
 
 #ifdef NDEBUG
 	bool enableValidationLayers = false;
@@ -175,12 +178,14 @@ protected:
 
 	VkQueue m_graphicsQueue; // queues are implicitly released when the logical device is released
 	VkQueue m_presentQueue;
+	VkQueue m_computeQueue;
 
 	SwapChainWrapper m_swapChain{ m_device };
 
 	VDeleter<VkDescriptorPool> m_descriptorPool{ m_device, vkDestroyDescriptorPool };
 
 	VDeleter<VkCommandPool> m_graphicsCommandPool{ m_device, vkDestroyCommandPool };
+	VDeleter<VkCommandPool> m_computeCommandPool{ m_device, vkDestroyCommandPool };
 	std::vector<VkCommandBuffer> m_presentCommandBuffers;
 	std::vector<VDeleter<VkFramebuffer>> m_finalOutputFramebuffers; // present framebuffers
 
@@ -214,8 +219,10 @@ protected:
 
 	virtual void createRenderPasses() = 0;
 	virtual void createDescriptorSetLayouts() = 0;
+	virtual void createComputePipelines() {}
 	virtual void createGraphicsPipelines() = 0;
 	virtual void createCommandPools() = 0;
+	virtual void createComputeResources() {}
 	virtual void createDepthResources() = 0;
 	virtual void createColorAttachmentResources() = 0;
 	virtual void createFramebuffers() = 0;
@@ -370,7 +377,7 @@ void VBaseGraphics::createLogicalDevice()
 		queueCreateInfos.push_back(queueCreateInfo);
 	}
 
-	VkPhysicalDeviceFeatures deviceFeatures{};
+	VkPhysicalDeviceFeatures deviceFeatures = {};
 	getEnabledPhysicalDeviceFeatures(deviceFeatures);
 
 	VkDeviceCreateInfo createInfo = {};
@@ -505,8 +512,10 @@ void VBaseGraphics::initVulkan()
 	createPipelineCache();
 	createRenderPasses();
 	createDescriptorSetLayouts();
+	createComputePipelines();
 	createGraphicsPipelines();
 	createCommandPools();
+	createComputeResources();
 	createDepthResources();
 	createColorAttachmentResources();
 	createFramebuffers();
@@ -579,7 +588,7 @@ void VBaseGraphics::recreateSwapChain()
 
 bool VBaseGraphics::isDeviceSuitable(VkPhysicalDevice physicalDevice)
 {
-	m_queueFamilyIndices.findQueueFamilies(physicalDevice, m_surface);
+	m_queueFamilyIndices.findQueueFamilies(physicalDevice, m_surface, VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT);
 
 	bool extensionsSupported = checkDeviceExtensionSupport(physicalDevice, m_deviceExtensions);
 
@@ -592,7 +601,9 @@ bool VBaseGraphics::isDeviceSuitable(VkPhysicalDevice physicalDevice)
 
 	auto isQueueFamilyIndicesComplete = [this]()
 	{
-		return m_queueFamilyIndices.graphicsFamily >= 0 && m_queueFamilyIndices.presentFamily >= 0;
+		return m_queueFamilyIndices.graphicsFamily >= 0 &&
+			m_queueFamilyIndices.presentFamily >= 0 &&
+			m_queueFamilyIndices.computeFamily >= 0;
 	};
 
 	return isQueueFamilyIndicesComplete() && extensionsSupported && swapChainAdequate;
@@ -605,13 +616,14 @@ std::set<int> VBaseGraphics::getUniqueQueueFamilyIndices()
 
 void VBaseGraphics::getEnabledPhysicalDeviceFeatures(VkPhysicalDeviceFeatures &features)
 {
-	features = VkPhysicalDeviceFeatures{};
+	features.shaderStorageImageExtendedFormats = VK_TRUE;
 }
 
 void VBaseGraphics::getRequiredQueues()
 {
 	vkGetDeviceQueue(m_device, m_queueFamilyIndices.graphicsFamily, 0, &m_graphicsQueue);
 	vkGetDeviceQueue(m_device, m_queueFamilyIndices.presentFamily, 0, &m_presentQueue);
+	vkGetDeviceQueue(m_device, m_queueFamilyIndices.computeFamily, 0, &m_computeQueue);
 }
 
 /**
