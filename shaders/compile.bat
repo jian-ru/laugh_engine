@@ -15,4 +15,9 @@ C:/VulkanSDK/1.0.30.0/Bin/glslangValidator.exe -V fullscreen.vert -o fullscreen.
 
 C:/VulkanSDK/1.0.30.0/Bin/glslangValidator.exe -V brdf_lut_pass/brdf_lut.comp -o brdf_lut_pass/brdf_lut.comp.spv
 
+C:/VulkanSDK/1.0.30.0/Bin/glslangValidator.exe -V specular_environment_pass/specular_environment.vert -o specular_environment_pass/specular_environment.vert.spv
+C:/VulkanSDK/1.0.30.0/Bin/glslangValidator.exe -V specular_environment_pass/specular_environment.geom -o specular_environment_pass/specular_environment.geom.spv
+C:/VulkanSDK/1.0.30.0/Bin/glslangValidator.exe -V specular_environment_pass/specular_environment.frag -o specular_environment_pass/specular_environment.frag.spv
+
+
 pause

@@ -51,6 +51,7 @@
 #include "vbase.h"
 
 #define BRDF_LUT_SIZE 256
+#define SPEC_IRRADIANCE_MAP_SIZE 512
 #define ALL_UNIFORM_BLOB_SIZE (64 * 1024)
 #define NUM_LIGHTS 2
 
@@ -96,10 +97,12 @@ public:
 	virtual void run();
 
 protected:
+	VDeleter<VkRenderPass> m_specEnvPrefilterRenderPass{ m_device, vkDestroyRenderPass };
 	VDeleter<VkRenderPass> m_geomAndLightRenderPass{ m_device, vkDestroyRenderPass };
 	VDeleter<VkRenderPass> m_finalOutputRenderPass{ m_device, vkDestroyRenderPass };
 
 	VDeleter<VkDescriptorSetLayout> m_brdfLutDescriptorSetLayout{ m_device, vkDestroyDescriptorSetLayout };
+	VDeleter<VkDescriptorSetLayout> m_specEnvPrefilterDescriptorSetLayout{ m_device, vkDestroyDescriptorSetLayout };
 	VDeleter<VkDescriptorSetLayout> m_skyboxDescriptorSetLayout{ m_device, vkDestroyDescriptorSetLayout };
 	VDeleter<VkDescriptorSetLayout> m_geomDescriptorSetLayout{ m_device, vkDestroyDescriptorSetLayout };
 	VDeleter<VkDescriptorSetLayout> m_lightingDescriptorSetLayout{ m_device, vkDestroyDescriptorSetLayout };
@@ -107,6 +110,8 @@ protected:
 
 	VDeleter<VkPipelineLayout> m_brdfLutPipelineLayout{ m_device, vkDestroyPipelineLayout };
 	VDeleter<VkPipeline> m_brdfLutPipeline{ m_device, vkDestroyPipeline };
+	VDeleter<VkPipelineLayout> m_specEnvPrefilterPipelineLayout{ m_device, vkDestroyPipelineLayout };
+	VDeleter<VkPipeline> m_specEnvPrefilterPipeline{ m_device, vkDestroyPipeline };
 	VDeleter<VkPipelineLayout> m_skyboxPipelineLayout{ m_device, vkDestroyPipelineLayout };
 	VDeleter<VkPipeline> m_skyboxPipeline{ m_device, vkDestroyPipeline };
 	VDeleter<VkPipelineLayout> m_geomPipelineLayout{ m_device, vkDestroyPipelineLayout };
@@ -119,7 +124,7 @@ protected:
 	VDeleter<VkPipeline> m_finalOutputPipeline{ m_device, vkDestroyPipeline };
 
 	ImageWrapper m_brdfLutImage{ m_device }; // used as compute shader output
-
+	ImageWrapper m_specIrradianceImage{ m_device, VK_FORMAT_R32G32B32A32_SFLOAT }; // contain all the mips of a cube map
 	ImageWrapper m_depthImage{ m_device };
 	ImageWrapper m_lightingResultImage{ m_device, VK_FORMAT_R16G16B16A16_SFLOAT };
 	std::vector<ImageWrapper> m_gbufferImages = { { m_device, VK_FORMAT_R32G32B32A32_SFLOAT }, { m_device, VK_FORMAT_R32G32B32A32_SFLOAT } };
@@ -136,6 +141,7 @@ protected:
 	VkDescriptorSet m_lightingDescriptorSet;
 	VkDescriptorSet m_finalOutputDescriptorSet;
 
+	std::vector<VDeleter<VkFramebuffer>> m_specEnvPrefilterFramebuffers;
 	VDeleter<VkFramebuffer> m_geomAndLightingFramebuffer{ m_device, vkDestroyFramebuffer };
 
 	VDeleter<VkSemaphore> m_imageAvailableSemaphore{ m_device, vkDestroySemaphore };
@@ -169,10 +175,12 @@ protected:
 	virtual void drawFrame();
 
 	// Helpers
+	virtual void createSpecEnvPrefilterRenderPass();
 	virtual void createGeometryAndLightingRenderPass();
 	virtual void createFinalOutputRenderPass();
 
 	virtual void createBrdfLutDescriptorSetLayout();
+	virtual void createSpecEnvPrefilterDescriptorSetLayout();
 	virtual void createSkyboxDescriptorSetLayout();
 	virtual void createStaticMeshDescriptorSetLayout();
 	virtual void createGeomPassDescriptorSetLayout();
@@ -180,6 +188,7 @@ protected:
 	virtual void createFinalOutputDescriptorSetLayout();
 
 	virtual void createBrdfLutPipeline();
+	virtual void createSpecEnvPrefilterPipeline();
 	virtual void createSkyboxPipeline();
 	virtual void createStaticMeshPipeline();
 	virtual void createGeomPassPipeline();
@@ -340,6 +349,7 @@ void DeferredRenderer::drawFrame()
 
 void DeferredRenderer::createRenderPasses()
 {
+	createSpecEnvPrefilterRenderPass();
 	createGeometryAndLightingRenderPass();
 	createFinalOutputRenderPass();
 }
@@ -347,6 +357,7 @@ void DeferredRenderer::createRenderPasses()
 void DeferredRenderer::createDescriptorSetLayouts()
 {
 	createBrdfLutDescriptorSetLayout();
+	createSpecEnvPrefilterDescriptorSetLayout();
 	createGeomPassDescriptorSetLayout();
 	createLightingPassDescriptorSetLayout();
 	createFinalOutputDescriptorSetLayout();
@@ -359,6 +370,7 @@ void DeferredRenderer::createComputePipelines()
 
 void DeferredRenderer::createGraphicsPipelines()
 {
+	createSpecEnvPrefilterPipeline();
 	createGeomPassPipeline();
 	createLightingPassPipeline();
 	createFinalOutputPassPipeline();
@@ -419,6 +431,25 @@ void DeferredRenderer::createDepthResources()
 
 void DeferredRenderer::createColorAttachmentResources()
 {
+	// Specular irradiance map
+	uint32_t mipLevels = static_cast<uint32_t>(floor(log2f(SPEC_IRRADIANCE_MAP_SIZE) + 0.5f));
+	m_specIrradianceImage.mipLevels = mipLevels;
+
+	createCubemapImage(m_physicalDevice, m_device,
+		SPEC_IRRADIANCE_MAP_SIZE, SPEC_IRRADIANCE_MAP_SIZE,
+		mipLevels,
+		m_specIrradianceImage.format, VK_IMAGE_TILING_OPTIMAL,
+		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+		m_specIrradianceImage.image, m_specIrradianceImage.imageMemory);
+
+	m_specIrradianceImage.imageViews.resize(mipLevels, { m_device, vkDestroyImageView });
+	for (uint32_t level = 0; level < mipLevels; ++level)
+	{
+		createImageViewCube(m_device, m_specIrradianceImage.image, m_specIrradianceImage.format,
+			VK_IMAGE_ASPECT_COLOR_BIT, level, 1, m_specIrradianceImage.imageViews[level]);
+	}
+
 	// Gbuffer images
 	for (auto &image : m_gbufferImages)
 	{
@@ -605,6 +636,30 @@ void DeferredRenderer::createDescriptorSets()
 
 void DeferredRenderer::createFramebuffers()
 {
+	// Specular irradiance map pass
+	m_specEnvPrefilterFramebuffers.resize(m_specIrradianceImage.mipLevels, { m_device, vkDestroyFramebuffer });
+	for (uint32_t level = 0; level < m_specIrradianceImage.mipLevels; ++level)
+	{
+		std::array<VkImageView, 1> attachments =
+		{
+			m_specIrradianceImage.imageViews[level]
+		};
+
+		VkFramebufferCreateInfo framebufferInfo = {};
+		framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+		framebufferInfo.renderPass = m_specEnvPrefilterRenderPass;
+		framebufferInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
+		framebufferInfo.pAttachments = attachments.data();
+		framebufferInfo.width = m_swapChain.swapChainExtent.width;
+		framebufferInfo.height = m_swapChain.swapChainExtent.height;
+		framebufferInfo.layers = 6;
+
+		if (vkCreateFramebuffer(m_device, &framebufferInfo, nullptr, m_specEnvPrefilterFramebuffers[level].replace()) != VK_SUCCESS)
+		{
+			throw std::runtime_error("failed to create framebuffer!");
+		}
+	}
+
 	// Used in geometry and lighting pass
 	std::array<VkImageView, 4> attachments =
 	{
@@ -728,6 +783,60 @@ void DeferredRenderer::createSynchronizationObjects()
 	if (vkCreateFence(m_device, &fenceInfo, nullptr, m_brdfLutFence.replace()) != VK_SUCCESS)
 	{
 		throw std::runtime_error("failed to create brdf lut fence!");
+	}
+}
+
+void DeferredRenderer::createSpecEnvPrefilterRenderPass()
+{
+	std::array<VkAttachmentDescription, 1> attachments = {};
+
+	// Cube map faces of one mip level
+	attachments[0].format = m_specIrradianceImage.format;
+	attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
+	attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+	attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+	attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+	attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	attachments[0].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+	std::array<VkAttachmentReference, 1> colorAttachmentRefs = {};
+	colorAttachmentRefs[0].attachment = 0;
+	colorAttachmentRefs[0].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+	std::array<VkSubpassDescription, 1> subPasses = {};
+	subPasses[0].pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+	subPasses[0].colorAttachmentCount = static_cast<uint32_t>(colorAttachmentRefs.size());
+	subPasses[0].pColorAttachments = colorAttachmentRefs.data();
+
+	std::array<VkSubpassDependency, 2> dependencies = {};
+
+	dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+	dependencies[0].dstSubpass = 0;
+	dependencies[0].srcStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+	dependencies[0].srcAccessMask = 0;
+	dependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+	dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+	dependencies[1].srcSubpass = 0;
+	dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+	dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+	dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+	dependencies[1].dstStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+	dependencies[1].dstAccessMask = 0;
+
+	VkRenderPassCreateInfo renderPassInfo = {};
+	renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+	renderPassInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
+	renderPassInfo.pAttachments = attachments.data();
+	renderPassInfo.subpassCount = static_cast<uint32_t>(subPasses.size());
+	renderPassInfo.pSubpasses = subPasses.data();
+	renderPassInfo.dependencyCount = static_cast<uint32_t>(dependencies.size());
+	renderPassInfo.pDependencies = dependencies.data();
+
+	if (vkCreateRenderPass(m_device, &renderPassInfo, nullptr, m_specEnvPrefilterRenderPass.replace()) != VK_SUCCESS)
+	{
+		throw std::runtime_error("failed to create render pass!");
 	}
 }
 
@@ -958,6 +1067,35 @@ void DeferredRenderer::createBrdfLutDescriptorSetLayout()
 	}
 }
 
+void DeferredRenderer::createSpecEnvPrefilterDescriptorSetLayout()
+{
+	std::array<VkDescriptorSetLayoutBinding, 2> bindings = {};
+
+	// 6 View matrices + projection matrix
+	bindings[0].binding = 0;
+	bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	bindings[0].descriptorCount = 1;
+	bindings[0].stageFlags = VK_SHADER_STAGE_GEOMETRY_BIT;
+	bindings[0].pImmutableSamplers = nullptr;
+
+	// HDR probe a.k.a. radiance environment map with mips
+	bindings[1].binding = 1;
+	bindings[1].descriptorCount = 1;
+	bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	bindings[1].pImmutableSamplers = nullptr;
+
+	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
+	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	layoutInfo.bindingCount = bindings.size();
+	layoutInfo.pBindings = bindings.data();
+
+	if (vkCreateDescriptorSetLayout(m_device, &layoutInfo, nullptr, m_specEnvPrefilterDescriptorSetLayout.replace()) != VK_SUCCESS)
+	{
+		throw std::runtime_error("failed to create descriptor set layout!");
+	}
+}
+
 void DeferredRenderer::createGeomPassDescriptorSetLayout()
 {
 	createStaticMeshDescriptorSetLayout();
@@ -1181,6 +1319,66 @@ void DeferredRenderer::createBrdfLutPipeline()
 	if (vkCreateComputePipelines(m_device, m_pipelineCache, 1, &infos.pipelineInfo, nullptr, m_brdfLutPipeline.replace()) != VK_SUCCESS)
 	{
 		throw std::runtime_error("failed to create brdf lut pass pipeline!");
+	}
+}
+
+void DeferredRenderer::createSpecEnvPrefilterPipeline()
+{
+	ShaderFileNames shaderFiles;
+	shaderFiles.vs = "../shaders/specular_environment_pass/specular_environment.vert.spv";
+	shaderFiles.gs = "../shaders/specular_environment_pass/specular_environment.geom.spv";
+	shaderFiles.fs = "../shaders/specular_environment_pass/specular_environment.frag.spv";
+
+	DefaultGraphicsPipelineCreateInfo infos{ m_device, shaderFiles };
+
+	auto bindingDescription = Vertex::getBindingDescription();
+	auto attributeDescriptions = Vertex::getAttributeDescriptions();
+
+	infos.vertexInputInfo.vertexBindingDescriptionCount = 1;
+	infos.vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
+	infos.vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+	infos.vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
+
+	infos.rasterizerInfo.cullMode = VK_CULL_MODE_NONE;
+
+	infos.depthStencilInfo.depthTestEnable = VK_FALSE;
+	infos.depthStencilInfo.depthWriteEnable = VK_FALSE;
+	infos.depthStencilInfo.depthCompareOp = VK_COMPARE_OP_ALWAYS;
+
+	std::vector<VkDynamicState> dynamicStateEnables =
+	{
+		VK_DYNAMIC_STATE_VIEWPORT,
+		VK_DYNAMIC_STATE_SCISSOR
+	};
+	infos.dynamicStateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+	infos.dynamicStateInfo.dynamicStateCount = static_cast<uint32_t>(dynamicStateEnables.size());
+	infos.dynamicStateInfo.pDynamicStates = dynamicStateEnables.data();
+
+	VkDescriptorSetLayout setLayouts[] = { m_specEnvPrefilterDescriptorSetLayout };
+	infos.pipelineLayoutInfo.setLayoutCount = 1;
+	infos.pipelineLayoutInfo.pSetLayouts = setLayouts;
+
+	infos.pushConstantRanges.resize(1);
+	infos.pushConstantRanges[0].offset = 0;
+	infos.pushConstantRanges[0].size = sizeof(uint32_t);
+	infos.pushConstantRanges[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+	infos.pipelineLayoutInfo.pushConstantRangeCount = static_cast<uint32_t>(infos.pushConstantRanges.size());
+	infos.pipelineLayoutInfo.pPushConstantRanges = infos.pushConstantRanges.data();
+
+	if (vkCreatePipelineLayout(m_device, &infos.pipelineLayoutInfo, nullptr, m_specEnvPrefilterPipelineLayout.replace()) != VK_SUCCESS)
+	{
+		throw std::runtime_error("failed to create specular environment pipeline layout!");
+	}
+
+	infos.pipelineInfo.layout = m_specEnvPrefilterPipelineLayout;
+	infos.pipelineInfo.renderPass = m_specEnvPrefilterRenderPass;
+	infos.pipelineInfo.subpass = 0;
+	infos.pipelineInfo.pDynamicState = &infos.dynamicStateInfo;
+
+	if (vkCreateGraphicsPipelines(m_device, m_pipelineCache, 1, &infos.pipelineInfo, nullptr, m_specEnvPrefilterPipeline.replace()) != VK_SUCCESS)
+	{
+		throw std::runtime_error("failed to create specular environment pipeline!");
 	}
 }
 

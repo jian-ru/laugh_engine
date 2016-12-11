@@ -115,6 +115,7 @@ struct ImageWrapper
 	VDeleter<VkImage> image;
 	VDeleter<VkDeviceMemory> imageMemory;
 	VDeleter<VkImageView> imageView;
+	std::vector<VDeleter<VkImageView>> imageViews; // for images with multiple views
 	VDeleter<VkSampler> sampler;
 	VkFormat format;
 	uint32_t mipLevels = 0;
@@ -544,6 +545,7 @@ struct DefaultGraphicsPipelineCreateInfo
 	VkGraphicsPipelineCreateInfo pipelineInfo;
 
 	VDeleter<VkShaderModule> vertShaderModule;
+	VDeleter<VkShaderModule> geomShaderModule;
 	VDeleter<VkShaderModule> fragShaderModule;
 
 	std::vector<VkPipelineShaderStageCreateInfo> shaderStages;
@@ -553,6 +555,7 @@ struct DefaultGraphicsPipelineCreateInfo
 		const ShaderFileNames &shaderFiles)
 		:
 		vertShaderModule{ device, vkDestroyShaderModule },
+		geomShaderModule{ device, vkDestroyShaderModule },
 		fragShaderModule{ device, vkDestroyShaderModule }
 	{
 		pipelineLayoutInfo = {};
@@ -588,6 +591,10 @@ struct DefaultGraphicsPipelineCreateInfo
 		if (!shaderFiles.vs.empty())
 		{
 			fillShaderStageInfo(shaderFiles.vs, VK_SHADER_STAGE_VERTEX_BIT, vertShaderModule);
+		}
+		if (!shaderFiles.gs.empty())
+		{
+			fillShaderStageInfo(shaderFiles.gs, VK_SHADER_STAGE_GEOMETRY_BIT, geomShaderModule);
 		}
 		if (!shaderFiles.fs.empty())
 		{
@@ -794,7 +801,8 @@ static void createImageView2D(VkDevice device,
 }
 
 static void createImageViewCube(VkDevice device,
-	VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, uint32_t mipLevelCount,
+	VkImage image, VkFormat format, VkImageAspectFlags aspectFlags,
+	uint32_t baseMipLevel, uint32_t mipLevelCount,
 	VDeleter<VkImageView>& imageView)
 {
 	VkImageViewCreateInfo viewInfo = {};
@@ -803,7 +811,7 @@ static void createImageViewCube(VkDevice device,
 	viewInfo.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
 	viewInfo.format = format;
 	viewInfo.subresourceRange.aspectMask = aspectFlags;
-	viewInfo.subresourceRange.baseMipLevel = 0;
+	viewInfo.subresourceRange.baseMipLevel = baseMipLevel;
 	viewInfo.subresourceRange.levelCount = mipLevelCount;
 	viewInfo.subresourceRange.baseArrayLayer = 0;
 	viewInfo.subresourceRange.layerCount = 6;
@@ -812,6 +820,13 @@ static void createImageViewCube(VkDevice device,
 	{
 		throw std::runtime_error("failed to create texture image view!");
 	}
+}
+
+static void createImageViewCube(VkDevice device,
+	VkImage image, VkFormat format, VkImageAspectFlags aspectFlags, uint32_t mipLevelCount,
+	VDeleter<VkImageView>& imageView)
+{
+	createImageViewCube(device, image, format, aspectFlags, 0, mipLevelCount, imageView);
 }
 
 static VkCommandBuffer beginSingleTimeCommands(VkDevice device, VkCommandPool commandPool)
