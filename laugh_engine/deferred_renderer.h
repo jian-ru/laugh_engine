@@ -130,7 +130,6 @@ protected:
 	VDeleter<VkPipelineLayout> m_finalOutputPipelineLayout{ m_device, vkDestroyPipelineLayout };
 	VDeleter<VkPipeline> m_finalOutputPipeline{ m_device, vkDestroyPipeline };
 
-	ImageWrapper m_brdfLutImage{ m_device }; // used as compute shader output
 	ImageWrapper m_depthImage{ m_device };
 	ImageWrapper m_lightingResultImage{ m_device, VK_FORMAT_R16G16B16A16_SFLOAT };
 	std::vector<ImageWrapper> m_gbufferImages = { { m_device, VK_FORMAT_R32G32B32A32_SFLOAT }, { m_device, VK_FORMAT_R32G32B32A32_SFLOAT } };
@@ -224,6 +223,7 @@ protected:
 	virtual void createPresentCommandBuffers();
 
 	virtual void prefilterEnvironmentAndComputeBrdfLut();
+	virtual void savePrecomputationResults();
 
 	virtual VkFormat findDepthFormat();
 };
@@ -238,6 +238,7 @@ void DeferredRenderer::run()
 	initVulkan();
 	prefilterEnvironmentAndComputeBrdfLut();
 	mainLoop();
+	savePrecomputationResults();
 }
 
 void DeferredRenderer::updateUniformBuffers()
@@ -410,21 +411,48 @@ void DeferredRenderer::createCommandPools()
 void DeferredRenderer::createComputeResources()
 {
 	// BRDF LUT
-	m_brdfLutImage.mipLevels = 1;
-	m_brdfLutImage.format = VK_FORMAT_R32G32_SFLOAT;
+	//std::string brdfFileName = "../textures/BRDF_LUTs/FSchlick_DGGX_GSmith.dds";
+	std::string brdfFileName = "";
+	m_bakedBRDFs.resize(1, { m_device });
 
-	createImage(
-		m_physicalDevice, m_device,
-		BRDF_LUT_SIZE, BRDF_LUT_SIZE, m_brdfLutImage.format,
-		VK_IMAGE_TILING_OPTIMAL,
-		VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, // want to read back and store to disk
-		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-		m_brdfLutImage.image, m_brdfLutImage.imageMemory);
+	VkSamplerCreateInfo clampedSampler = {};
+	getDefaultSamplerCreateInfo(clampedSampler);
+	clampedSampler.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+	clampedSampler.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+	clampedSampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+	clampedSampler.anisotropyEnable = VK_FALSE;
+	clampedSampler.maxAnisotropy = 0.f;
 
-	transitionImageLayout(m_device, m_graphicsCommandPool, m_graphicsQueue,
-		m_brdfLutImage.image, m_brdfLutImage.format, 1, VK_IMAGE_LAYOUT_PREINITIALIZED, VK_IMAGE_LAYOUT_GENERAL);
+	if (brdfFileName != "")
+	{
+		// Do not generate mip levels for BRDF LUTs
+		loadTextureWithSampler(m_physicalDevice, m_device, m_graphicsCommandPool, m_graphicsQueue, false, clampedSampler, brdfFileName, m_bakedBRDFs[0]);
+		m_bakedBrdfReady = true;
+	}
+	else
+	{
+		m_bakedBRDFs[0].mipLevels = 1;
+		m_bakedBRDFs[0].format = VK_FORMAT_R32G32_SFLOAT;
 
-	createImageView2D(m_device, m_brdfLutImage.image, m_brdfLutImage.format, VK_IMAGE_ASPECT_COLOR_BIT, 1, m_brdfLutImage.imageView);
+		createImage(
+			m_physicalDevice, m_device,
+			BRDF_LUT_SIZE, BRDF_LUT_SIZE, m_bakedBRDFs[0].format,
+			VK_IMAGE_TILING_OPTIMAL,
+			VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, // want to read back and store to disk
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+			m_bakedBRDFs[0].image, m_bakedBRDFs[0].imageMemory);
+
+		transitionImageLayout(m_device, m_graphicsCommandPool, m_graphicsQueue,
+			m_bakedBRDFs[0].image, m_bakedBRDFs[0].format, 1, VK_IMAGE_LAYOUT_PREINITIALIZED, VK_IMAGE_LAYOUT_GENERAL);
+
+		createImageView2D(m_device, m_bakedBRDFs[0].image, m_bakedBRDFs[0].format, VK_IMAGE_ASPECT_COLOR_BIT, 1, m_bakedBRDFs[0].imageView);
+
+		clampedSampler.maxLod = static_cast<float>(m_bakedBRDFs[0].mipLevels - 1);
+		if (vkCreateSampler(m_device, &clampedSampler, nullptr, m_bakedBRDFs[0].sampler.replace()) != VK_SUCCESS)
+		{
+			throw std::runtime_error("failed to create brdf lut sampler!");
+		}
+	}
 }
 
 void DeferredRenderer::createDepthResources()
@@ -499,24 +527,12 @@ void DeferredRenderer::createColorAttachmentResources()
 void DeferredRenderer::loadAndPrepareAssets()
 {
 	// TODO: implement scene file to allow flexible model loading
-	std::string brdfFileName = "../textures/BRDF_LUTs/FSchlick_DGGX_GSmith.dds";
-
-	VkSamplerCreateInfo clampedSampler = {};
-	getDefaultSamplerCreateInfo(clampedSampler);
-	clampedSampler.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-	clampedSampler.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-	clampedSampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-	clampedSampler.anisotropyEnable = VK_FALSE;
-	clampedSampler.maxAnisotropy = 0.f;
-
-	m_bakedBRDFs.resize(1, { m_device });
-	// Do not generate mip levels for BRDF LUTs
-	loadTextureWithSampler(m_physicalDevice, m_device, m_graphicsCommandPool, m_graphicsQueue, false, clampedSampler, brdfFileName, m_bakedBRDFs[0]);
-
 	std::string skyboxFileName = "../models/sky_sphere.obj";
 	std::string unfilteredProbeFileName = "../textures/Environment/PaperMill/Unfiltered_HDR.dds";
-	std::string specProbeFileName = "../textures/Environment/PaperMill/Specular_HDR.dds";
-	std::string diffuseProbeFileName = "../textures/Environment/PaperMill/Diffuse_HDR.dds";
+	//std::string specProbeFileName = "../textures/Environment/PaperMill/Specular_HDR.dds";
+	//std::string diffuseProbeFileName = "../textures/Environment/PaperMill/Diffuse_HDR.dds";
+	std::string specProbeFileName = "";
+	std::string diffuseProbeFileName = "";
 
 	m_skybox.load(m_physicalDevice, m_device, m_graphicsCommandPool, m_graphicsQueue, skyboxFileName, unfilteredProbeFileName, specProbeFileName, diffuseProbeFileName);
 
@@ -1712,7 +1728,7 @@ void DeferredRenderer::createBrdfLutDescriptorSet()
 {
 	std::vector<VkDescriptorImageInfo> imageInfos =
 	{
-		m_brdfLutImage.getDescriptorInfo(VK_IMAGE_LAYOUT_GENERAL)
+		m_bakedBRDFs[0].getDescriptorInfo(VK_IMAGE_LAYOUT_GENERAL)
 	};
 
 	std::array<VkWriteDescriptorSet, 1> descriptorWrites = {};
@@ -2164,37 +2180,70 @@ void DeferredRenderer::prefilterEnvironmentAndComputeBrdfLut()
 	updateUniformBuffers();
 
 	// Bake BRDF terms
+	std::vector<VkFence> fences;
+
 	VkSubmitInfo submitInfo = {};
 	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 	submitInfo.commandBufferCount = 1;
 	submitInfo.pCommandBuffers = &m_brdfLutCommandBuffer;
 	
-	if (vkQueueSubmit(m_computeQueue, 1, &submitInfo, m_brdfLutFence) != VK_SUCCESS)
+	if (!m_bakedBrdfReady)
 	{
-		throw std::runtime_error("failed to submit brdf lut command buffer.");
+		if (vkQueueSubmit(m_computeQueue, 1, &submitInfo, m_brdfLutFence) != VK_SUCCESS)
+		{
+			throw std::runtime_error("failed to submit brdf lut command buffer.");
+		}
+		fences.push_back(m_brdfLutFence);
 	}
 
 	// Prefilter radiance map
 	submitInfo.pCommandBuffers = &m_envPrefilterCommandBuffer;
 
-	if (vkQueueSubmit(m_graphicsQueue, 1, &submitInfo, m_envPrefilterFence) != VK_SUCCESS)
+	if (!m_skybox.diffMapReady || !m_skybox.specMapReady)
 	{
-		throw std::runtime_error("failed to submit environment prefilter command buffer.");
+		if (vkQueueSubmit(m_graphicsQueue, 1, &submitInfo, m_envPrefilterFence) != VK_SUCCESS)
+		{
+			throw std::runtime_error("failed to submit environment prefilter command buffer.");
+		}
+		fences.push_back(m_envPrefilterFence);
 	}
 
-	std::vector<VkFence> fences =
+	if (fences.size() > 0)
 	{
-		m_brdfLutFence,
-		m_envPrefilterFence
-	};
-	vkWaitForFences(m_device, static_cast<uint32_t>(fences.size()), fences.data(), VK_TRUE, std::numeric_limits<uint64_t>::max());
-	vkResetFences(m_device, static_cast<uint32_t>(fences.size()), fences.data());
+		vkWaitForFences(m_device, static_cast<uint32_t>(fences.size()), fences.data(), VK_TRUE, std::numeric_limits<uint64_t>::max());
+		vkResetFences(m_device, static_cast<uint32_t>(fences.size()), fences.data());
 
+		if (!m_bakedBrdfReady)
+		{
+			transitionImageLayout(m_device, m_graphicsCommandPool, m_graphicsQueue,
+				m_bakedBRDFs[0].image, m_bakedBRDFs[0].format, m_bakedBRDFs[0].mipLevels,
+				VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+			m_bakedBrdfReady = true;
+		}
+
+		if (!m_skybox.diffMapReady)
+		{
+			transitionImageLayout(m_device, m_graphicsCommandPool, m_graphicsQueue,
+				m_skybox.diffuseIrradianceMap.image, m_skybox.diffuseIrradianceMap.format, 6, m_skybox.diffuseIrradianceMap.mipLevels,
+				VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		}
+
+		if (!m_skybox.specMapReady)
+		{
+			transitionImageLayout(m_device, m_graphicsCommandPool, m_graphicsQueue,
+				m_skybox.specularIrradianceMap.image, m_skybox.specularIrradianceMap.format, 6, m_skybox.specularIrradianceMap.mipLevels,
+				VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		}
+	}
+}
+
+void DeferredRenderer::savePrecomputationResults()
+{
 	// read back computation results and save to disk
 	{
 		transitionImageLayout(m_device, m_graphicsCommandPool, m_graphicsQueue,
-			m_brdfLutImage.image, m_brdfLutImage.format, m_brdfLutImage.mipLevels,
-			VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+			m_bakedBRDFs[0].image, m_bakedBRDFs[0].format, m_bakedBRDFs[0].mipLevels,
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 
 		BufferWrapper stagingBuffer{ m_device };
 		VkDeviceSize sizeInBytes = BRDF_LUT_SIZE * BRDF_LUT_SIZE * sizeof(glm::vec2);
@@ -2210,7 +2259,7 @@ void DeferredRenderer::prefilterEnvironmentAndComputeBrdfLut()
 		imageCopyRegion.imageSubresource.mipLevel = 0;
 
 		// Tiling mode difference is handled by Vulkan automatically
-		copyImageToBuffer(m_device, m_graphicsCommandPool, m_graphicsQueue, { imageCopyRegion }, m_brdfLutImage.image, stagingBuffer.buffer);
+		copyImageToBuffer(m_device, m_graphicsCommandPool, m_graphicsQueue, { imageCopyRegion }, m_bakedBRDFs[0].image, stagingBuffer.buffer);
 
 		void* data;
 		std::vector<glm::vec2> hostBrdfLutPixels(BRDF_LUT_SIZE * BRDF_LUT_SIZE);
@@ -2218,14 +2267,14 @@ void DeferredRenderer::prefilterEnvironmentAndComputeBrdfLut()
 		memcpy(&hostBrdfLutPixels[0], data, sizeInBytes);
 		vkUnmapMemory(m_device, stagingBuffer.bufferMemory);
 
-		//saveImage2D("../textures/BRDF_LUTs/FSchlick_DGGX_GSmith.dds",
-		//	BRDF_LUT_SIZE, BRDF_LUT_SIZE, sizeof(glm::vec2), 1, gli::FORMAT_RG32_SFLOAT_PACK32, hostBrdfLutPixels.data());
+		saveImage2D("../textures/BRDF_LUTs/FSchlick_DGGX_GSmith.dds",
+			BRDF_LUT_SIZE, BRDF_LUT_SIZE, sizeof(glm::vec2), 1, gli::FORMAT_RG32_SFLOAT_PACK32, hostBrdfLutPixels.data());
 	}
 
 	{
 		transitionImageLayout(m_device, m_graphicsCommandPool, m_graphicsQueue,
 			m_skybox.diffuseIrradianceMap.image, m_skybox.diffuseIrradianceMap.format, 6, m_skybox.diffuseIrradianceMap.mipLevels,
-			VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 
 		BufferWrapper stagingBuffer{ m_device };
 		VkDeviceSize sizeInBytes = compute2DImageSizeInBytes(
@@ -2253,15 +2302,15 @@ void DeferredRenderer::prefilterEnvironmentAndComputeBrdfLut()
 		memcpy(&hostPixels[0], data, sizeInBytes);
 		vkUnmapMemory(m_device, stagingBuffer.bufferMemory);
 
-		//saveImageCube("../textures/Environment/PaperMill/Diffuse_HDR.dds",
-		//	DIFF_IRRADIANCE_MAP_SIZE, DIFF_IRRADIANCE_MAP_SIZE, sizeof(glm::vec4),
-		//	m_diffIrradianceImage.mipLevels, gli::FORMAT_RGBA32_SFLOAT_PACK32, hostPixels.data());
+		saveImageCube("../textures/Environment/PaperMill/Diffuse_HDR.dds",
+			DIFF_IRRADIANCE_MAP_SIZE, DIFF_IRRADIANCE_MAP_SIZE, sizeof(glm::vec4),
+			m_skybox.diffuseIrradianceMap.mipLevels, gli::FORMAT_RGBA32_SFLOAT_PACK32, hostPixels.data());
 	}
 
 	{
 		transitionImageLayout(m_device, m_graphicsCommandPool, m_graphicsQueue,
 			m_skybox.specularIrradianceMap.image, m_skybox.specularIrradianceMap.format, 6, m_skybox.specularIrradianceMap.mipLevels,
-			VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+			VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 
 		BufferWrapper stagingBuffer{ m_device };
 		VkDeviceSize sizeInBytes = compute2DImageSizeInBytes(
@@ -2305,10 +2354,12 @@ void DeferredRenderer::prefilterEnvironmentAndComputeBrdfLut()
 		memcpy(&hostPixels[0], data, sizeInBytes);
 		vkUnmapMemory(m_device, stagingBuffer.bufferMemory);
 
-		//saveImageCube("../textures/Environment/PaperMill/Specular_HDR.dds",
-		//	SPEC_IRRADIANCE_MAP_SIZE, SPEC_IRRADIANCE_MAP_SIZE, sizeof(glm::vec4),
-		//	m_specIrradianceImage.mipLevels, gli::FORMAT_RGBA32_SFLOAT_PACK32, hostPixels.data());
+		saveImageCube("../textures/Environment/PaperMill/Specular_HDR.dds",
+			SPEC_IRRADIANCE_MAP_SIZE, SPEC_IRRADIANCE_MAP_SIZE, sizeof(glm::vec4),
+			m_skybox.specularIrradianceMap.mipLevels, gli::FORMAT_RGBA32_SFLOAT_PACK32, hostPixels.data());
 	}
+
+	vkDeviceWaitIdle(m_device);
 }
 
 VkFormat DeferredRenderer::findDepthFormat()

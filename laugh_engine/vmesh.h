@@ -265,9 +265,9 @@ public:
 
 	Skybox(const VDeleter<VkDevice> &device) :
 		VMesh{ device },
-		radianceMap{ device },
-		specularIrradianceMap{ device },
-		diffuseIrradianceMap{ device }
+		radianceMap{ device, VK_FORMAT_R32G32_SFLOAT },
+		specularIrradianceMap{ device, VK_FORMAT_R32G32B32A32_SFLOAT },
+		diffuseIrradianceMap{ device, VK_FORMAT_R32G32B32A32_SFLOAT }
 	{
 		materialType = MATERIAL_TYPE_HDR_PROBE;
 	}
@@ -319,6 +319,18 @@ public:
 				createImageViewCube(device, specularIrradianceMap.image, specularIrradianceMap.format,
 					VK_IMAGE_ASPECT_COLOR_BIT, level, 1, specularIrradianceMap.imageViews[level]);
 			}
+
+			VkSamplerCreateInfo samplerInfo = {};
+			getDefaultSamplerCreateInfo(samplerInfo);
+			samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+			samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+			samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+			samplerInfo.maxLod = static_cast<float>(specularIrradianceMap.mipLevels - 1);
+
+			if (vkCreateSampler(device, &samplerInfo, nullptr, specularIrradianceMap.sampler.replace()) != VK_SUCCESS)
+			{
+				throw std::runtime_error("failed to create specular irradiance map sampler!");
+			}
 		}
 
 		if (diffuseMapName != "")
@@ -341,6 +353,18 @@ public:
 
 			createImageViewCube(device, diffuseIrradianceMap.image, diffuseIrradianceMap.format,
 				VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, diffuseIrradianceMap.imageView);
+
+			VkSamplerCreateInfo samplerInfo = {};
+			getDefaultSamplerCreateInfo(samplerInfo);
+			samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+			samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+			samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+			samplerInfo.maxLod = static_cast<float>(diffuseIrradianceMap.mipLevels - 1);
+
+			if (vkCreateSampler(device, &samplerInfo, nullptr, diffuseIrradianceMap.sampler.replace()) != VK_SUCCESS)
+			{
+				throw std::runtime_error("failed to create diffuse irradiance map sampler!");
+			}
 		}
 
 		VMesh::load(physicalDevice, device, commandPool, submitQueue, modelFileName, "", "", "", "");

@@ -194,6 +194,7 @@ protected:
 	Skybox m_skybox{ m_device };
 	std::vector<VMesh> m_models;
 	std::vector<BakedBRDF> m_bakedBRDFs;
+	bool m_bakedBrdfReady = false;
 
 	VTextOverlay m_textOverlay{ m_physicalDevice, m_device, m_queueFamilyIndices, m_graphicsQueue, m_swapChain, m_finalOutputFramebuffers };
 	Timer m_perfTimer;
