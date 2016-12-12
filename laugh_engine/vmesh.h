@@ -14,6 +14,11 @@
 #include "assimp/cimport.h"
 #include "vutils.h"
 
+
+#define DIFF_IRRADIANCE_MAP_SIZE 128
+#define SPEC_IRRADIANCE_MAP_SIZE 512
+
+
 struct Vertex
 {
 	glm::vec3 pos;
@@ -255,6 +260,9 @@ public:
 	ImageWrapper specularIrradianceMap;
 	ImageWrapper diffuseIrradianceMap; // TODO: use spherical harmonics instead
 
+	bool specMapReady = false;
+	bool diffMapReady = false;
+
 	Skybox(const VDeleter<VkDevice> &device) :
 		VMesh{ device },
 		radianceMap{ device },
@@ -278,13 +286,61 @@ public:
 		{
 			loadCubemap(physicalDevice, device, commandPool, submitQueue, radianceMapName, radianceMap);
 		}
+		else
+		{
+			throw std::invalid_argument("radiance map required but not provided.");
+		}
+
 		if (specMapName != "")
 		{
 			loadCubemap(physicalDevice, device, commandPool, submitQueue, specMapName, specularIrradianceMap);
+			specMapReady = true;
 		}
+		else
+		{
+			uint32_t mipLevels = static_cast<uint32_t>(floor(log2f(SPEC_IRRADIANCE_MAP_SIZE) + 0.5f)) + 1;
+			specularIrradianceMap.mipLevels = mipLevels;
+			specularIrradianceMap.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+
+			createCubemapImage(physicalDevice, device,
+				SPEC_IRRADIANCE_MAP_SIZE, SPEC_IRRADIANCE_MAP_SIZE,
+				mipLevels,
+				specularIrradianceMap.format, VK_IMAGE_TILING_OPTIMAL,
+				VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+				specularIrradianceMap.image, specularIrradianceMap.imageMemory);
+
+			createImageViewCube(device, specularIrradianceMap.image, specularIrradianceMap.format,
+				VK_IMAGE_ASPECT_COLOR_BIT, specularIrradianceMap.mipLevels, specularIrradianceMap.imageView);
+
+			specularIrradianceMap.imageViews.resize(mipLevels, { device, vkDestroyImageView });
+			for (uint32_t level = 0; level < mipLevels; ++level)
+			{
+				createImageViewCube(device, specularIrradianceMap.image, specularIrradianceMap.format,
+					VK_IMAGE_ASPECT_COLOR_BIT, level, 1, specularIrradianceMap.imageViews[level]);
+			}
+		}
+
 		if (diffuseMapName != "")
 		{
 			loadCubemap(physicalDevice, device, commandPool, submitQueue, diffuseMapName, diffuseIrradianceMap);
+			diffMapReady = true;
+		}
+		else
+		{
+			diffuseIrradianceMap.mipLevels = 1;
+			diffuseIrradianceMap.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+
+			createCubemapImage(physicalDevice, device,
+				DIFF_IRRADIANCE_MAP_SIZE, DIFF_IRRADIANCE_MAP_SIZE,
+				diffuseIrradianceMap.mipLevels,
+				diffuseIrradianceMap.format, VK_IMAGE_TILING_OPTIMAL,
+				VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+				diffuseIrradianceMap.image, diffuseIrradianceMap.imageMemory);
+
+			createImageViewCube(device, diffuseIrradianceMap.image, diffuseIrradianceMap.format,
+				VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, diffuseIrradianceMap.imageView);
 		}
 
 		VMesh::load(physicalDevice, device, commandPool, submitQueue, modelFileName, "", "", "", "");

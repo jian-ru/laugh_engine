@@ -51,8 +51,6 @@
 #include "vbase.h"
 
 #define BRDF_LUT_SIZE 256
-#define DIFF_IRRADIANCE_MAP_SIZE 128
-#define SPEC_IRRADIANCE_MAP_SIZE 512
 #define ALL_UNIFORM_BLOB_SIZE (64 * 1024)
 #define NUM_LIGHTS 2
 
@@ -133,8 +131,6 @@ protected:
 	VDeleter<VkPipeline> m_finalOutputPipeline{ m_device, vkDestroyPipeline };
 
 	ImageWrapper m_brdfLutImage{ m_device }; // used as compute shader output
-	ImageWrapper m_diffIrradianceImage{ m_device, VK_FORMAT_R32G32B32A32_SFLOAT };
-	ImageWrapper m_specIrradianceImage{ m_device, VK_FORMAT_R32G32B32A32_SFLOAT }; // contain all the mips of a cube map
 	ImageWrapper m_depthImage{ m_device };
 	ImageWrapper m_lightingResultImage{ m_device, VK_FORMAT_R16G16B16A16_SFLOAT };
 	std::vector<ImageWrapper> m_gbufferImages = { { m_device, VK_FORMAT_R32G32B32A32_SFLOAT }, { m_device, VK_FORMAT_R32G32B32A32_SFLOAT } };
@@ -460,39 +456,6 @@ void DeferredRenderer::createDepthResources()
 
 void DeferredRenderer::createColorAttachmentResources()
 {
-	// Diffuse irradiance map
-	m_diffIrradianceImage.mipLevels = 1;
-
-	createCubemapImage(m_physicalDevice, m_device,
-		DIFF_IRRADIANCE_MAP_SIZE, DIFF_IRRADIANCE_MAP_SIZE,
-		m_diffIrradianceImage.mipLevels,
-		m_diffIrradianceImage.format, VK_IMAGE_TILING_OPTIMAL,
-		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-		m_diffIrradianceImage.image, m_diffIrradianceImage.imageMemory);
-
-	createImageViewCube(m_device, m_diffIrradianceImage.image, m_diffIrradianceImage.format,
-		VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, m_diffIrradianceImage.imageView);
-
-	// Specular irradiance map
-	uint32_t mipLevels = static_cast<uint32_t>(floor(log2f(SPEC_IRRADIANCE_MAP_SIZE) + 0.5f)) + 1;
-	m_specIrradianceImage.mipLevels = mipLevels;
-
-	createCubemapImage(m_physicalDevice, m_device,
-		SPEC_IRRADIANCE_MAP_SIZE, SPEC_IRRADIANCE_MAP_SIZE,
-		mipLevels,
-		m_specIrradianceImage.format, VK_IMAGE_TILING_OPTIMAL,
-		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-		m_specIrradianceImage.image, m_specIrradianceImage.imageMemory);
-
-	m_specIrradianceImage.imageViews.resize(mipLevels, { m_device, vkDestroyImageView });
-	for (uint32_t level = 0; level < mipLevels; ++level)
-	{
-		createImageViewCube(m_device, m_specIrradianceImage.image, m_specIrradianceImage.format,
-			VK_IMAGE_ASPECT_COLOR_BIT, level, 1, m_specIrradianceImage.imageViews[level]);
-	}
-
 	// Gbuffer images
 	for (auto &image : m_gbufferImages)
 	{
@@ -684,10 +647,11 @@ void DeferredRenderer::createDescriptorSets()
 void DeferredRenderer::createFramebuffers()
 {
 	// Diffuse irradiance map pass
+	if (!m_skybox.diffMapReady)
 	{
 		std::array<VkImageView, 1> attachments =
 		{
-			m_diffIrradianceImage.imageView
+			m_skybox.diffuseIrradianceMap.imageView
 		};
 
 		VkFramebufferCreateInfo framebufferInfo = {};
@@ -706,29 +670,32 @@ void DeferredRenderer::createFramebuffers()
 	}
 
 	// Specular irradiance map pass
-	m_specEnvPrefilterFramebuffers.resize(m_specIrradianceImage.mipLevels, { m_device, vkDestroyFramebuffer });
-	for (uint32_t level = 0; level < m_specIrradianceImage.mipLevels; ++level)
+	if (!m_skybox.specMapReady)
 	{
-		uint32_t faceWidth = SPEC_IRRADIANCE_MAP_SIZE / (1 << level);
-		uint32_t faceHeight = faceWidth;
-
-		std::array<VkImageView, 1> attachments =
+		m_specEnvPrefilterFramebuffers.resize(m_skybox.specularIrradianceMap.mipLevels, { m_device, vkDestroyFramebuffer });
+		for (uint32_t level = 0; level < m_skybox.specularIrradianceMap.mipLevels; ++level)
 		{
-			m_specIrradianceImage.imageViews[level]
-		};
+			uint32_t faceWidth = SPEC_IRRADIANCE_MAP_SIZE / (1 << level);
+			uint32_t faceHeight = faceWidth;
 
-		VkFramebufferCreateInfo framebufferInfo = {};
-		framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-		framebufferInfo.renderPass = m_specEnvPrefilterRenderPass;
-		framebufferInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
-		framebufferInfo.pAttachments = attachments.data();
-		framebufferInfo.width = faceWidth;
-		framebufferInfo.height = faceHeight;
-		framebufferInfo.layers = 6;
+			std::array<VkImageView, 1> attachments =
+			{
+				m_skybox.specularIrradianceMap.imageViews[level]
+			};
 
-		if (vkCreateFramebuffer(m_device, &framebufferInfo, nullptr, m_specEnvPrefilterFramebuffers[level].replace()) != VK_SUCCESS)
-		{
-			throw std::runtime_error("failed to create framebuffer!");
+			VkFramebufferCreateInfo framebufferInfo = {};
+			framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+			framebufferInfo.renderPass = m_specEnvPrefilterRenderPass;
+			framebufferInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
+			framebufferInfo.pAttachments = attachments.data();
+			framebufferInfo.width = faceWidth;
+			framebufferInfo.height = faceHeight;
+			framebufferInfo.layers = 6;
+
+			if (vkCreateFramebuffer(m_device, &framebufferInfo, nullptr, m_specEnvPrefilterFramebuffers[level].replace()) != VK_SUCCESS)
+			{
+				throw std::runtime_error("failed to create framebuffer!");
+			}
 		}
 	}
 
@@ -868,7 +835,7 @@ void DeferredRenderer::createSpecEnvPrefilterRenderPass()
 	std::array<VkAttachmentDescription, 1> attachments = {};
 
 	// Cube map faces of one mip level
-	attachments[0].format = m_specIrradianceImage.format;
+	attachments[0].format = m_skybox.specularIrradianceMap.format;
 	attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
 	attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
 	attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -2030,7 +1997,7 @@ void DeferredRenderer::createEnvPrefilterCommandBuffer()
 	vkCmdEndRenderPass(m_envPrefilterCommandBuffer);
 
 	// Specular prefitler pass
-	uint32_t mipLevels = m_specIrradianceImage.mipLevels;
+	uint32_t mipLevels = m_skybox.specularIrradianceMap.mipLevels;
 	float roughness = 0.f;
 	float roughnessDelta = 1.f / static_cast<float>(mipLevels - 1);
 
@@ -2251,18 +2218,18 @@ void DeferredRenderer::prefilterEnvironmentAndComputeBrdfLut()
 		memcpy(&hostBrdfLutPixels[0], data, sizeInBytes);
 		vkUnmapMemory(m_device, stagingBuffer.bufferMemory);
 
-		saveImage2D("../textures/BRDF_LUTs/FSchlick_DGGX_GSmith.dds",
-			BRDF_LUT_SIZE, BRDF_LUT_SIZE, sizeof(glm::vec2), 1, gli::FORMAT_RG32_SFLOAT_PACK32, hostBrdfLutPixels.data());
+		//saveImage2D("../textures/BRDF_LUTs/FSchlick_DGGX_GSmith.dds",
+		//	BRDF_LUT_SIZE, BRDF_LUT_SIZE, sizeof(glm::vec2), 1, gli::FORMAT_RG32_SFLOAT_PACK32, hostBrdfLutPixels.data());
 	}
 
 	{
 		transitionImageLayout(m_device, m_graphicsCommandPool, m_graphicsQueue,
-			m_diffIrradianceImage.image, m_diffIrradianceImage.format, 6, m_diffIrradianceImage.mipLevels,
+			m_skybox.diffuseIrradianceMap.image, m_skybox.diffuseIrradianceMap.format, 6, m_skybox.diffuseIrradianceMap.mipLevels,
 			VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 
 		BufferWrapper stagingBuffer{ m_device };
 		VkDeviceSize sizeInBytes = compute2DImageSizeInBytes(
-			DIFF_IRRADIANCE_MAP_SIZE, DIFF_IRRADIANCE_MAP_SIZE, sizeof(glm::vec4), m_diffIrradianceImage.mipLevels, 6);
+			DIFF_IRRADIANCE_MAP_SIZE, DIFF_IRRADIANCE_MAP_SIZE, sizeof(glm::vec4), m_skybox.diffuseIrradianceMap.mipLevels, 6);
 
 		createBuffer(m_physicalDevice, m_device, sizeInBytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
@@ -2278,7 +2245,7 @@ void DeferredRenderer::prefilterEnvironmentAndComputeBrdfLut()
 		imageCopyRegion.imageExtent.depth = 1;
 		imageCopyRegion.bufferOffset = 0;
 
-		copyImageToBuffer(m_device, m_graphicsCommandPool, m_graphicsQueue, { imageCopyRegion }, m_diffIrradianceImage.image, stagingBuffer.buffer);
+		copyImageToBuffer(m_device, m_graphicsCommandPool, m_graphicsQueue, { imageCopyRegion }, m_skybox.diffuseIrradianceMap.image, stagingBuffer.buffer);
 
 		void* data;
 		std::vector<glm::vec4> hostPixels(sizeInBytes / sizeof(glm::vec4));
@@ -2286,19 +2253,19 @@ void DeferredRenderer::prefilterEnvironmentAndComputeBrdfLut()
 		memcpy(&hostPixels[0], data, sizeInBytes);
 		vkUnmapMemory(m_device, stagingBuffer.bufferMemory);
 
-		saveImageCube("../textures/Environment/PaperMill/Diffuse_HDR.dds",
-			DIFF_IRRADIANCE_MAP_SIZE, DIFF_IRRADIANCE_MAP_SIZE, sizeof(glm::vec4),
-			m_diffIrradianceImage.mipLevels, gli::FORMAT_RGBA32_SFLOAT_PACK32, hostPixels.data());
+		//saveImageCube("../textures/Environment/PaperMill/Diffuse_HDR.dds",
+		//	DIFF_IRRADIANCE_MAP_SIZE, DIFF_IRRADIANCE_MAP_SIZE, sizeof(glm::vec4),
+		//	m_diffIrradianceImage.mipLevels, gli::FORMAT_RGBA32_SFLOAT_PACK32, hostPixels.data());
 	}
 
 	{
 		transitionImageLayout(m_device, m_graphicsCommandPool, m_graphicsQueue,
-			m_specIrradianceImage.image, m_specIrradianceImage.format, 6, m_specIrradianceImage.mipLevels,
+			m_skybox.specularIrradianceMap.image, m_skybox.specularIrradianceMap.format, 6, m_skybox.specularIrradianceMap.mipLevels,
 			VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 
 		BufferWrapper stagingBuffer{ m_device };
 		VkDeviceSize sizeInBytes = compute2DImageSizeInBytes(
-			SPEC_IRRADIANCE_MAP_SIZE, SPEC_IRRADIANCE_MAP_SIZE, sizeof(glm::vec4), m_specIrradianceImage.mipLevels, 6);
+			SPEC_IRRADIANCE_MAP_SIZE, SPEC_IRRADIANCE_MAP_SIZE, sizeof(glm::vec4), m_skybox.specularIrradianceMap.mipLevels, 6);
 
 		createBuffer(m_physicalDevice, m_device, sizeInBytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
@@ -2309,7 +2276,7 @@ void DeferredRenderer::prefilterEnvironmentAndComputeBrdfLut()
 
 		for (uint32_t face = 0; face < 6; ++face)
 		{
-			for (uint32_t level = 0; level < m_specIrradianceImage.mipLevels; ++level)
+			for (uint32_t level = 0; level < m_skybox.specularIrradianceMap.mipLevels; ++level)
 			{
 				uint32_t faceWidth = SPEC_IRRADIANCE_MAP_SIZE / (1 << level);
 				uint32_t faceHeight = faceWidth;
@@ -2330,7 +2297,7 @@ void DeferredRenderer::prefilterEnvironmentAndComputeBrdfLut()
 			}
 		}
 
-		copyImageToBuffer(m_device, m_graphicsCommandPool, m_graphicsQueue, imageCopyRegions, m_specIrradianceImage.image, stagingBuffer.buffer);
+		copyImageToBuffer(m_device, m_graphicsCommandPool, m_graphicsQueue, imageCopyRegions, m_skybox.specularIrradianceMap.image, stagingBuffer.buffer);
 
 		void* data;
 		std::vector<glm::vec4> hostPixels(sizeInBytes / sizeof(glm::vec4));
@@ -2338,9 +2305,9 @@ void DeferredRenderer::prefilterEnvironmentAndComputeBrdfLut()
 		memcpy(&hostPixels[0], data, sizeInBytes);
 		vkUnmapMemory(m_device, stagingBuffer.bufferMemory);
 
-		saveImageCube("../textures/Environment/PaperMill/Specular_HDR.dds",
-			SPEC_IRRADIANCE_MAP_SIZE, SPEC_IRRADIANCE_MAP_SIZE, sizeof(glm::vec4),
-			m_specIrradianceImage.mipLevels, gli::FORMAT_RGBA32_SFLOAT_PACK32, hostPixels.data());
+		//saveImageCube("../textures/Environment/PaperMill/Specular_HDR.dds",
+		//	SPEC_IRRADIANCE_MAP_SIZE, SPEC_IRRADIANCE_MAP_SIZE, sizeof(glm::vec4),
+		//	m_specIrradianceImage.mipLevels, gli::FORMAT_RGBA32_SFLOAT_PACK32, hostPixels.data());
 	}
 }
 

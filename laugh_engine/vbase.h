@@ -518,8 +518,8 @@ void VBaseGraphics::initVulkan()
 	createComputeResources();
 	createDepthResources();
 	createColorAttachmentResources();
-	createFramebuffers();
 	loadAndPrepareAssets();
+	createFramebuffers();
 	createUniformBuffers();
 	createDescriptorPools();
 	createDescriptorSets();
