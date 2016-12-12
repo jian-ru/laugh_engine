@@ -54,6 +54,13 @@
 #define ALL_UNIFORM_BLOB_SIZE (64 * 1024)
 #define NUM_LIGHTS 2
 
+#define BRDF_BASE_DIR "../textures/BRDF_LUTs/"
+#define BRDF_NAME "FSchlick_DGGX_GSmith.dds"
+#define PROBE_BASE_DIR "../textures/Environment/PaperMill/"
+//#define PROBE_BASE_DIR "../textures/Environment/Factory/"
+//#define PROBE_BASE_DIR "../textures/Environment/MonValley/"
+//#define PROBE_BASE_DIR "../textures/Environment/Canyon/"
+
 
 struct CubeMapCameraUniformBuffer
 {
@@ -411,8 +418,12 @@ void DeferredRenderer::createCommandPools()
 void DeferredRenderer::createComputeResources()
 {
 	// BRDF LUT
-	//std::string brdfFileName = "../textures/BRDF_LUTs/FSchlick_DGGX_GSmith.dds";
 	std::string brdfFileName = "";
+	if (fileExist(BRDF_BASE_DIR BRDF_NAME))
+	{
+		brdfFileName = BRDF_BASE_DIR BRDF_NAME;
+	}
+
 	m_bakedBRDFs.resize(1, { m_device });
 
 	VkSamplerCreateInfo clampedSampler = {};
@@ -452,6 +463,8 @@ void DeferredRenderer::createComputeResources()
 		{
 			throw std::runtime_error("failed to create brdf lut sampler!");
 		}
+
+		m_shouldSaveBakedBrdf = true;
 	}
 }
 
@@ -528,11 +541,17 @@ void DeferredRenderer::loadAndPrepareAssets()
 {
 	// TODO: implement scene file to allow flexible model loading
 	std::string skyboxFileName = "../models/sky_sphere.obj";
-	std::string unfilteredProbeFileName = "../textures/Environment/PaperMill/Unfiltered_HDR.dds";
-	//std::string specProbeFileName = "../textures/Environment/PaperMill/Specular_HDR.dds";
-	//std::string diffuseProbeFileName = "../textures/Environment/PaperMill/Diffuse_HDR.dds";
+	std::string unfilteredProbeFileName = PROBE_BASE_DIR "Unfiltered_HDR.dds";
 	std::string specProbeFileName = "";
+	if (fileExist(PROBE_BASE_DIR "Specular_HDR.dds"))
+	{
+		specProbeFileName = PROBE_BASE_DIR "Specular_HDR.dds";
+	}
 	std::string diffuseProbeFileName = "";
+	if (fileExist(PROBE_BASE_DIR "Diffuse_HDR.dds"))
+	{
+		diffuseProbeFileName = PROBE_BASE_DIR "Diffuse_HDR.dds";
+	}
 
 	m_skybox.load(m_physicalDevice, m_device, m_graphicsCommandPool, m_graphicsQueue, skyboxFileName, unfilteredProbeFileName, specProbeFileName, diffuseProbeFileName);
 
@@ -1726,6 +1745,8 @@ void DeferredRenderer::createFinalOutputPassPipeline()
 
 void DeferredRenderer::createBrdfLutDescriptorSet()
 {
+	if (m_bakedBrdfReady) return;
+
 	std::vector<VkDescriptorImageInfo> imageInfos =
 	{
 		m_bakedBRDFs[0].getDescriptorInfo(VK_IMAGE_LAYOUT_GENERAL)
@@ -1746,6 +1767,8 @@ void DeferredRenderer::createBrdfLutDescriptorSet()
 
 void DeferredRenderer::createSpecEnvPrefilterDescriptorSet()
 {
+	if (m_skybox.diffMapReady && m_skybox.specMapReady) return;
+
 	std::vector<VkDescriptorBufferInfo> bufferInfos =
 	{
 		m_allUniformBuffer.getDescriptorInfo(
@@ -1940,6 +1963,8 @@ void DeferredRenderer::createFinalOutputPassDescriptorSets()
 
 void DeferredRenderer::createBrdfLutCommandBuffer()
 {
+	if (m_bakedBrdfReady) return;
+
 	vkQueueWaitIdle(m_computeQueue);
 
 	VkCommandBufferBeginInfo beginInfo = {};
@@ -1962,6 +1987,8 @@ void DeferredRenderer::createBrdfLutCommandBuffer()
 
 void DeferredRenderer::createEnvPrefilterCommandBuffer()
 {
+	if (m_skybox.diffMapReady && m_skybox.specMapReady) return;
+
 	VkCommandBufferBeginInfo beginInfo = {};
 	beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 
@@ -2240,6 +2267,7 @@ void DeferredRenderer::prefilterEnvironmentAndComputeBrdfLut()
 void DeferredRenderer::savePrecomputationResults()
 {
 	// read back computation results and save to disk
+	if (m_shouldSaveBakedBrdf)
 	{
 		transitionImageLayout(m_device, m_graphicsCommandPool, m_graphicsQueue,
 			m_bakedBRDFs[0].image, m_bakedBRDFs[0].format, m_bakedBRDFs[0].mipLevels,
@@ -2267,10 +2295,11 @@ void DeferredRenderer::savePrecomputationResults()
 		memcpy(&hostBrdfLutPixels[0], data, sizeInBytes);
 		vkUnmapMemory(m_device, stagingBuffer.bufferMemory);
 
-		saveImage2D("../textures/BRDF_LUTs/FSchlick_DGGX_GSmith.dds",
+		saveImage2D(BRDF_BASE_DIR BRDF_NAME,
 			BRDF_LUT_SIZE, BRDF_LUT_SIZE, sizeof(glm::vec2), 1, gli::FORMAT_RG32_SFLOAT_PACK32, hostBrdfLutPixels.data());
 	}
 
+	if (m_skybox.shouldSaveDiffMap)
 	{
 		transitionImageLayout(m_device, m_graphicsCommandPool, m_graphicsQueue,
 			m_skybox.diffuseIrradianceMap.image, m_skybox.diffuseIrradianceMap.format, 6, m_skybox.diffuseIrradianceMap.mipLevels,
@@ -2302,11 +2331,12 @@ void DeferredRenderer::savePrecomputationResults()
 		memcpy(&hostPixels[0], data, sizeInBytes);
 		vkUnmapMemory(m_device, stagingBuffer.bufferMemory);
 
-		saveImageCube("../textures/Environment/PaperMill/Diffuse_HDR.dds",
+		saveImageCube(PROBE_BASE_DIR "Diffuse_HDR.dds",
 			DIFF_IRRADIANCE_MAP_SIZE, DIFF_IRRADIANCE_MAP_SIZE, sizeof(glm::vec4),
 			m_skybox.diffuseIrradianceMap.mipLevels, gli::FORMAT_RGBA32_SFLOAT_PACK32, hostPixels.data());
 	}
 
+	if (m_skybox.shouldSaveSpecMap)
 	{
 		transitionImageLayout(m_device, m_graphicsCommandPool, m_graphicsQueue,
 			m_skybox.specularIrradianceMap.image, m_skybox.specularIrradianceMap.format, 6, m_skybox.specularIrradianceMap.mipLevels,
@@ -2354,7 +2384,7 @@ void DeferredRenderer::savePrecomputationResults()
 		memcpy(&hostPixels[0], data, sizeInBytes);
 		vkUnmapMemory(m_device, stagingBuffer.bufferMemory);
 
-		saveImageCube("../textures/Environment/PaperMill/Specular_HDR.dds",
+		saveImageCube(PROBE_BASE_DIR "Specular_HDR.dds",
 			SPEC_IRRADIANCE_MAP_SIZE, SPEC_IRRADIANCE_MAP_SIZE, sizeof(glm::vec4),
 			m_skybox.specularIrradianceMap.mipLevels, gli::FORMAT_RGBA32_SFLOAT_PACK32, hostPixels.data());
 	}

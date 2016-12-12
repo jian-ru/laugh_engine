@@ -15,7 +15,7 @@
 #include "vutils.h"
 
 
-#define DIFF_IRRADIANCE_MAP_SIZE 128
+#define DIFF_IRRADIANCE_MAP_SIZE 32
 #define SPEC_IRRADIANCE_MAP_SIZE 512
 
 
@@ -262,6 +262,8 @@ public:
 
 	bool specMapReady = false;
 	bool diffMapReady = false;
+	bool shouldSaveSpecMap = false;
+	bool shouldSaveDiffMap = false;
 
 	Skybox(const VDeleter<VkDevice> &device) :
 		VMesh{ device },
@@ -331,6 +333,8 @@ public:
 			{
 				throw std::runtime_error("failed to create specular irradiance map sampler!");
 			}
+
+			shouldSaveSpecMap = true;
 		}
 
 		if (diffuseMapName != "")
@@ -365,6 +369,8 @@ public:
 			{
 				throw std::runtime_error("failed to create diffuse irradiance map sampler!");
 			}
+
+			shouldSaveDiffMap = true;
 		}
 
 		VMesh::load(physicalDevice, device, commandPool, submitQueue, modelFileName, "", "", "", "");

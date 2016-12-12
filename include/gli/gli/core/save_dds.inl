@@ -119,7 +119,8 @@ namespace detail
 		if(Texture.empty())
 			return false;
 
-		FILE* File = detail::open_file(Filename, "wb");
+		//FILE* File = detail::open_file(Filename, "wb");
+		FILE *File = fopen(Filename, "wb");
 		if(!File)
 			return false;
 

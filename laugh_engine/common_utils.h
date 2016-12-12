@@ -83,3 +83,9 @@ inline std::string getFileExtension(const std::string &fn)
 	size_t pos = fn.find_last_of('.');
 	if (pos == std::string::npos) return ""; else return fn.substr(pos + 1);
 }
+
+inline bool fileExist(const std::string &fn)
+{
+	std::ifstream ifs(fn);
+	return ifs.good();
+}

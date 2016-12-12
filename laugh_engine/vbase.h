@@ -44,8 +44,8 @@ public:
 	uint32_t m_verNumMajor;
 	uint32_t m_verNumMinor;
 
-	uint32_t m_width = 1280;
-	uint32_t m_height = 720;
+	uint32_t m_width = 1920;
+	uint32_t m_height = 1080;
 	std::string m_windowTitle = "VBaseGraphics";
 
 	DisplayMode m_displayMode = DISPLAY_MODE_FULL;
@@ -195,6 +195,7 @@ protected:
 	std::vector<VMesh> m_models;
 	std::vector<BakedBRDF> m_bakedBRDFs;
 	bool m_bakedBrdfReady = false;
+	bool m_shouldSaveBakedBrdf = false;
 
 	VTextOverlay m_textOverlay{ m_physicalDevice, m_device, m_queueFamilyIndices, m_graphicsQueue, m_swapChain, m_finalOutputFramebuffers };
 	Timer m_perfTimer;
