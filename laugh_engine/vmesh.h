@@ -97,6 +97,7 @@ public:
 
 	PerModelUniformBuffer *uPerModelInfo = nullptr;
 
+	bool uniformDataChanged = true;
 	glm::vec3 worldPosition{ 0.f, 0.f, 0.f };
 	glm::quat worldRotation{ glm::vec3(0.f, 0.f, 0.f) }; // Euler angles to quaternion
 	float scale = 1.f;
@@ -240,8 +241,10 @@ public:
 	virtual void updateHostUniformBuffer()
 	{
 		assert(uPerModelInfo);
+		if (!uniformDataChanged) return;
 		uPerModelInfo->M = glm::translate(glm::mat4_cast(worldRotation) * glm::scale(glm::mat4(), glm::vec3(scale)), worldPosition);
 		uPerModelInfo->M_invTrans = glm::transpose(glm::inverse(uPerModelInfo->M));
+		uniformDataChanged = false;
 	}
 };
 

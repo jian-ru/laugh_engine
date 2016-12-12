@@ -617,6 +617,7 @@ std::set<int> VBaseGraphics::getUniqueQueueFamilyIndices()
 void VBaseGraphics::getEnabledPhysicalDeviceFeatures(VkPhysicalDeviceFeatures &features)
 {
 	features.shaderStorageImageExtendedFormats = VK_TRUE;
+	features.geometryShader = VK_TRUE;
 }
 
 void VBaseGraphics::getRequiredQueues()

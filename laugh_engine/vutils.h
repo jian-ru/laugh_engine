@@ -931,6 +931,11 @@ static void transitionImageLayout(VkDevice device, VkCommandPool commandPool, Vk
 		barrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
 		barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
 	}
+	else if (oldLayout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
+	{
+		barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+		barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+	}
 	else
 	{
 		throw std::invalid_argument("unsupported layout transition!");
@@ -1416,6 +1421,20 @@ static void loadCubemap(
 	}
 }
 
+static size_t compute2DImageSizeInBytes(uint32_t width, uint32_t height, uint32_t pixelSizeInBytes, uint32_t mipLevelCount, uint32_t layerCount)
+{
+	size_t size = 0;
+
+	for (uint32_t level = 0; level < mipLevelCount; ++level)
+	{
+		size += width * height * pixelSizeInBytes;
+		width >>= 1;
+		height >>= 1;
+	}
+
+	return size * layerCount;
+}
+
 // Address computation: layerIdx * layerSize + faceIdx * faceSize + levelSize(0) + ... + levelSize(levelIdx - 1)
 // layerCount is always 1 for 2D image (you need a texture2d_array to use layers)
 // faceCount is always 1 for 2D image
@@ -1430,9 +1449,31 @@ static void saveImage2D(
 	assert(pixelData);
 
 	gli::extent2d extent = { width, height };
-	gli::texture2d image(gli::FORMAT_RG32_SFLOAT_PACK32, extent, mipLevels);
+	gli::texture2d image(format, extent, mipLevels);
 
-	size_t sizeInBytes = width * height * bytesPerPixel;
+	size_t sizeInBytes = compute2DImageSizeInBytes(width, height, bytesPerPixel, mipLevels, 1);
+	memcpy(image.data(), pixelData, sizeInBytes);
+
+	if (!gli::save(image, fileName))
+	{
+		throw std::runtime_error("unable to save image " + fileName);
+	}
+}
+
+static void saveImageCube(
+	const std::string &fileName,
+	uint32_t width, uint32_t height, uint32_t bytesPerPixel,
+	uint32_t mipLevels, gli::format format,
+	const void *pixelData)
+{
+	assert(width > 0 && height > 0);
+	assert(mipLevels > 0);
+	assert(pixelData);
+
+	gli::extent2d extent = { width, height };
+	gli::texture_cube image(format, extent, mipLevels);
+	
+	size_t sizeInBytes = compute2DImageSizeInBytes(width, height, bytesPerPixel, mipLevels, 6);
 	memcpy(image.data(), pixelData, sizeInBytes);
 
 	if (!gli::save(image, fileName))

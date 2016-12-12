@@ -51,10 +51,17 @@
 #include "vbase.h"
 
 #define BRDF_LUT_SIZE 256
+#define DIFF_IRRADIANCE_MAP_SIZE 128
 #define SPEC_IRRADIANCE_MAP_SIZE 512
 #define ALL_UNIFORM_BLOB_SIZE (64 * 1024)
 #define NUM_LIGHTS 2
 
+
+struct CubeMapCameraUniformBuffer
+{
+	glm::mat4 V[6];
+	glm::mat4 P;
+};
 
 struct TransMatsUniformBuffer
 {
@@ -110,6 +117,8 @@ protected:
 
 	VDeleter<VkPipelineLayout> m_brdfLutPipelineLayout{ m_device, vkDestroyPipelineLayout };
 	VDeleter<VkPipeline> m_brdfLutPipeline{ m_device, vkDestroyPipeline };
+	VDeleter<VkPipelineLayout> m_diffEnvPrefilterPipelineLayout{ m_device, vkDestroyPipelineLayout };
+	VDeleter<VkPipeline> m_diffEnvPrefilterPipeline{ m_device, vkDestroyPipeline };
 	VDeleter<VkPipelineLayout> m_specEnvPrefilterPipelineLayout{ m_device, vkDestroyPipelineLayout };
 	VDeleter<VkPipeline> m_specEnvPrefilterPipeline{ m_device, vkDestroyPipeline };
 	VDeleter<VkPipelineLayout> m_skyboxPipelineLayout{ m_device, vkDestroyPipelineLayout };
@@ -124,23 +133,27 @@ protected:
 	VDeleter<VkPipeline> m_finalOutputPipeline{ m_device, vkDestroyPipeline };
 
 	ImageWrapper m_brdfLutImage{ m_device }; // used as compute shader output
+	ImageWrapper m_diffIrradianceImage{ m_device, VK_FORMAT_R32G32B32A32_SFLOAT };
 	ImageWrapper m_specIrradianceImage{ m_device, VK_FORMAT_R32G32B32A32_SFLOAT }; // contain all the mips of a cube map
 	ImageWrapper m_depthImage{ m_device };
 	ImageWrapper m_lightingResultImage{ m_device, VK_FORMAT_R16G16B16A16_SFLOAT };
 	std::vector<ImageWrapper> m_gbufferImages = { { m_device, VK_FORMAT_R32G32B32A32_SFLOAT }, { m_device, VK_FORMAT_R32G32B32A32_SFLOAT } };
 
 	AllUniformBlob<ALL_UNIFORM_BLOB_SIZE> m_allUniformHostData{ m_physicalDevice };
+	CubeMapCameraUniformBuffer *m_uCubeViews = nullptr;
 	TransMatsUniformBuffer *m_uTransMats = nullptr;
 	LightingPassUniformBuffer *m_uLightInfo = nullptr;
 	DisplayInfoUniformBuffer *m_uDisplayInfo = nullptr;
 	BufferWrapper m_allUniformBuffer{ m_device };
 
 	VkDescriptorSet m_brdfLutDescriptorSet;
+	VkDescriptorSet m_specEnvPrefilterDescriptorSet;
 	VkDescriptorSet m_skyboxDescriptorSet;
 	std::vector<VkDescriptorSet> m_geomDescriptorSets; // one set per model
 	VkDescriptorSet m_lightingDescriptorSet;
 	VkDescriptorSet m_finalOutputDescriptorSet;
 
+	VDeleter<VkFramebuffer> m_diffEnvPrefilterFramebuffer{ m_device, vkDestroyFramebuffer };
 	std::vector<VDeleter<VkFramebuffer>> m_specEnvPrefilterFramebuffers;
 	VDeleter<VkFramebuffer> m_geomAndLightingFramebuffer{ m_device, vkDestroyFramebuffer };
 
@@ -150,8 +163,10 @@ protected:
 	VDeleter<VkSemaphore> m_renderFinishedSemaphore{ m_device, vkDestroySemaphore };
 
 	VDeleter<VkFence> m_brdfLutFence{ m_device, vkDestroyFence };
+	VDeleter<VkFence> m_envPrefilterFence{ m_device, vkDestroyFence };
 
 	VkCommandBuffer m_brdfLutCommandBuffer;
+	VkCommandBuffer m_envPrefilterCommandBuffer;
 	VkCommandBuffer m_geomAndLightingCommandBuffer;
 
 
@@ -188,6 +203,7 @@ protected:
 	virtual void createFinalOutputDescriptorSetLayout();
 
 	virtual void createBrdfLutPipeline();
+	virtual void createDiffEnvPrefilterPipeline();
 	virtual void createSpecEnvPrefilterPipeline();
 	virtual void createSkyboxPipeline();
 	virtual void createStaticMeshPipeline();
@@ -199,6 +215,7 @@ protected:
 	// commands complete. So each model will need a different descriptor set because they use
 	// different textures
 	virtual void createBrdfLutDescriptorSet();
+	virtual void createSpecEnvPrefilterDescriptorSet();
 	virtual void createSkyboxDescriptorSet();
 	virtual void createStaticMeshDescriptorSet();
 	virtual void createGeomPassDescriptorSets();
@@ -206,6 +223,7 @@ protected:
 	virtual void createFinalOutputPassDescriptorSets();
 
 	virtual void createBrdfLutCommandBuffer();
+	virtual void createEnvPrefilterCommandBuffer();
 	virtual void createGeomAndLightingCommandBuffer();
 	virtual void createPresentCommandBuffers();
 
@@ -219,6 +237,7 @@ protected:
 
 void DeferredRenderer::run()
 {
+	//system("pause");
 	initWindow();
 	initVulkan();
 	prefilterEnvironmentAndComputeBrdfLut();
@@ -227,11 +246,14 @@ void DeferredRenderer::run()
 
 void DeferredRenderer::updateUniformBuffers()
 {
-	// update per model information
-	for (auto &model : m_models)
-	{
-		model.updateHostUniformBuffer();
-	}
+	// cube map views and projection
+	m_uCubeViews->V[0] = glm::lookAt(glm::vec3(0.f), glm::vec3(1.f, 0.f, 0.f), glm::vec3(0.f, -1.f, 0.f));	// +X
+	m_uCubeViews->V[1] = glm::lookAt(glm::vec3(0.f), glm::vec3(-1.f, 0.f, 0.f), glm::vec3(0.f, -1.f, 0.f));	// -X
+	m_uCubeViews->V[2] = glm::lookAt(glm::vec3(0.f), glm::vec3(0.f, 1.f, 0.f), glm::vec3(0.f, 0.f, 1.f));	// +Y
+	m_uCubeViews->V[3] = glm::lookAt(glm::vec3(0.f), glm::vec3(0.f, -1.f, 0.f), glm::vec3(0.f, 0.f, -1.f));	// -Y
+	m_uCubeViews->V[4] = glm::lookAt(glm::vec3(0.f), glm::vec3(0.f, 0.f, 1.f), glm::vec3(0.f, -1.f, 0.f));	// +Z
+	m_uCubeViews->V[5] = glm::lookAt(glm::vec3(0.f), glm::vec3(0.f, 0.f, -1.f), glm::vec3(0.f, -1.f, 0.f));	// -Z
+	m_uCubeViews->P = glm::perspective(glm::radians(90.f), 1.f, 0.1f, 100.f);
 
 	// update transformation matrices
 	glm::mat4 V, P;
@@ -259,6 +281,12 @@ void DeferredRenderer::updateUniformBuffers()
 	{
 		m_displayMode,
 	};
+
+	// update per model information
+	for (auto &model : m_models)
+	{
+		model.updateHostUniformBuffer();
+	}
 
 	void* data;
 	vkMapMemory(m_device, m_allUniformBuffer.bufferMemory, 0, m_allUniformBuffer.sizeInBytes, 0, &data);
@@ -370,6 +398,7 @@ void DeferredRenderer::createComputePipelines()
 
 void DeferredRenderer::createGraphicsPipelines()
 {
+	createDiffEnvPrefilterPipeline();
 	createSpecEnvPrefilterPipeline();
 	createGeomPassPipeline();
 	createLightingPassPipeline();
@@ -431,8 +460,22 @@ void DeferredRenderer::createDepthResources()
 
 void DeferredRenderer::createColorAttachmentResources()
 {
+	// Diffuse irradiance map
+	m_diffIrradianceImage.mipLevels = 1;
+
+	createCubemapImage(m_physicalDevice, m_device,
+		DIFF_IRRADIANCE_MAP_SIZE, DIFF_IRRADIANCE_MAP_SIZE,
+		m_diffIrradianceImage.mipLevels,
+		m_diffIrradianceImage.format, VK_IMAGE_TILING_OPTIMAL,
+		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+		m_diffIrradianceImage.image, m_diffIrradianceImage.imageMemory);
+
+	createImageViewCube(m_device, m_diffIrradianceImage.image, m_diffIrradianceImage.format,
+		VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, m_diffIrradianceImage.imageView);
+
 	// Specular irradiance map
-	uint32_t mipLevels = static_cast<uint32_t>(floor(log2f(SPEC_IRRADIANCE_MAP_SIZE) + 0.5f));
+	uint32_t mipLevels = static_cast<uint32_t>(floor(log2f(SPEC_IRRADIANCE_MAP_SIZE) + 0.5f)) + 1;
 	m_specIrradianceImage.mipLevels = mipLevels;
 
 	createCubemapImage(m_physicalDevice, m_device,
@@ -536,6 +579,7 @@ void DeferredRenderer::loadAndPrepareAssets()
 void DeferredRenderer::createUniformBuffers()
 {
 	// host
+	m_uCubeViews = reinterpret_cast<CubeMapCameraUniformBuffer *>(m_allUniformHostData.alloc(sizeof(CubeMapCameraUniformBuffer)));
 	m_uTransMats = reinterpret_cast<TransMatsUniformBuffer *>(m_allUniformHostData.alloc(sizeof(TransMatsUniformBuffer)));
 	m_uLightInfo = reinterpret_cast<LightingPassUniformBuffer *>(m_allUniformHostData.alloc(sizeof(LightingPassUniformBuffer)));
 	m_uDisplayInfo = reinterpret_cast<DisplayInfoUniformBuffer *>(m_allUniformHostData.alloc(sizeof(DisplayInfoUniformBuffer)));
@@ -561,11 +605,11 @@ void DeferredRenderer::createDescriptorPools()
 	// create descriptor pool
 	std::array<VkDescriptorPoolSize, 4> poolSizes = {};
 	poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	poolSizes[0].descriptorCount = 5 + 2 * m_models.size();
+	poolSizes[0].descriptorCount = 6 + 2 * m_models.size();
 
 	poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	// BRDF LUTs + radiance map + diffuse irradiance map + specular irradiance map + lighting result + g-buffers + depth image + model textures
-	poolSizes[1].descriptorCount = 8 + m_models.size() * VMesh::numMapsPerMesh + m_bakedBRDFs.size();
+	poolSizes[1].descriptorCount = 9 + m_models.size() * VMesh::numMapsPerMesh + m_bakedBRDFs.size();
 
 	poolSizes[2].type = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
 	poolSizes[2].descriptorCount = 3;
@@ -577,7 +621,7 @@ void DeferredRenderer::createDescriptorPools()
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 	poolInfo.poolSizeCount = poolSizes.size();
 	poolInfo.pPoolSizes = poolSizes.data();
-	poolInfo.maxSets = 4 + m_models.size();
+	poolInfo.maxSets = 5 + m_models.size();
 
 	if (vkCreateDescriptorPool(m_device, &poolInfo, nullptr, m_descriptorPool.replace()) != VK_SUCCESS)
 	{
@@ -595,6 +639,7 @@ void DeferredRenderer::createDescriptorSets()
 	// create descriptor sets
 	std::vector<VkDescriptorSetLayout> layouts;
 	layouts.push_back(m_brdfLutDescriptorSetLayout);
+	layouts.push_back(m_specEnvPrefilterDescriptorSetLayout);
 	layouts.push_back(m_skyboxDescriptorSetLayout);
 	layouts.push_back(m_lightingDescriptorSetLayout);
 	layouts.push_back(m_finalOutputDescriptorSetLayout);
@@ -603,7 +648,7 @@ void DeferredRenderer::createDescriptorSets()
 		layouts.push_back(m_geomDescriptorSetLayout);
 	}
 
-	std::vector<VkDescriptorSet> sets(4 + m_models.size());
+	std::vector<VkDescriptorSet> sets(5 + m_models.size());
 
 	VkDescriptorSetAllocateInfo allocInfo = {};
 	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -617,18 +662,20 @@ void DeferredRenderer::createDescriptorSets()
 	}
 
 	m_brdfLutDescriptorSet = sets[0];
-	m_skyboxDescriptorSet = sets[1];
-	m_lightingDescriptorSet = sets[2];
-	m_finalOutputDescriptorSet = sets[3];
+	m_specEnvPrefilterDescriptorSet = sets[1];
+	m_skyboxDescriptorSet = sets[2];
+	m_lightingDescriptorSet = sets[3];
+	m_finalOutputDescriptorSet = sets[4];
 	m_geomDescriptorSets.resize(m_models.size());
 	for (uint32_t i = 0; i < m_models.size(); ++i)
 	{
-		m_geomDescriptorSets[i] = sets[4 + i];
+		m_geomDescriptorSets[i] = sets[5 + i];
 	}
 
 	// geometry pass descriptor set will be updated for every model
 	// so there is no need to pre-initialize it
 	createBrdfLutDescriptorSet();
+	createSpecEnvPrefilterDescriptorSet();
 	createGeomPassDescriptorSets();
 	createLightingPassDescriptorSets();
 	createFinalOutputPassDescriptorSets();
@@ -636,10 +683,35 @@ void DeferredRenderer::createDescriptorSets()
 
 void DeferredRenderer::createFramebuffers()
 {
+	// Diffuse irradiance map pass
+	{
+		std::array<VkImageView, 1> attachments =
+		{
+			m_diffIrradianceImage.imageView
+		};
+
+		VkFramebufferCreateInfo framebufferInfo = {};
+		framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+		framebufferInfo.renderPass = m_specEnvPrefilterRenderPass;
+		framebufferInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
+		framebufferInfo.pAttachments = attachments.data();
+		framebufferInfo.width = DIFF_IRRADIANCE_MAP_SIZE;
+		framebufferInfo.height = DIFF_IRRADIANCE_MAP_SIZE;
+		framebufferInfo.layers = 6;
+
+		if (vkCreateFramebuffer(m_device, &framebufferInfo, nullptr, m_diffEnvPrefilterFramebuffer.replace()) != VK_SUCCESS)
+		{
+			throw std::runtime_error("failed to create framebuffer!");
+		}
+	}
+
 	// Specular irradiance map pass
 	m_specEnvPrefilterFramebuffers.resize(m_specIrradianceImage.mipLevels, { m_device, vkDestroyFramebuffer });
 	for (uint32_t level = 0; level < m_specIrradianceImage.mipLevels; ++level)
 	{
+		uint32_t faceWidth = SPEC_IRRADIANCE_MAP_SIZE / (1 << level);
+		uint32_t faceHeight = faceWidth;
+
 		std::array<VkImageView, 1> attachments =
 		{
 			m_specIrradianceImage.imageViews[level]
@@ -650,8 +722,8 @@ void DeferredRenderer::createFramebuffers()
 		framebufferInfo.renderPass = m_specEnvPrefilterRenderPass;
 		framebufferInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
 		framebufferInfo.pAttachments = attachments.data();
-		framebufferInfo.width = m_swapChain.swapChainExtent.width;
-		framebufferInfo.height = m_swapChain.swapChainExtent.height;
+		framebufferInfo.width = faceWidth;
+		framebufferInfo.height = faceHeight;
 		framebufferInfo.layers = 6;
 
 		if (vkCreateFramebuffer(m_device, &framebufferInfo, nullptr, m_specEnvPrefilterFramebuffers[level].replace()) != VK_SUCCESS)
@@ -661,26 +733,28 @@ void DeferredRenderer::createFramebuffers()
 	}
 
 	// Used in geometry and lighting pass
-	std::array<VkImageView, 4> attachments =
 	{
-		m_depthImage.imageView,
-		m_gbufferImages[0].imageView,
-		m_gbufferImages[1].imageView,
-		m_lightingResultImage.imageView
-	};
+		std::array<VkImageView, 4> attachments =
+		{
+			m_depthImage.imageView,
+			m_gbufferImages[0].imageView,
+			m_gbufferImages[1].imageView,
+			m_lightingResultImage.imageView
+		};
 
-	VkFramebufferCreateInfo framebufferInfo = {};
-	framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-	framebufferInfo.renderPass = m_geomAndLightRenderPass;
-	framebufferInfo.attachmentCount = attachments.size();
-	framebufferInfo.pAttachments = attachments.data();
-	framebufferInfo.width = m_swapChain.swapChainExtent.width;
-	framebufferInfo.height = m_swapChain.swapChainExtent.height;
-	framebufferInfo.layers = 1;
+		VkFramebufferCreateInfo framebufferInfo = {};
+		framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+		framebufferInfo.renderPass = m_geomAndLightRenderPass;
+		framebufferInfo.attachmentCount = attachments.size();
+		framebufferInfo.pAttachments = attachments.data();
+		framebufferInfo.width = m_swapChain.swapChainExtent.width;
+		framebufferInfo.height = m_swapChain.swapChainExtent.height;
+		framebufferInfo.layers = 1;
 
-	if (vkCreateFramebuffer(m_device, &framebufferInfo, nullptr, m_geomAndLightingFramebuffer.replace()) != VK_SUCCESS)
-	{
-		throw std::runtime_error("failed to create framebuffer!");
+		if (vkCreateFramebuffer(m_device, &framebufferInfo, nullptr, m_geomAndLightingFramebuffer.replace()) != VK_SUCCESS)
+		{
+			throw std::runtime_error("failed to create framebuffer!");
+		}
 	}
 
 	// Used in final output pass
@@ -723,7 +797,7 @@ void DeferredRenderer::createCommandBuffers()
 	allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
 	allocInfo.commandPool = m_graphicsCommandPool;
 	allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-	allocInfo.commandBufferCount = (uint32_t)m_presentCommandBuffers.size() + 1;
+	allocInfo.commandBufferCount = (uint32_t)m_presentCommandBuffers.size() + 2;
 
 	std::vector<VkCommandBuffer> commandBuffers(allocInfo.commandBufferCount);
 	if (vkAllocateCommandBuffers(m_device, &allocInfo, commandBuffers.data()) != VK_SUCCESS)
@@ -737,8 +811,10 @@ void DeferredRenderer::createCommandBuffers()
 		m_presentCommandBuffers[idx] = commandBuffers[idx];
 	}
 	m_geomAndLightingCommandBuffer = commandBuffers[idx++];
+	m_envPrefilterCommandBuffer = commandBuffers[idx++];
 
 	// Create command buffers for different purposes
+	createEnvPrefilterCommandBuffer();
 	createGeomAndLightingCommandBuffer();
 	createPresentCommandBuffers();
 
@@ -780,9 +856,10 @@ void DeferredRenderer::createSynchronizationObjects()
 	VkFenceCreateInfo fenceInfo = {};
 	fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
 
-	if (vkCreateFence(m_device, &fenceInfo, nullptr, m_brdfLutFence.replace()) != VK_SUCCESS)
+	if (vkCreateFence(m_device, &fenceInfo, nullptr, m_brdfLutFence.replace()) != VK_SUCCESS ||
+		vkCreateFence(m_device, &fenceInfo, nullptr, m_envPrefilterFence.replace()) != VK_SUCCESS)
 	{
-		throw std::runtime_error("failed to create brdf lut fence!");
+		throw std::runtime_error("failed to create fences!");
 	}
 }
 
@@ -1322,12 +1399,64 @@ void DeferredRenderer::createBrdfLutPipeline()
 	}
 }
 
+void DeferredRenderer::createDiffEnvPrefilterPipeline()
+{
+	ShaderFileNames shaderFiles;
+	shaderFiles.vs = "../shaders/env_prefilter_pass/env_prefilter.vert.spv";
+	shaderFiles.gs = "../shaders/env_prefilter_pass/env_prefilter.geom.spv";
+	shaderFiles.fs = "../shaders/env_prefilter_pass/diff_env_prefilter.frag.spv";
+
+	DefaultGraphicsPipelineCreateInfo infos{ m_device, shaderFiles };
+
+	auto bindingDescription = Vertex::getBindingDescription();
+	auto attributeDescriptions = Vertex::getAttributeDescriptions();
+
+	infos.vertexInputInfo.vertexBindingDescriptionCount = 1;
+	infos.vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
+	infos.vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+	infos.vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
+
+	infos.rasterizerInfo.cullMode = VK_CULL_MODE_NONE;
+
+	infos.depthStencilInfo.depthTestEnable = VK_FALSE;
+	infos.depthStencilInfo.depthWriteEnable = VK_FALSE;
+	infos.depthStencilInfo.depthCompareOp = VK_COMPARE_OP_ALWAYS;
+
+	std::vector<VkDynamicState> dynamicStateEnables =
+	{
+		VK_DYNAMIC_STATE_VIEWPORT,
+		VK_DYNAMIC_STATE_SCISSOR
+	};
+	infos.dynamicStateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+	infos.dynamicStateInfo.dynamicStateCount = static_cast<uint32_t>(dynamicStateEnables.size());
+	infos.dynamicStateInfo.pDynamicStates = dynamicStateEnables.data();
+
+	VkDescriptorSetLayout setLayouts[] = { m_specEnvPrefilterDescriptorSetLayout };
+	infos.pipelineLayoutInfo.setLayoutCount = 1;
+	infos.pipelineLayoutInfo.pSetLayouts = setLayouts;
+
+	if (vkCreatePipelineLayout(m_device, &infos.pipelineLayoutInfo, nullptr, m_diffEnvPrefilterPipelineLayout.replace()) != VK_SUCCESS)
+	{
+		throw std::runtime_error("failed to create diffuse environment pipeline layout!");
+	}
+
+	infos.pipelineInfo.layout = m_diffEnvPrefilterPipelineLayout;
+	infos.pipelineInfo.renderPass = m_specEnvPrefilterRenderPass;
+	infos.pipelineInfo.subpass = 0;
+	infos.pipelineInfo.pDynamicState = &infos.dynamicStateInfo;
+
+	if (vkCreateGraphicsPipelines(m_device, m_pipelineCache, 1, &infos.pipelineInfo, nullptr, m_diffEnvPrefilterPipeline.replace()) != VK_SUCCESS)
+	{
+		throw std::runtime_error("failed to create diffuse environment pipeline!");
+	}
+}
+
 void DeferredRenderer::createSpecEnvPrefilterPipeline()
 {
 	ShaderFileNames shaderFiles;
-	shaderFiles.vs = "../shaders/specular_environment_pass/specular_environment.vert.spv";
-	shaderFiles.gs = "../shaders/specular_environment_pass/specular_environment.geom.spv";
-	shaderFiles.fs = "../shaders/specular_environment_pass/specular_environment.frag.spv";
+	shaderFiles.vs = "../shaders/env_prefilter_pass/env_prefilter.vert.spv";
+	shaderFiles.gs = "../shaders/env_prefilter_pass/env_prefilter.geom.spv";
+	shaderFiles.fs = "../shaders/env_prefilter_pass/spec_env_prefilter.frag.spv";
 
 	DefaultGraphicsPipelineCreateInfo infos{ m_device, shaderFiles };
 
@@ -1360,7 +1489,7 @@ void DeferredRenderer::createSpecEnvPrefilterPipeline()
 
 	infos.pushConstantRanges.resize(1);
 	infos.pushConstantRanges[0].offset = 0;
-	infos.pushConstantRanges[0].size = sizeof(uint32_t);
+	infos.pushConstantRanges[0].size = sizeof(float);
 	infos.pushConstantRanges[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
 	infos.pipelineLayoutInfo.pushConstantRangeCount = static_cast<uint32_t>(infos.pushConstantRanges.size());
@@ -1632,6 +1761,41 @@ void DeferredRenderer::createBrdfLutDescriptorSet()
 	vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
 }
 
+void DeferredRenderer::createSpecEnvPrefilterDescriptorSet()
+{
+	std::vector<VkDescriptorBufferInfo> bufferInfos =
+	{
+		m_allUniformBuffer.getDescriptorInfo(
+			m_allUniformHostData.offsetOf(reinterpret_cast<const char *>(m_uCubeViews)),
+			sizeof(CubeMapCameraUniformBuffer))
+	};
+
+	std::vector<VkDescriptorImageInfo> imageInfos =
+	{
+		m_skybox.radianceMap.getDescriptorInfo()
+	};
+
+	std::array<VkWriteDescriptorSet, 2> descriptorWrites = {};
+
+	descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	descriptorWrites[0].dstSet = m_specEnvPrefilterDescriptorSet;
+	descriptorWrites[0].dstBinding = 0;
+	descriptorWrites[0].dstArrayElement = 0;
+	descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	descriptorWrites[0].descriptorCount = static_cast<uint32_t>(bufferInfos.size());
+	descriptorWrites[0].pBufferInfo = bufferInfos.data();
+
+	descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	descriptorWrites[1].dstSet = m_specEnvPrefilterDescriptorSet;
+	descriptorWrites[1].dstBinding = 1;
+	descriptorWrites[1].dstArrayElement = 0;
+	descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	descriptorWrites[1].descriptorCount = static_cast<uint32_t>(imageInfos.size());
+	descriptorWrites[1].pImageInfo = imageInfos.data();
+
+	vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
+}
+
 void DeferredRenderer::createGeomPassDescriptorSets()
 {
 	createSkyboxDescriptorSet();
@@ -1807,7 +1971,102 @@ void DeferredRenderer::createBrdfLutCommandBuffer()
 	const uint32_t brdfLutSizeX = BRDF_LUT_SIZE, brdfLutSizeY = BRDF_LUT_SIZE;
 	vkCmdDispatch(m_brdfLutCommandBuffer, brdfLutSizeX / bsx, brdfLutSizeY / bsy, 1);
 
-	vkEndCommandBuffer(m_brdfLutCommandBuffer);
+	if (vkEndCommandBuffer(m_brdfLutCommandBuffer) != VK_SUCCESS)
+	{
+		throw std::runtime_error("failed to record command buffer!");
+	}
+}
+
+void DeferredRenderer::createEnvPrefilterCommandBuffer()
+{
+	VkCommandBufferBeginInfo beginInfo = {};
+	beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+
+	vkBeginCommandBuffer(m_envPrefilterCommandBuffer, &beginInfo);
+
+	VkBuffer vertexBuffers[] = { m_skybox.vertexBuffer.buffer };
+	VkDeviceSize offsets[] = { 0 };
+
+	vkCmdBindVertexBuffers(m_envPrefilterCommandBuffer, 0, 1, vertexBuffers, offsets);
+	vkCmdBindIndexBuffer(m_envPrefilterCommandBuffer, m_skybox.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+
+	VkRenderPassBeginInfo renderPassInfo = {};
+	renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+	renderPassInfo.renderPass = m_specEnvPrefilterRenderPass;
+	renderPassInfo.renderArea.offset = { 0, 0 };
+
+	std::array<VkClearValue, 1> clearValues = {};
+	clearValues[0].color = { { 0.f, 0.f, 0.f, 0.f } };
+
+	renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
+	renderPassInfo.pClearValues = clearValues.data();
+
+	VkViewport viewport = {};
+	viewport.minDepth = 0.f;
+	viewport.maxDepth = 1.f;
+
+	VkRect2D scissor = {};
+
+	// Layered rendering allows render into multiple layers but only one mip level
+	// In order to render all mips, multiple passes are required
+	// Diffuse prefilter pass
+	renderPassInfo.framebuffer = m_diffEnvPrefilterFramebuffer;
+	renderPassInfo.renderArea.extent = { DIFF_IRRADIANCE_MAP_SIZE, DIFF_IRRADIANCE_MAP_SIZE };
+
+	vkCmdBeginRenderPass(m_envPrefilterCommandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+	vkCmdBindPipeline(m_envPrefilterCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_diffEnvPrefilterPipeline);
+	vkCmdBindDescriptorSets(m_envPrefilterCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_diffEnvPrefilterPipelineLayout, 0, 1, &m_specEnvPrefilterDescriptorSet, 0, nullptr);
+
+	viewport.width = DIFF_IRRADIANCE_MAP_SIZE;
+	viewport.height = DIFF_IRRADIANCE_MAP_SIZE;
+	vkCmdSetViewport(m_envPrefilterCommandBuffer, 0, 1, &viewport);
+
+	scissor.extent = { DIFF_IRRADIANCE_MAP_SIZE, DIFF_IRRADIANCE_MAP_SIZE };
+	vkCmdSetScissor(m_envPrefilterCommandBuffer, 0, 1, &scissor);
+
+	vkCmdDrawIndexed(m_envPrefilterCommandBuffer, static_cast<uint32_t>(m_skybox.indexBuffer.numElements), 1, 0, 0, 0);
+
+	vkCmdEndRenderPass(m_envPrefilterCommandBuffer);
+
+	// Specular prefitler pass
+	uint32_t mipLevels = m_specIrradianceImage.mipLevels;
+	float roughness = 0.f;
+	float roughnessDelta = 1.f / static_cast<float>(mipLevels - 1);
+
+	for (uint32_t level = 0; level < mipLevels; ++level)
+	{
+		uint32_t faceWidth = SPEC_IRRADIANCE_MAP_SIZE / (1 << level);
+		uint32_t faceHeight = faceWidth;
+
+		renderPassInfo.framebuffer = m_specEnvPrefilterFramebuffers[level];
+		renderPassInfo.renderArea.extent = { faceWidth, faceHeight };
+
+		vkCmdBeginRenderPass(m_envPrefilterCommandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+		vkCmdBindPipeline(m_envPrefilterCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_specEnvPrefilterPipeline);
+
+		vkCmdBindDescriptorSets(m_envPrefilterCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_specEnvPrefilterPipelineLayout, 0, 1, &m_specEnvPrefilterDescriptorSet, 0, nullptr);
+		vkCmdPushConstants(m_envPrefilterCommandBuffer, m_specEnvPrefilterPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(float), &roughness);
+
+		viewport.width = faceWidth;
+		viewport.height = faceHeight;
+		vkCmdSetViewport(m_envPrefilterCommandBuffer, 0, 1, &viewport);
+
+		scissor.extent = { faceWidth, faceHeight };
+		vkCmdSetScissor(m_envPrefilterCommandBuffer, 0, 1, &scissor);
+
+		vkCmdDrawIndexed(m_envPrefilterCommandBuffer, static_cast<uint32_t>(m_skybox.indexBuffer.numElements), 1, 0, 0, 0);
+
+		vkCmdEndRenderPass(m_envPrefilterCommandBuffer);
+
+		roughness += roughnessDelta;
+	}
+
+	if (vkEndCommandBuffer(m_envPrefilterCommandBuffer) != VK_SUCCESS)
+	{
+		throw std::runtime_error("failed to record command buffer!");
+	}
 }
 
 void DeferredRenderer::createGeomAndLightingCommandBuffer()
@@ -1934,6 +2193,9 @@ void DeferredRenderer::prefilterEnvironmentAndComputeBrdfLut()
 	//   [1] http://blog.selfshadow.com/publications/s2013-shading-course/karis/s2013_pbs_epic_notes_v2.pdf
 	//   [2] https://github.com/derkreature/IBLBaker
 
+	// Set up cube map camera
+	updateUniformBuffers();
+
 	// Bake BRDF terms
 	VkSubmitInfo submitInfo = {};
 	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -1945,42 +2207,141 @@ void DeferredRenderer::prefilterEnvironmentAndComputeBrdfLut()
 		throw std::runtime_error("failed to submit brdf lut command buffer.");
 	}
 
+	// Prefilter radiance map
+	submitInfo.pCommandBuffers = &m_envPrefilterCommandBuffer;
+
+	if (vkQueueSubmit(m_graphicsQueue, 1, &submitInfo, m_envPrefilterFence) != VK_SUCCESS)
+	{
+		throw std::runtime_error("failed to submit environment prefilter command buffer.");
+	}
+
 	std::vector<VkFence> fences =
 	{
-		m_brdfLutFence
+		m_brdfLutFence,
+		m_envPrefilterFence
 	};
 	vkWaitForFences(m_device, static_cast<uint32_t>(fences.size()), fences.data(), VK_TRUE, std::numeric_limits<uint64_t>::max());
 	vkResetFences(m_device, static_cast<uint32_t>(fences.size()), fences.data());
 
 	// read back computation results and save to disk
-	transitionImageLayout(m_device, m_graphicsCommandPool, m_graphicsQueue,
-		m_brdfLutImage.image, m_brdfLutImage.format, m_brdfLutImage.mipLevels,
-		VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+	{
+		transitionImageLayout(m_device, m_graphicsCommandPool, m_graphicsQueue,
+			m_brdfLutImage.image, m_brdfLutImage.format, m_brdfLutImage.mipLevels,
+			VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 
-	BufferWrapper stagingBuffer{ m_device };
-	VkDeviceSize sizeInBytes = BRDF_LUT_SIZE * BRDF_LUT_SIZE * sizeof(glm::vec2);
+		BufferWrapper stagingBuffer{ m_device };
+		VkDeviceSize sizeInBytes = BRDF_LUT_SIZE * BRDF_LUT_SIZE * sizeof(glm::vec2);
 
-	createBuffer(m_physicalDevice, m_device, sizeInBytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-		stagingBuffer.buffer, stagingBuffer.bufferMemory);
+		createBuffer(m_physicalDevice, m_device, sizeInBytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+			stagingBuffer.buffer, stagingBuffer.bufferMemory);
 
-	VkBufferImageCopy imageCopyRegion = {};
-	imageCopyRegion.imageExtent = { BRDF_LUT_SIZE, BRDF_LUT_SIZE, 1 };
-	imageCopyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-	imageCopyRegion.imageSubresource.layerCount = 1;
-	imageCopyRegion.imageSubresource.mipLevel = 0;
+		VkBufferImageCopy imageCopyRegion = {};
+		imageCopyRegion.imageExtent = { BRDF_LUT_SIZE, BRDF_LUT_SIZE, 1 };
+		imageCopyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		imageCopyRegion.imageSubresource.layerCount = 1;
+		imageCopyRegion.imageSubresource.mipLevel = 0;
 
-	// Tiling mode difference is handled by Vulkan automatically
-	copyImageToBuffer(m_device, m_graphicsCommandPool, m_graphicsQueue, { imageCopyRegion }, m_brdfLutImage.image, stagingBuffer.buffer);
+		// Tiling mode difference is handled by Vulkan automatically
+		copyImageToBuffer(m_device, m_graphicsCommandPool, m_graphicsQueue, { imageCopyRegion }, m_brdfLutImage.image, stagingBuffer.buffer);
 
-	void* data;
-	std::vector<glm::vec2> hostBrdfLutPixels(BRDF_LUT_SIZE * BRDF_LUT_SIZE);
-	vkMapMemory(m_device, stagingBuffer.bufferMemory, 0, sizeInBytes, 0, &data);
-	memcpy(&hostBrdfLutPixels[0], data, sizeInBytes);
-	vkUnmapMemory(m_device, stagingBuffer.bufferMemory);
+		void* data;
+		std::vector<glm::vec2> hostBrdfLutPixels(BRDF_LUT_SIZE * BRDF_LUT_SIZE);
+		vkMapMemory(m_device, stagingBuffer.bufferMemory, 0, sizeInBytes, 0, &data);
+		memcpy(&hostBrdfLutPixels[0], data, sizeInBytes);
+		vkUnmapMemory(m_device, stagingBuffer.bufferMemory);
 
-	saveImage2D("../textures/BRDF_LUTs/FSchlick_DGGX_GSmith.dds", BRDF_LUT_SIZE, BRDF_LUT_SIZE, sizeof(glm::vec2), 1, gli::FORMAT_RG32_SFLOAT_PACK32, hostBrdfLutPixels.data());
-	hostBrdfLutPixels.clear();
+		saveImage2D("../textures/BRDF_LUTs/FSchlick_DGGX_GSmith.dds",
+			BRDF_LUT_SIZE, BRDF_LUT_SIZE, sizeof(glm::vec2), 1, gli::FORMAT_RG32_SFLOAT_PACK32, hostBrdfLutPixels.data());
+	}
+
+	{
+		transitionImageLayout(m_device, m_graphicsCommandPool, m_graphicsQueue,
+			m_diffIrradianceImage.image, m_diffIrradianceImage.format, 6, m_diffIrradianceImage.mipLevels,
+			VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+		BufferWrapper stagingBuffer{ m_device };
+		VkDeviceSize sizeInBytes = compute2DImageSizeInBytes(
+			DIFF_IRRADIANCE_MAP_SIZE, DIFF_IRRADIANCE_MAP_SIZE, sizeof(glm::vec4), m_diffIrradianceImage.mipLevels, 6);
+
+		createBuffer(m_physicalDevice, m_device, sizeInBytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+			stagingBuffer.buffer, stagingBuffer.bufferMemory);
+
+		VkBufferImageCopy imageCopyRegion = {};
+		imageCopyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		imageCopyRegion.imageSubresource.mipLevel = 0;
+		imageCopyRegion.imageSubresource.baseArrayLayer = 0;
+		imageCopyRegion.imageSubresource.layerCount = 6;
+		imageCopyRegion.imageExtent.width = DIFF_IRRADIANCE_MAP_SIZE;
+		imageCopyRegion.imageExtent.height = DIFF_IRRADIANCE_MAP_SIZE;
+		imageCopyRegion.imageExtent.depth = 1;
+		imageCopyRegion.bufferOffset = 0;
+
+		copyImageToBuffer(m_device, m_graphicsCommandPool, m_graphicsQueue, { imageCopyRegion }, m_diffIrradianceImage.image, stagingBuffer.buffer);
+
+		void* data;
+		std::vector<glm::vec4> hostPixels(sizeInBytes / sizeof(glm::vec4));
+		vkMapMemory(m_device, stagingBuffer.bufferMemory, 0, sizeInBytes, 0, &data);
+		memcpy(&hostPixels[0], data, sizeInBytes);
+		vkUnmapMemory(m_device, stagingBuffer.bufferMemory);
+
+		saveImageCube("../textures/Environment/PaperMill/Diffuse_HDR.dds",
+			DIFF_IRRADIANCE_MAP_SIZE, DIFF_IRRADIANCE_MAP_SIZE, sizeof(glm::vec4),
+			m_diffIrradianceImage.mipLevels, gli::FORMAT_RGBA32_SFLOAT_PACK32, hostPixels.data());
+	}
+
+	{
+		transitionImageLayout(m_device, m_graphicsCommandPool, m_graphicsQueue,
+			m_specIrradianceImage.image, m_specIrradianceImage.format, 6, m_specIrradianceImage.mipLevels,
+			VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+		BufferWrapper stagingBuffer{ m_device };
+		VkDeviceSize sizeInBytes = compute2DImageSizeInBytes(
+			SPEC_IRRADIANCE_MAP_SIZE, SPEC_IRRADIANCE_MAP_SIZE, sizeof(glm::vec4), m_specIrradianceImage.mipLevels, 6);
+
+		createBuffer(m_physicalDevice, m_device, sizeInBytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+			stagingBuffer.buffer, stagingBuffer.bufferMemory);
+
+		std::vector<VkBufferImageCopy> imageCopyRegions;
+		VkDeviceSize offset = 0;
+
+		for (uint32_t face = 0; face < 6; ++face)
+		{
+			for (uint32_t level = 0; level < m_specIrradianceImage.mipLevels; ++level)
+			{
+				uint32_t faceWidth = SPEC_IRRADIANCE_MAP_SIZE / (1 << level);
+				uint32_t faceHeight = faceWidth;
+
+				VkBufferImageCopy region = {};
+				region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+				region.imageSubresource.mipLevel = level;
+				region.imageSubresource.baseArrayLayer = face;
+				region.imageSubresource.layerCount = 1;
+				region.imageExtent.width = faceWidth;
+				region.imageExtent.height = faceHeight;
+				region.imageExtent.depth = 1;
+				region.bufferOffset = offset;
+
+				imageCopyRegions.push_back(region);
+
+				offset += faceWidth * faceHeight * sizeof(glm::vec4);
+			}
+		}
+
+		copyImageToBuffer(m_device, m_graphicsCommandPool, m_graphicsQueue, imageCopyRegions, m_specIrradianceImage.image, stagingBuffer.buffer);
+
+		void* data;
+		std::vector<glm::vec4> hostPixels(sizeInBytes / sizeof(glm::vec4));
+		vkMapMemory(m_device, stagingBuffer.bufferMemory, 0, sizeInBytes, 0, &data);
+		memcpy(&hostPixels[0], data, sizeInBytes);
+		vkUnmapMemory(m_device, stagingBuffer.bufferMemory);
+
+		saveImageCube("../textures/Environment/PaperMill/Specular_HDR.dds",
+			SPEC_IRRADIANCE_MAP_SIZE, SPEC_IRRADIANCE_MAP_SIZE, sizeof(glm::vec4),
+			m_specIrradianceImage.mipLevels, gli::FORMAT_RGBA32_SFLOAT_PACK32, hostPixels.data());
+	}
 }
 
 VkFormat DeferredRenderer::findDepthFormat()
