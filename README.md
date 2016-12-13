@@ -16,6 +16,15 @@ A Vulkan implementation of real-time PBR renderer.
 
 ### Overview
 
+| ![](docs/how_it_work0.png) | ![](docs/how_it_work1.png) |
+| --- | --- |
+| ![](docs/how_it_work3.png) | ![](docs/how_it_work2.png) |
+| ![](docs/how_it_work4.png) |
+
+### Performance Analysis
+
+* Coming soon!
+
 ---
 
 ### Third-Party Credits
