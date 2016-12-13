@@ -6,6 +6,8 @@ A Vulkan implementation of real-time PBR renderer.
 
 ### Results
 
+* Video demo available on [my homepage](jian-ru.github.io)
+
 | Paper Mill | Factory |
 | --- | --- |
 | ![](docs/paper_mill.png) | ![](docs/factory.png) |
