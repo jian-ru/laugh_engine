@@ -141,11 +141,10 @@ protected:
 	VDeleter<VkPipeline> m_skyboxPipeline{ m_device, vkDestroyPipeline };
 	VDeleter<VkPipelineLayout> m_geomPipelineLayout{ m_device, vkDestroyPipelineLayout };
 	VDeleter<VkPipeline> m_geomPipeline{ m_device, vkDestroyPipeline };
-
 	VDeleter<VkPipelineLayout> m_lightingPipelineLayout{ m_device, vkDestroyPipelineLayout };
-	std::vector<VDeleter<VkPipelineLayout>> m_bloomPipelineLayout;
 	VDeleter<VkPipeline> m_lightingPipeline{ m_device, vkDestroyPipeline };
-
+	std::vector<VDeleter<VkPipelineLayout>> m_bloomPipelineLayout;
+	std::vector<VDeleter<VkPipeline>> m_bloomPipelines;
 	VDeleter<VkPipelineLayout> m_finalOutputPipelineLayout{ m_device, vkDestroyPipelineLayout };
 	VDeleter<VkPipeline> m_finalOutputPipeline{ m_device, vkDestroyPipeline };
 
@@ -1813,23 +1812,11 @@ void DeferredRenderer::createBloomPipelines()
 
 	DefaultGraphicsPipelineCreateInfo infos{ m_device, shaderFiles };
 
-	VkViewport viewport;
-	VkRect2D scissor;
-	defaultViewportAndScissor(m_swapChain.swapChainExtent, viewport, scissor);
-
-	infos.viewportStateInfo.viewportCount = 1;
-	infos.viewportStateInfo.pViewports = &viewport;
-	infos.viewportStateInfo.scissorCount = 1;
-	infos.viewportStateInfo.pScissors = &scissor;
-
-	infos.depthStencilInfo.depthTestEnable = VK_FALSE;
-	infos.depthStencilInfo.depthWriteEnable = VK_FALSE;
-	infos.depthStencilInfo.depthCompareOp = VK_COMPARE_OP_ALWAYS;
-
 	VkDescriptorSetLayout setLayouts[] = { m_bloomDescriptorSetLayout };
 	infos.pipelineLayoutInfo.setLayoutCount = 1;
 	infos.pipelineLayoutInfo.pSetLayouts = setLayouts;
 
+	// brightness_mask and merge
 	m_bloomPipelineLayout.resize(2, { m_device, vkDestroyPipelineLayout });
 	if (vkCreatePipelineLayout(m_device, &infos.pipelineLayoutInfo, nullptr, m_bloomPipelineLayout[0].replace()) != VK_SUCCESS)
 	{
@@ -1844,18 +1831,58 @@ void DeferredRenderer::createBloomPipelines()
 	infos.pipelineLayoutInfo.pushConstantRangeCount = static_cast<uint32_t>(infos.pushConstantRanges.size());
 	infos.pipelineLayoutInfo.pPushConstantRanges = infos.pushConstantRanges.data();
 
+	// gaussian blur
 	if (vkCreatePipelineLayout(m_device, &infos.pipelineLayoutInfo, nullptr, m_bloomPipelineLayout[1].replace()) != VK_SUCCESS)
 	{
 		throw std::runtime_error("failed to create bloom pipeline layout!");
 	}
 
-	infos.pipelineInfo.layout = m_lightingPipelineLayout;
-	infos.pipelineInfo.renderPass = m_geomAndLightRenderPass;
+	VkViewport viewport;
+	VkRect2D scissor;
+	defaultViewportAndScissor(m_swapChain.swapChainExtent, viewport, scissor);
+
+	infos.viewportStateInfo.viewportCount = 1;
+	infos.viewportStateInfo.pViewports = &viewport;
+	infos.viewportStateInfo.scissorCount = 1;
+	infos.viewportStateInfo.pScissors = &scissor;
+
+	infos.depthStencilInfo.depthTestEnable = VK_FALSE;
+	infos.depthStencilInfo.depthWriteEnable = VK_FALSE;
+	infos.depthStencilInfo.depthCompareOp = VK_COMPARE_OP_ALWAYS;
+
+	infos.pipelineInfo.layout = m_bloomPipelineLayout[0];
+	infos.pipelineInfo.renderPass = m_bloomRenderPasses[0];
 	infos.pipelineInfo.subpass = 1;
 
-	if (vkCreateGraphicsPipelines(m_device, m_pipelineCache, 1, &infos.pipelineInfo, nullptr, m_lightingPipeline.replace()) != VK_SUCCESS)
+	m_bloomPipelines.resize(3, { m_device, vkDestroyPipeline });
+	// brightness mask
+	if (vkCreateGraphicsPipelines(m_device, m_pipelineCache, 1, &infos.pipelineInfo, nullptr, m_bloomPipelines[0].replace()) != VK_SUCCESS)
 	{
-		throw std::runtime_error("failed to create lighting pipeline!");
+		throw std::runtime_error("failed to create bloom pipeline!");
+	}
+
+	auto shaderCode = readFile("../shaders/bloom_pass/gaussian_blur.frag.spv");
+	createShaderModule(m_device, shaderCode, infos.fragShaderModule);
+	infos.pipelineInfo.layout = m_bloomPipelineLayout[1];
+	infos.pipelineInfo.renderPass = m_bloomRenderPasses[0];
+	infos.shaderStages[1].module = infos.fragShaderModule;
+
+	// gaussian blur
+	if (vkCreateGraphicsPipelines(m_device, m_pipelineCache, 1, &infos.pipelineInfo, nullptr, m_bloomPipelines[1].replace()) != VK_SUCCESS)
+	{
+		throw std::runtime_error("failed to create bloom pipeline!");
+	}
+
+	auto shaderCode = readFile("../shaders/bloom_pass/merge.frag.spv");
+	createShaderModule(m_device, shaderCode, infos.fragShaderModule);
+	infos.pipelineInfo.layout = m_bloomPipelineLayout[0];
+	infos.pipelineInfo.renderPass = m_bloomRenderPasses[1];
+	infos.shaderStages[1].module = infos.fragShaderModule;
+
+	// merge
+	if (vkCreateGraphicsPipelines(m_device, m_pipelineCache, 1, &infos.pipelineInfo, nullptr, m_bloomPipelines[2].replace()) != VK_SUCCESS)
+	{
+		throw std::runtime_error("failed to create bloom pipeline!");
 	}
 }
 
