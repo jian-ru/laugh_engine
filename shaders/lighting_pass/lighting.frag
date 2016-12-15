@@ -7,11 +7,12 @@
 
 layout (input_attachment_index = 0, set = 0, binding = 1) uniform subpassInput siGbuffer1;
 layout (input_attachment_index = 1, set = 0, binding = 2) uniform subpassInput siGbuffer2;
-layout (input_attachment_index = 2, set = 0, binding = 3) uniform subpassInput siDepthImage;
+layout (input_attachment_index = 2, set = 0, binding = 3) uniform subpassInput siGbuffer3;
+layout (input_attachment_index = 3, set = 0, binding = 4) uniform subpassInput siDepthImage;
 
-layout (set = 0, binding = 4) uniform samplerCube diffuseIrradianceMap;
-layout (set = 0, binding = 5) uniform samplerCube specularIrradianceMap;
-layout (set = 0, binding = 6) uniform sampler2D brdfLuts[1];
+layout (set = 0, binding = 5) uniform samplerCube diffuseIrradianceMap;
+layout (set = 0, binding = 6) uniform samplerCube specularIrradianceMap;
+layout (set = 0, binding = 7) uniform sampler2D brdfLuts[1];
 
 layout (location = 0) in vec2 inUV;
 
@@ -50,6 +51,7 @@ void main()
 {
 	vec4 gb1 = subpassLoad(siGbuffer1);
 	vec4 gb2 = subpassLoad(siGbuffer2);
+	vec4 RMAI = subpassLoad(siGbuffer3); // (roughness, metalness, AO, material id)
 	float depth = subpassLoad(siDepthImage).r;
 	
 	if (depth >= 1.0 || depth <= 0.0) return;
@@ -59,10 +61,10 @@ void main()
 	vec3 albedo = unpackRGBA(gb1.w).rgb;
 	albedo = pow(albedo, vec3(2.2)); // to linear space
 	
-	vec4 RMI = unpackRGBA(gb2.w); // (roughness, metalness, material id, unused)
-	float roughness = clamp(RMI.x, 0.0, 1.0);
-	float metalness = clamp(RMI.y, 0.0, 1.0);
-	uint matId = uint(round(RMI.z * 255.0));
+	float roughness = clamp(RMAI.x, 0.0, 1.0);
+	float metalness = clamp(RMAI.y, 0.0, 1.0);
+	float aoVal = RMAI.z;
+	uint matId = uint(round(RMAI.w * 255.0));
 	
 	vec3 finalColor = vec3(0.0);
 
@@ -109,6 +111,8 @@ void main()
 		vec3 specColor = mix(dielectricF0, albedo, metalness); // since metal has no albedo, we use the space to store its F0
 		
 		finalColor = diffColor * diffIr + specIr * (specColor * brdfTerm.x + brdfTerm.y);
+		finalColor *= aoVal;
+		// finalColor = vec3(aoVal);
 		// finalColor = nrm;
 		// finalColor = abs(pos);
 		// finalColor = eyePos.xyz;

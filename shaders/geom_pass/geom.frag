@@ -6,10 +6,12 @@ layout (binding = 2) uniform sampler2D samplerAlbedo;
 layout (binding = 3) uniform sampler2D samplerNormal;
 layout (binding = 4) uniform sampler2D samplerRoughness;
 layout (binding = 5) uniform sampler2D samplerMetalness;
+layout (binding = 6) uniform sampler2D samplerAO;
 
 layout (push_constant) uniform pushConstants
 {
 	uint materialId;
+	uint hasAoMap;
 } pcs;
 
 layout (location = 0) in vec3 inWorldPos;
@@ -18,6 +20,7 @@ layout (location = 2) in vec2 inTexcoord;
 
 layout (location = 0) out vec4 outGbuffer1;
 layout (location = 1) out vec4 outGbuffer2;
+layout (location = 2) out vec4 outGbuffer3;
 
 
 float packRGBA(vec4 color)
@@ -45,18 +48,24 @@ mat3 computeTBN(vec3 n)
 
 void main() 
 {
-	vec4 albedo = texture(samplerAlbedo, inTexcoord);
+	vec4 albedo = vec4(texture(samplerAlbedo, inTexcoord).rgb, 0.0);
 	vec3 nrmmap = texture(samplerNormal, inTexcoord).rgb;
 	float roughness = texture(samplerRoughness, inTexcoord).r;
 	float metalness = texture(samplerMetalness, inTexcoord).r;
+	float aoVal = 1.0;
+	if (pcs.hasAoMap > 0)
+	{
+		aoVal = texture(samplerAO, inTexcoord).r;
+	}
 
 	vec3 surfnrm = normalize(inWorldNormal);
 	mat3 tbn = computeTBN(surfnrm);
 	
 	float packedAlbedo = packRGBA(albedo);
 	vec3 nrm = normalize(tbn * (2.0 * nrmmap - 1.0));
-	float RMI = packRGBA(vec4(roughness, metalness, float(pcs.materialId) / 255.0, 0.0));
+	vec4 RMAI = vec4(roughness, metalness, aoVal, float(pcs.materialId) / 255.0);
 	
 	outGbuffer1 = vec4(nrm, packedAlbedo);
-	outGbuffer2 = vec4(inWorldPos, RMI);
+	outGbuffer2 = vec4(inWorldPos, 0.0);
+	outGbuffer3 = RMAI;
 }

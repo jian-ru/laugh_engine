@@ -65,6 +65,11 @@ public:
 		return object == T(rhs);
 	}
 
+	bool isvalid() const
+	{
+		return object != VK_NULL_HANDLE;
+	}
+
 private:
 	T object{ VK_NULL_HANDLE };
 	std::function<void (T)> deleter;

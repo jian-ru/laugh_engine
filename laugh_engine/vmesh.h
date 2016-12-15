@@ -98,7 +98,7 @@ struct PerModelUniformBuffer
 class VMesh
 {
 public:
-	const static uint32_t numMapsPerMesh = 4;
+	const static uint32_t numMapsPerMesh = 5;
 
 	PerModelUniformBuffer *uPerModelInfo = nullptr;
 
@@ -114,6 +114,7 @@ public:
 	ImageWrapper normalMap;
 	ImageWrapper roughnessMap;
 	ImageWrapper metalnessMap;
+	ImageWrapper aoMap;
 
 	MaterialType_t materialType = MATERIAL_TYPE_FSCHLICK_DGGX_GSMITH;
 
@@ -191,7 +192,8 @@ public:
 		albedoMap{ device },
 		normalMap{ device },
 		roughnessMap{ device },
-		metalnessMap{ device }
+		metalnessMap{ device },
+		aoMap{ device }
 	{}
 
 	void load(
@@ -203,7 +205,8 @@ public:
 		const std::string &albedoMapName,
 		const std::string &normalMapName,
 		const std::string &roughnessMapName,
-		const std::string &metalnessMapName)
+		const std::string &metalnessMapName,
+		const std::string &aoMapName = "")
 	{
 		// load textures
 		if (albedoMapName != "")
@@ -221,6 +224,10 @@ public:
 		if (metalnessMapName != "")
 		{
 			loadTexture(physicalDevice, device, commandPool, submitQueue, metalnessMapName, metalnessMap);
+		}
+		if (aoMapName != "")
+		{
+			loadTexture(physicalDevice, device, commandPool, submitQueue, aoMapName, aoMap);
 		}
 
 		// load mesh

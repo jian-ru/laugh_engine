@@ -33,8 +33,8 @@ void main()
 	{
 		for (int i = 1; i < 5; ++i)
 		{
-			result += texture(inputImage, inUV + vec2(0.0, inUV.t * i)).rgb * weight[i];
-			result += texture(inputImage, inUV - vec2(0.0, inUV.t * i)).rgb * weight[i];
+			result += texture(inputImage, inUV + vec2(0.0, deltaUV.t * i)).rgb * weight[i];
+			result += texture(inputImage, inUV - vec2(0.0, deltaUV.t * i)).rgb * weight[i];
 		}
 	}
 	
