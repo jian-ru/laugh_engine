@@ -4,51 +4,49 @@ Unit: milliseconds
 Prefilter Environment Map
 
 1024 x 1024 (full mips, 6 faces)
-	223.85
-	221.70
+	222.78
 	
 512 x 512
-	103.38
-	101.54
+	102.46
 	
 256 x 256
-	60.17
-	58.72
+	59.44
 	
 128 x 128
-	57.16
-	56.58
+	56.87
 	
 64 x 64
-	22.56
-	22.44
+	22.50
 	
 32 x 32
-	5.57
-	5.78
+	5.68
 	
 2 x 2
-	1.18
-	1.07
+	1.13
 	
 Bake BRDF LUT
 
 1024 x 1024
-	15.56
-	15.61
+	15.59
 	
 512 x 512
-	4.33
-	4.41
+	4.37
 	
 256 x 256
-	1.70
-	1.68
+	1.69
 	
 128 x 128
-	0.87
-	1.00
+	0.94
 	
 64 x 64
-	0.73
-	0.71
+	0.72
+	
+Average frame time (PBR): 2.52
+Average frame time (Blinn-Phong): 2.46
+
+
+Device: GT 750M
+Unit: milliseconds
+
+Average frame time (PBR):
+Average frame time (Blinn-Phong):
