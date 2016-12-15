@@ -289,14 +289,14 @@ void DeferredRenderer::updateUniformBuffers()
 	// update lighting info
 	m_uLightInfo->pointLights[0] =
 	{
-		V * glm::vec4(2.f, 2.f, 1.f, 1.f),
-		glm::vec3(2.f, 2.f, 2.f),
+		glm::vec4(1.f, 2.f, 2.f, 1.f),
+		glm::vec3(4.f, 4.f, 4.f),
 		5.f
 	};
 	m_uLightInfo->pointLights[1] =
 	{
-		V * glm::vec4(-2.f, -1.f, -.5f, 1.f),
-		glm::vec3(.2f, .2f, .2f),
+		glm::vec4(-0.5f, 2.f, -2.f, 1.f),
+		glm::vec3(1.5f, 1.5f, 1.5f),
 		5.f
 	};
 	m_uLightInfo->eyePos = glm::vec4(m_camera.position, 1.0f);
@@ -2690,6 +2690,8 @@ void DeferredRenderer::prefilterEnvironmentAndComputeBrdfLut()
 	submitInfo.commandBufferCount = 1;
 	submitInfo.pCommandBuffers = &m_brdfLutCommandBuffer;
 	
+	auto tStart = std::chrono::high_resolution_clock::now();
+
 	if (!m_bakedBrdfReady)
 	{
 		if (vkQueueSubmit(m_computeQueue, 1, &submitInfo, m_brdfLutFence) != VK_SUCCESS)
@@ -2737,6 +2739,9 @@ void DeferredRenderer::prefilterEnvironmentAndComputeBrdfLut()
 				m_skybox.specularIrradianceMap.image, m_skybox.specularIrradianceMap.format, 6, m_skybox.specularIrradianceMap.mipLevels,
 				VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 		}
+
+		auto tEnd = std::chrono::high_resolution_clock::now();
+		std::cout << "Took " << std::chrono::duration<float, std::milli>(tEnd - tStart).count() << "ms to do precalculation.\n";
 	}
 }
 

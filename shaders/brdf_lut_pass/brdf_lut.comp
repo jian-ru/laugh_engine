@@ -89,9 +89,10 @@ vec2 IntegrateBRDF(float roughness, float NoV)
 void main()
 {
 	vec2 gid = gl_GlobalInvocationID.xy;
+	float lutDim = gl_WorkGroupSize.x * gl_NumWorkGroups.x;
 	
-	float roughness = (gid.y + 0.5) / 256.0;
-	float NoV = (gid.x + 0.5) / 256.0;
+	float roughness = (gid.y + 0.5) / lutDim;
+	float NoV = (gid.x + 0.5) / lutDim;
 
 	vec4 res = vec4(IntegrateBRDF(roughness, NoV), 0.0, 0.0);
 

@@ -74,6 +74,9 @@ void main()
 	}
 	else if (matId == MAT_ID_FSCHLICK_DGGX_GSMITH)
 	{
+		// ad-hoc Blinn-Phong
+		// metalness = clamp(metalness, 0.0, 0.8);
+		
 		// for (int i = 0; i < NUM_LIGHTS; ++i)
 		// {
 			// vec3 lightPos = pointLights[i].position.xyz;
@@ -83,18 +86,19 @@ void main()
 			// if (dist < pointLights[i].radius)
 			// {
 				// float scale = (pointLights[i].radius - dist) / pointLights[i].radius;
-				// vec3 v = -pos;
-				// vec3 l = lightPos - pos;
+				// vec3 v = normalize(eyePos.xyz - pos);
+				// vec3 l = normalize(lightPos - pos);
 				// vec3 h = normalize(v + l);
 				
 				// // assume specular color is white here
 				// finalColor +=
-					// (0.5 * albedo * clamp(dot(nrm, l), 0.0, 1.0) +
-					// 0.5 * pow(clamp(dot(nrm, h), 0.0, 1.0), 20.0)) *
+					// ((1.0 - metalness) * albedo * clamp(dot(nrm, l), 0.0, 1.0) +
+					// metalness * pow(clamp(dot(nrm, h), 0.0, 1.0), pow(15.0, (2.0 - roughness)))) *
 					// pointLights[i].color * scale;
 			// }
 		// }
 		
+		// PBR
 		vec3 v = normalize(eyePos.xyz - pos);
 		vec3 r = normalize(reflect(-v, nrm));
 		
@@ -111,7 +115,9 @@ void main()
 		vec3 specColor = mix(dielectricF0, albedo, metalness); // since metal has no albedo, we use the space to store its F0
 		
 		finalColor = diffColor * diffIr + specIr * (specColor * brdfTerm.x + brdfTerm.y);
-		finalColor *= aoVal;
+		
+		// Debug
+		// finalColor *= aoVal;
 		// finalColor = vec3(aoVal);
 		// finalColor = nrm;
 		// finalColor = abs(pos);

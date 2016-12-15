@@ -1,0 +1,8 @@
+Device: GTX 1080
+Unit: milliseconds
+
+Prefilter Environment Map
+
+1024 x 1024 (full mips, 6 faces)
+	223.85
+	
