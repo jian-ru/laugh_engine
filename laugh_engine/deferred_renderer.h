@@ -56,8 +56,8 @@
 
 #define BRDF_BASE_DIR "../textures/BRDF_LUTs/"
 #define BRDF_NAME "FSchlick_DGGX_GSmith.dds"
-#define PROBE_BASE_DIR "../textures/Environment/PaperMill/"
-//#define PROBE_BASE_DIR "../textures/Environment/Factory/"
+//#define PROBE_BASE_DIR "../textures/Environment/PaperMill/"
+#define PROBE_BASE_DIR "../textures/Environment/Factory/"
 //#define PROBE_BASE_DIR "../textures/Environment/MonValley/"
 //#define PROBE_BASE_DIR "../textures/Environment/Canyon/"
 
