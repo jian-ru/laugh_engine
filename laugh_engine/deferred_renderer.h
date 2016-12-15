@@ -280,6 +280,12 @@ void DeferredRenderer::updateUniformBuffers()
 	m_uCubeViews->V[5] = glm::lookAt(glm::vec3(0.f), glm::vec3(0.f, 0.f, -1.f), glm::vec3(0.f, -1.f, 0.f));	// -Z
 	m_uCubeViews->P = glm::perspective(glm::radians(90.f), 1.f, 0.1f, 100.f);
 
+	// update final output pass info
+	*m_uDisplayInfo =
+	{
+		m_displayMode
+	};
+
 	// update transformation matrices
 	glm::mat4 V, P;
 	m_camera.getViewProjMatrix(V, P);
@@ -300,12 +306,6 @@ void DeferredRenderer::updateUniformBuffers()
 		5.f
 	};
 	m_uLightInfo->eyePos = glm::vec4(m_camera.position, 1.0f);
-
-	// update final output pass info
-	*m_uDisplayInfo =
-	{
-		m_displayMode,
-	};
 
 	// update per model information
 	for (auto &model : m_models)

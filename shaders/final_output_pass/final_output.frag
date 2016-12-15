@@ -71,6 +71,7 @@ void main()
 	{
 		finalColor = applyFilmicToneMap(finalColor);
 		outColor = vec4(pow(finalColor, vec3(1.0 / 2.2)), 1.0);
+		
 		// outColor = vec4(finalColor, 1.0);
 	}
 	else if (displayMode == 1) // albedo
