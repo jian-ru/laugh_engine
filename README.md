@@ -1,4 +1,4 @@
-# laugh_engine
+# Laugh Engine
 
 A Vulkan implementation of real-time PBR renderer.
 
@@ -25,7 +25,30 @@ A Vulkan implementation of real-time PBR renderer.
 
 ### Performance Analysis
 
-* Coming soon!
+* Precomputation performance
+  * It is not real-time but fast enough to be used for interactive editting
+  * The increase of execution time from 128x128 to 256x256 is very small. Probably the GPU is not saturated at that time.
+  
+  | Envrionment Prefiltering | BRDF LUT Baking |
+  | --- | --- |
+  | ![](docs/perf_env.png) | ![](docs/brdf_perf.png) |
+
+* PBR vs. Blinn-Phong
+  * PBR using IBL only
+  * Blinn-Phong was tested using two point light sources
+  * Framebuffer resolution was 1920x1080 with no AA
+  * Bloom was on
+  * The scene with a Cerberus pistol in it was used for benchmark
+  * Basically no addtional cost by using PBR over Blinn-Phong but we get much better quality
+  
+  ![](docs/pbr_vs_blinnphong.png)
+
+### Build Instruction
+
+* Install LunarG Vulkan SDK
+* If you have Visual Studio 2015, the solution should build out of the box
+* To run the program, you will need to copy the .dlls to executable path or system paths
+* Builds on other platforms are not supported yet
 
 ---
 
