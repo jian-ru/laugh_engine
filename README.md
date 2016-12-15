@@ -4,33 +4,28 @@ A Vulkan implementation of real-time PBR renderer.
 
 ---
 
-### Milestone 2 - 11/28/2016
+### Results
 
-Finished:
-* Basic deferred shading pipeline
-* Blinn-Phong
-* Point light
-* Camera control
-* Debug views
-* Code refactorization
+* Video demo available on [my homepage](http://jian-ru.github.io/)
 
-![](docs/demo005.gif)
-
-| Albedo | Depth |
+| Paper Mill | Factory |
 | --- | --- |
-| ![](docs/albedo.png) | ![](docs/depth.png) |
+| ![](docs/paper_mill.png) | ![](docs/factory.png) |
 
-
-| Eye Space Normal | Eye Space Position |
+| Mon Valley | Canyon |
 | --- | --- |
-| ![](docs/eye_nrm.png) | ![](docs/eye_pos.png) |
+| ![](docs/mon_valley.png) | ![](docs/canyon.png) |
 
-### Milestone 1 - 11/21/2016
+### Overview
 
-* Finished the Vulkan tutorial by Alexander Overvoorde
-* Reading and exploring Sascha Willems's Vulkan C++ examples
+| ![](docs/how_it_work0.png) | ![](docs/how_it_work1.png) |
+| --- | --- |
+| ![](docs/how_it_work3.png) | ![](docs/how_it_work2.png) |
+| ![](docs/how_it_work4.png) |
 
-![](docs/demo001.gif)
+### Performance Analysis
+
+* Coming soon!
 
 ---
 
@@ -39,12 +34,14 @@ Finished:
 #### References:
 * [Vulkan Tutorial by Alexander Overvoorde](https://vulkan-tutorial.com)
 * [Vulkan Samples by Sascha Willems](https://github.com/SaschaWillems/Vulkan)
+* [PBR Course Note](http://blog.selfshadow.com/publications/s2013-shading-course/karis/s2013_pbs_epic_notes_v2.pdf)
+* [IBLBaker](https://github.com/derkreature/IBLBaker)
 
 #### Libraries
 * [GLFW](http://www.glfw.org/)
 * [GLM](http://glm.g-truc.net/0.9.8/index.html)
-* [stb_image](https://github.com/nothings/stb)
-* [tinyobjloader](https://github.com/syoyo/tinyobjloader)
+* [GLI](http://gli.g-truc.net/0.8.2/index.html)
+* [Assimp](http://www.assimp.org/)
 
 #### Assets
 * [Chalet Hippolyte Chassande Baroz by Gaël](https://skfb.ly/HDVU)

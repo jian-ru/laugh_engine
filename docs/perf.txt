@@ -1,0 +1,52 @@
+Device: GTX 1080
+Unit: milliseconds
+
+Prefilter Environment Map
+
+1024 x 1024 (full mips, 6 faces)
+	222.78
+	
+512 x 512
+	102.46
+	
+256 x 256
+	59.44
+	
+128 x 128
+	56.87
+	
+64 x 64
+	22.50
+	
+32 x 32
+	5.68
+	
+2 x 2
+	1.13
+	
+Bake BRDF LUT
+
+1024 x 1024
+	15.59
+	
+512 x 512
+	4.37
+	
+256 x 256
+	1.69
+	
+128 x 128
+	0.94
+	
+64 x 64
+	0.72
+	
+Average frame time (PBR): 2.52
+Average frame time (Blinn-Phong): 2.46
+
+
+Device: GT 750M
+Unit: milliseconds
+
+Average frame time (PBR):
+Average frame time (Blinn-Phong):

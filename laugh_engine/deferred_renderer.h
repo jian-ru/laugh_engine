@@ -56,10 +56,19 @@
 
 #define BRDF_BASE_DIR "../textures/BRDF_LUTs/"
 #define BRDF_NAME "FSchlick_DGGX_GSmith.dds"
-//#define PROBE_BASE_DIR "../textures/Environment/PaperMill/"
-#define PROBE_BASE_DIR "../textures/Environment/Factory/"
+
+#define PROBE_BASE_DIR "../textures/Environment/PaperMill/"
+//#define PROBE_BASE_DIR "../textures/Environment/Factory/"
 //#define PROBE_BASE_DIR "../textures/Environment/MonValley/"
 //#define PROBE_BASE_DIR "../textures/Environment/Canyon/"
+
+#define MODEL_NAMES { "Cerberus" }
+//#define MODEL_NAMES { "Jeep_Wagoneer" }
+//#define MODEL_NAMES { "9mm_Pistol" }
+//#define MODEL_NAMES { "Drone_Body", "Drone_Legs", "Floor" }
+//#define MODEL_NAMES { "Combat_Helmet" }
+//#define MODEL_NAMES { "Bug_Ship" }
+//#define MODEL_NAMES { "Knight_Base", "Knight_Helmet", "Knight_Chainmail", "Knight_Skirt", "Knight_Sword", "Knight_Armor" }
 
 
 struct CubeMapCameraUniformBuffer
@@ -111,6 +120,7 @@ public:
 protected:
 	VDeleter<VkRenderPass> m_specEnvPrefilterRenderPass{ m_device, vkDestroyRenderPass };
 	VDeleter<VkRenderPass> m_geomAndLightRenderPass{ m_device, vkDestroyRenderPass };
+	std::vector<VDeleter<VkRenderPass>> m_bloomRenderPasses;
 	VDeleter<VkRenderPass> m_finalOutputRenderPass{ m_device, vkDestroyRenderPass };
 
 	VDeleter<VkDescriptorSetLayout> m_brdfLutDescriptorSetLayout{ m_device, vkDestroyDescriptorSetLayout };
@@ -118,6 +128,7 @@ protected:
 	VDeleter<VkDescriptorSetLayout> m_skyboxDescriptorSetLayout{ m_device, vkDestroyDescriptorSetLayout };
 	VDeleter<VkDescriptorSetLayout> m_geomDescriptorSetLayout{ m_device, vkDestroyDescriptorSetLayout };
 	VDeleter<VkDescriptorSetLayout> m_lightingDescriptorSetLayout{ m_device, vkDestroyDescriptorSetLayout };
+	VDeleter<VkDescriptorSetLayout> m_bloomDescriptorSetLayout{ m_device, vkDestroyDescriptorSetLayout };
 	VDeleter<VkDescriptorSetLayout> m_finalOutputDescriptorSetLayout{ m_device, vkDestroyDescriptorSetLayout };
 
 	VDeleter<VkPipelineLayout> m_brdfLutPipelineLayout{ m_device, vkDestroyPipelineLayout };
@@ -130,16 +141,17 @@ protected:
 	VDeleter<VkPipeline> m_skyboxPipeline{ m_device, vkDestroyPipeline };
 	VDeleter<VkPipelineLayout> m_geomPipelineLayout{ m_device, vkDestroyPipelineLayout };
 	VDeleter<VkPipeline> m_geomPipeline{ m_device, vkDestroyPipeline };
-
 	VDeleter<VkPipelineLayout> m_lightingPipelineLayout{ m_device, vkDestroyPipelineLayout };
 	VDeleter<VkPipeline> m_lightingPipeline{ m_device, vkDestroyPipeline };
-
+	std::vector<VDeleter<VkPipelineLayout>> m_bloomPipelineLayouts;
+	std::vector<VDeleter<VkPipeline>> m_bloomPipelines;
 	VDeleter<VkPipelineLayout> m_finalOutputPipelineLayout{ m_device, vkDestroyPipelineLayout };
 	VDeleter<VkPipeline> m_finalOutputPipeline{ m_device, vkDestroyPipeline };
 
 	ImageWrapper m_depthImage{ m_device };
 	ImageWrapper m_lightingResultImage{ m_device, VK_FORMAT_R16G16B16A16_SFLOAT };
-	std::vector<ImageWrapper> m_gbufferImages = { { m_device, VK_FORMAT_R32G32B32A32_SFLOAT }, { m_device, VK_FORMAT_R32G32B32A32_SFLOAT } };
+	std::vector<ImageWrapper> m_gbufferImages = { { m_device, VK_FORMAT_R32G32B32A32_SFLOAT }, { m_device, VK_FORMAT_R32G32B32A32_SFLOAT }, { m_device, VK_FORMAT_R8G8B8A8_UNORM } };
+	std::vector<ImageWrapper> m_postEffectImages = { { m_device, VK_FORMAT_R16G16B16A16_SFLOAT }, { m_device, VK_FORMAT_R16G16B16A16_SFLOAT } };
 
 	AllUniformBlob<ALL_UNIFORM_BLOB_SIZE> m_allUniformHostData{ m_physicalDevice };
 	CubeMapCameraUniformBuffer *m_uCubeViews = nullptr;
@@ -153,14 +165,17 @@ protected:
 	VkDescriptorSet m_skyboxDescriptorSet;
 	std::vector<VkDescriptorSet> m_geomDescriptorSets; // one set per model
 	VkDescriptorSet m_lightingDescriptorSet;
+	std::vector<VkDescriptorSet> m_bloomDescriptorSets;
 	VkDescriptorSet m_finalOutputDescriptorSet;
 
 	VDeleter<VkFramebuffer> m_diffEnvPrefilterFramebuffer{ m_device, vkDestroyFramebuffer };
 	std::vector<VDeleter<VkFramebuffer>> m_specEnvPrefilterFramebuffers;
 	VDeleter<VkFramebuffer> m_geomAndLightingFramebuffer{ m_device, vkDestroyFramebuffer };
+	std::vector<VDeleter<VkFramebuffer>> m_postEffectFramebuffers;
 
 	VDeleter<VkSemaphore> m_imageAvailableSemaphore{ m_device, vkDestroySemaphore };
 	VDeleter<VkSemaphore> m_geomAndLightingCompleteSemaphore{ m_device, vkDestroySemaphore };
+	VDeleter<VkSemaphore> m_postEffectSemaphore{ m_device, vkDestroySemaphore };
 	VDeleter<VkSemaphore> m_finalOutputFinishedSemaphore{ m_device, vkDestroySemaphore };
 	VDeleter<VkSemaphore> m_renderFinishedSemaphore{ m_device, vkDestroySemaphore };
 
@@ -170,6 +185,7 @@ protected:
 	VkCommandBuffer m_brdfLutCommandBuffer;
 	VkCommandBuffer m_envPrefilterCommandBuffer;
 	VkCommandBuffer m_geomAndLightingCommandBuffer;
+	VkCommandBuffer m_postEffectCommandBuffer;
 
 
 	virtual void createRenderPasses();
@@ -194,6 +210,7 @@ protected:
 	// Helpers
 	virtual void createSpecEnvPrefilterRenderPass();
 	virtual void createGeometryAndLightingRenderPass();
+	virtual void createBloomRenderPasses();
 	virtual void createFinalOutputRenderPass();
 
 	virtual void createBrdfLutDescriptorSetLayout();
@@ -202,6 +219,7 @@ protected:
 	virtual void createStaticMeshDescriptorSetLayout();
 	virtual void createGeomPassDescriptorSetLayout();
 	virtual void createLightingPassDescriptorSetLayout();
+	virtual void createBloomDescriptorSetLayout();
 	virtual void createFinalOutputDescriptorSetLayout();
 
 	virtual void createBrdfLutPipeline();
@@ -211,6 +229,7 @@ protected:
 	virtual void createStaticMeshPipeline();
 	virtual void createGeomPassPipeline();
 	virtual void createLightingPassPipeline();
+	virtual void createBloomPipelines();
 	virtual void createFinalOutputPassPipeline();
 
 	// Descriptor sets cannot be altered once they are bound until execution of all related
@@ -222,11 +241,13 @@ protected:
 	virtual void createStaticMeshDescriptorSet();
 	virtual void createGeomPassDescriptorSets();
 	virtual void createLightingPassDescriptorSets();
+	virtual void createBloomDescriptorSets();
 	virtual void createFinalOutputPassDescriptorSets();
 
 	virtual void createBrdfLutCommandBuffer();
 	virtual void createEnvPrefilterCommandBuffer();
 	virtual void createGeomAndLightingCommandBuffer();
+	virtual void createPostEffectCommandBuffer();
 	virtual void createPresentCommandBuffers();
 
 	virtual void prefilterEnvironmentAndComputeBrdfLut();
@@ -268,14 +289,14 @@ void DeferredRenderer::updateUniformBuffers()
 	// update lighting info
 	m_uLightInfo->pointLights[0] =
 	{
-		V * glm::vec4(2.f, 2.f, 1.f, 1.f),
-		glm::vec3(2.f, 2.f, 2.f),
+		glm::vec4(1.f, 2.f, 2.f, 1.f),
+		glm::vec3(4.f, 4.f, 4.f),
 		5.f
 	};
 	m_uLightInfo->pointLights[1] =
 	{
-		V * glm::vec4(-2.f, -1.f, -.5f, 1.f),
-		glm::vec3(.2f, .2f, .2f),
+		glm::vec4(-0.5f, 2.f, -2.f, 1.f),
+		glm::vec3(1.5f, 1.5f, 1.5f),
 		5.f
 	};
 	m_uLightInfo->eyePos = glm::vec4(m_camera.position, 1.0f);
@@ -319,7 +340,7 @@ void DeferredRenderer::drawFrame()
 	updateText(imageIndex, &m_perfTimer);
 	m_perfTimer.start();
 
-	VkSubmitInfo submitInfos[2] = {};
+	VkSubmitInfo submitInfos[3] = {};
 
 	VkSemaphore waitSemaphores0[] = { m_imageAvailableSemaphore };
 	VkSemaphore signalSemaphores0[] = { m_geomAndLightingCompleteSemaphore };
@@ -334,7 +355,7 @@ void DeferredRenderer::drawFrame()
 	submitInfos[0].pCommandBuffers = &m_geomAndLightingCommandBuffer;
 
 	VkSemaphore waitSemaphores1[] = { m_geomAndLightingCompleteSemaphore };
-	VkSemaphore signalSemaphores1[] = { m_finalOutputFinishedSemaphore };
+	VkSemaphore signalSemaphores1[] = { m_postEffectSemaphore };
 	VkPipelineStageFlags waitStages1[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
 	submitInfos[1].sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 	submitInfos[1].waitSemaphoreCount = 1;
@@ -343,23 +364,35 @@ void DeferredRenderer::drawFrame()
 	submitInfos[1].commandBufferCount = 1;
 	submitInfos[1].signalSemaphoreCount = 1;
 	submitInfos[1].pSignalSemaphores = signalSemaphores1;
-	submitInfos[1].pCommandBuffers = &m_presentCommandBuffers[imageIndex];
+	submitInfos[1].pCommandBuffers = &m_postEffectCommandBuffer;
 
-	if (vkQueueSubmit(m_graphicsQueue, 2, submitInfos, VK_NULL_HANDLE) != VK_SUCCESS)
+	VkSemaphore waitSemaphores2[] = { m_postEffectSemaphore };
+	VkSemaphore signalSemaphores2[] = { m_finalOutputFinishedSemaphore };
+	VkPipelineStageFlags waitStages2[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+	submitInfos[2].sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+	submitInfos[2].waitSemaphoreCount = 1;
+	submitInfos[2].pWaitSemaphores = waitSemaphores2;
+	submitInfos[2].pWaitDstStageMask = waitStages2;
+	submitInfos[2].commandBufferCount = 1;
+	submitInfos[2].signalSemaphoreCount = 1;
+	submitInfos[2].pSignalSemaphores = signalSemaphores2;
+	submitInfos[2].pCommandBuffers = &m_presentCommandBuffers[imageIndex];
+
+	if (vkQueueSubmit(m_graphicsQueue, 3, submitInfos, VK_NULL_HANDLE) != VK_SUCCESS)
 	{
 		throw std::runtime_error("failed to submit draw command buffer!");
 	}
 
-	std::vector<VkSemaphore> waitSemaphores2 = { m_finalOutputFinishedSemaphore };
-	std::vector<VkSemaphore> signalSemaphores2 = { m_renderFinishedSemaphore };
-	std::vector<VkPipelineStageFlags> waitStages2 = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
-	m_textOverlay.submit(imageIndex, waitStages2, waitSemaphores2, signalSemaphores2);
+	std::vector<VkSemaphore> waitSemaphores3 = { m_finalOutputFinishedSemaphore };
+	std::vector<VkSemaphore> signalSemaphores3 = { m_renderFinishedSemaphore };
+	std::vector<VkPipelineStageFlags> waitStages3 = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+	m_textOverlay.submit(imageIndex, waitStages3, waitSemaphores3, signalSemaphores3);
 
 	VkPresentInfoKHR presentInfo = {};
 	presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
 
 	presentInfo.waitSemaphoreCount = 1;
-	presentInfo.pWaitSemaphores = signalSemaphores2.data();
+	presentInfo.pWaitSemaphores = signalSemaphores3.data();
 
 	VkSwapchainKHR swapChains[] = { m_swapChain.swapChain };
 	presentInfo.swapchainCount = 1;
@@ -383,6 +416,7 @@ void DeferredRenderer::createRenderPasses()
 {
 	createSpecEnvPrefilterRenderPass();
 	createGeometryAndLightingRenderPass();
+	createBloomRenderPasses();
 	createFinalOutputRenderPass();
 }
 
@@ -392,6 +426,7 @@ void DeferredRenderer::createDescriptorSetLayouts()
 	createSpecEnvPrefilterDescriptorSetLayout();
 	createGeomPassDescriptorSetLayout();
 	createLightingPassDescriptorSetLayout();
+	createBloomDescriptorSetLayout();
 	createFinalOutputDescriptorSetLayout();
 }
 
@@ -406,6 +441,7 @@ void DeferredRenderer::createGraphicsPipelines()
 	createSpecEnvPrefilterPipeline();
 	createGeomPassPipeline();
 	createLightingPassPipeline();
+	createBloomPipelines();
 	createFinalOutputPassPipeline();
 }
 
@@ -530,10 +566,39 @@ void DeferredRenderer::createColorAttachmentResources()
 
 	VkSamplerCreateInfo lightingSamplerInfo = {};
 	getDefaultSamplerCreateInfo(lightingSamplerInfo);
+	lightingSamplerInfo.magFilter = VK_FILTER_NEAREST;
+	lightingSamplerInfo.minFilter = VK_FILTER_NEAREST;
+	lightingSamplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+	lightingSamplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+	lightingSamplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
 
 	if (vkCreateSampler(m_device, &lightingSamplerInfo, nullptr, m_lightingResultImage.sampler.replace()) != VK_SUCCESS)
 	{
 		throw std::runtime_error("failed to create lighting result image sampler.");
+	}
+
+	// post effects
+	for (auto &image : m_postEffectImages)
+	{
+		createImage(m_physicalDevice, m_device,
+			m_swapChain.swapChainExtent.width, m_swapChain.swapChainExtent.height, image.format,
+			VK_IMAGE_TILING_OPTIMAL,
+			VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+			image.image, image.imageMemory);
+
+		createImageView2D(m_device, image.image, image.format, VK_IMAGE_ASPECT_COLOR_BIT, 1, image.imageView);
+
+		VkSamplerCreateInfo samplerInfo = {};
+		getDefaultSamplerCreateInfo(samplerInfo);
+		samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+		samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+		samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+
+		if (vkCreateSampler(m_device, &samplerInfo, nullptr, image.sampler.replace()) != VK_SUCCESS)
+		{
+			throw std::runtime_error("failed to create post effect image sampler.");
+		}
 	}
 }
 
@@ -555,23 +620,30 @@ void DeferredRenderer::loadAndPrepareAssets()
 
 	m_skybox.load(m_physicalDevice, m_device, m_graphicsCommandPool, m_graphicsQueue, skyboxFileName, unfilteredProbeFileName, specProbeFileName, diffuseProbeFileName);
 
-	std::string modelFileName = "../models/cerberus.obj";
-	std::string albedoMapName = "../textures/Cerberus/A.dds";
-	std::string normalMapName = "../textures/Cerberus/N.dds";
-	std::string roughnessMapName = "../textures/Cerberus/R.dds";
-	std::string metalnessMapName = "../textures/Cerberus/M.dds";
+	std::vector<std::string> modelNames = MODEL_NAMES;
+	m_models.resize(modelNames.size(), { m_device });
 
-	m_models.resize(1, { m_device });
-	m_models[0].load(
-		m_physicalDevice, m_device,
-		m_graphicsCommandPool, m_graphicsQueue,
-		modelFileName, albedoMapName, normalMapName, roughnessMapName, metalnessMapName);
-	m_models[0].worldRotation = glm::quat(glm::vec3(0.f, glm::pi<float>(), 0.f));
-	//m_models[1].load(
-	//	m_physicalDevice, m_device,
-	//	m_graphicsCommandPool, m_graphicsQueue,
-	//	modelFileName, albedoMapName, normalMapName, roughnessMapName, metalnessMapName);
-	//m_models[1].worldPosition = glm::vec3(1.f, 0.f, 0.f);
+	for (size_t i = 0; i < m_models.size(); ++i)
+	{
+		const std::string &name = modelNames[i];
+
+		std::string modelFileName = "../models/" + name + ".obj";
+		std::string albedoMapName = "../textures/" + name + "/A.dds";
+		std::string normalMapName = "../textures/" + name + "/N.dds";
+		std::string roughnessMapName = "../textures/" + name + "/R.dds";
+		std::string metalnessMapName = "../textures/" + name + "/M.dds";
+		std::string aoMapName = "";
+		if (fileExist("../textures/" + name + "/AO.dds"))
+		{
+			aoMapName = "../textures/" + name + "/AO.dds";
+		}
+
+		m_models[i].load(
+			m_physicalDevice, m_device,
+			m_graphicsCommandPool, m_graphicsQueue,
+			modelFileName, albedoMapName, normalMapName, roughnessMapName, metalnessMapName, aoMapName);
+		m_models[i].worldRotation = glm::quat(glm::vec3(0.f, glm::pi<float>(), 0.f));
+	}
 }
 
 void DeferredRenderer::createUniformBuffers()
@@ -607,10 +679,10 @@ void DeferredRenderer::createDescriptorPools()
 
 	poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	// BRDF LUTs + radiance map + diffuse irradiance map + specular irradiance map + lighting result + g-buffers + depth image + model textures
-	poolSizes[1].descriptorCount = 9 + m_models.size() * VMesh::numMapsPerMesh + m_bakedBRDFs.size();
+	poolSizes[1].descriptorCount = 14 + m_models.size() * VMesh::numMapsPerMesh + m_bakedBRDFs.size();
 
 	poolSizes[2].type = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
-	poolSizes[2].descriptorCount = 3;
+	poolSizes[2].descriptorCount = 4;
 
 	poolSizes[3].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 	poolSizes[3].descriptorCount = 1;
@@ -619,7 +691,7 @@ void DeferredRenderer::createDescriptorPools()
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 	poolInfo.poolSizeCount = poolSizes.size();
 	poolInfo.pPoolSizes = poolSizes.data();
-	poolInfo.maxSets = 5 + m_models.size();
+	poolInfo.maxSets = 8 + m_models.size();
 
 	if (vkCreateDescriptorPool(m_device, &poolInfo, nullptr, m_descriptorPool.replace()) != VK_SUCCESS)
 	{
@@ -645,8 +717,12 @@ void DeferredRenderer::createDescriptorSets()
 	{
 		layouts.push_back(m_geomDescriptorSetLayout);
 	}
+	for (uint32_t i = 0; i < 3; ++i)
+	{
+		layouts.push_back(m_bloomDescriptorSetLayout);
+	}
 
-	std::vector<VkDescriptorSet> sets(5 + m_models.size());
+	std::vector<VkDescriptorSet> sets(layouts.size());
 
 	VkDescriptorSetAllocateInfo allocInfo = {};
 	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -659,15 +735,21 @@ void DeferredRenderer::createDescriptorSets()
 		throw std::runtime_error("failed to allocate descriptor set!");
 	}
 
-	m_brdfLutDescriptorSet = sets[0];
-	m_specEnvPrefilterDescriptorSet = sets[1];
-	m_skyboxDescriptorSet = sets[2];
-	m_lightingDescriptorSet = sets[3];
-	m_finalOutputDescriptorSet = sets[4];
+	uint32_t idx = 0;
+	m_brdfLutDescriptorSet = sets[idx++];
+	m_specEnvPrefilterDescriptorSet = sets[idx++];
+	m_skyboxDescriptorSet = sets[idx++];
+	m_lightingDescriptorSet = sets[idx++];
+	m_finalOutputDescriptorSet = sets[idx++];
 	m_geomDescriptorSets.resize(m_models.size());
 	for (uint32_t i = 0; i < m_models.size(); ++i)
 	{
-		m_geomDescriptorSets[i] = sets[5 + i];
+		m_geomDescriptorSets[i] = sets[idx++];
+	}
+	m_bloomDescriptorSets.resize(3);
+	for (uint32_t i = 0; i < 3; ++i)
+	{
+		m_bloomDescriptorSets[i] = sets[idx++];
 	}
 
 	// geometry pass descriptor set will be updated for every model
@@ -676,6 +758,7 @@ void DeferredRenderer::createDescriptorSets()
 	createSpecEnvPrefilterDescriptorSet();
 	createGeomPassDescriptorSets();
 	createLightingPassDescriptorSets();
+	createBloomDescriptorSets();
 	createFinalOutputPassDescriptorSets();
 }
 
@@ -736,11 +819,12 @@ void DeferredRenderer::createFramebuffers()
 
 	// Used in geometry and lighting pass
 	{
-		std::array<VkImageView, 4> attachments =
+		std::array<VkImageView, 5> attachments =
 		{
 			m_depthImage.imageView,
 			m_gbufferImages[0].imageView,
 			m_gbufferImages[1].imageView,
+			m_gbufferImages[2].imageView,
 			m_lightingResultImage.imageView
 		};
 
@@ -783,6 +867,44 @@ void DeferredRenderer::createFramebuffers()
 			throw std::runtime_error("failed to create framebuffer!");
 		}
 	}
+
+	// Bloom
+	m_postEffectFramebuffers.resize(3, { m_device, vkDestroyFramebuffer });
+	{
+		std::array<VkImageView, 1> attachments =
+		{
+			m_postEffectImages[0].imageView
+		};
+
+		VkFramebufferCreateInfo framebufferInfo = {};
+		framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+		framebufferInfo.renderPass = m_bloomRenderPasses[0];
+		framebufferInfo.attachmentCount = attachments.size();
+		framebufferInfo.pAttachments = attachments.data();
+		framebufferInfo.width = m_swapChain.swapChainExtent.width;
+		framebufferInfo.height = m_swapChain.swapChainExtent.height;
+		framebufferInfo.layers = 1;
+
+		if (vkCreateFramebuffer(m_device, &framebufferInfo, nullptr, m_postEffectFramebuffers[0].replace()) != VK_SUCCESS)
+		{
+			throw std::runtime_error("failed to create framebuffer!");
+		}
+
+		attachments[0] = m_postEffectImages[1].imageView;
+
+		if (vkCreateFramebuffer(m_device, &framebufferInfo, nullptr, m_postEffectFramebuffers[1].replace()) != VK_SUCCESS)
+		{
+			throw std::runtime_error("failed to create framebuffer!");
+		}
+
+		attachments[0] = m_lightingResultImage.imageView;
+		framebufferInfo.renderPass = m_bloomRenderPasses[1]; // no clear
+
+		if (vkCreateFramebuffer(m_device, &framebufferInfo, nullptr, m_postEffectFramebuffers[2].replace()) != VK_SUCCESS)
+		{
+			throw std::runtime_error("failed to create framebuffer!");
+		}
+	}
 }
 
 void DeferredRenderer::createCommandBuffers()
@@ -799,7 +921,7 @@ void DeferredRenderer::createCommandBuffers()
 	allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
 	allocInfo.commandPool = m_graphicsCommandPool;
 	allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-	allocInfo.commandBufferCount = (uint32_t)m_presentCommandBuffers.size() + 2;
+	allocInfo.commandBufferCount = (uint32_t)m_presentCommandBuffers.size() + 3;
 
 	std::vector<VkCommandBuffer> commandBuffers(allocInfo.commandBufferCount);
 	if (vkAllocateCommandBuffers(m_device, &allocInfo, commandBuffers.data()) != VK_SUCCESS)
@@ -814,10 +936,12 @@ void DeferredRenderer::createCommandBuffers()
 	}
 	m_geomAndLightingCommandBuffer = commandBuffers[idx++];
 	m_envPrefilterCommandBuffer = commandBuffers[idx++];
+	m_postEffectCommandBuffer = commandBuffers[idx++];
 
 	// Create command buffers for different purposes
 	createEnvPrefilterCommandBuffer();
 	createGeomAndLightingCommandBuffer();
+	createPostEffectCommandBuffer();
 	createPresentCommandBuffers();
 
 	// compute command buffers
@@ -849,6 +973,7 @@ void DeferredRenderer::createSynchronizationObjects()
 
 	if (vkCreateSemaphore(m_device, &semaphoreInfo, nullptr, m_imageAvailableSemaphore.replace()) != VK_SUCCESS ||
 		vkCreateSemaphore(m_device, &semaphoreInfo, nullptr, m_geomAndLightingCompleteSemaphore.replace()) != VK_SUCCESS ||
+		vkCreateSemaphore(m_device, &semaphoreInfo, nullptr, m_postEffectSemaphore.replace()) != VK_SUCCESS ||
 		vkCreateSemaphore(m_device, &semaphoreInfo, nullptr, m_finalOutputFinishedSemaphore.replace()) != VK_SUCCESS ||
 		vkCreateSemaphore(m_device, &semaphoreInfo, nullptr, m_renderFinishedSemaphore.replace()) != VK_SUCCESS)
 	{
@@ -922,7 +1047,7 @@ void DeferredRenderer::createSpecEnvPrefilterRenderPass()
 void DeferredRenderer::createGeometryAndLightingRenderPass()
 {
 	// --- Attachments used in this render pass
-	std::array<VkAttachmentDescription, 4> attachments = {};
+	std::array<VkAttachmentDescription, 5> attachments = {};
 
 	// Depth
 	attachments[0].format = findDepthFormat();
@@ -948,15 +1073,15 @@ void DeferredRenderer::createGeometryAndLightingRenderPass()
 	// World postion
 	attachments[2].format = m_gbufferImages[1].format;
 	attachments[2].samples = VK_SAMPLE_COUNT_1_BIT;
-	attachments[2].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; // only happen in the FIRST subpass that uses this attachment
+	attachments[2].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
 	attachments[2].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 	attachments[2].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 	attachments[2].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-	attachments[2].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED; // we don't care about the initial layout of this attachment image (content may not be preserved)
+	attachments[2].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 	attachments[2].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-	// Lighting result
-	attachments[3].format = m_lightingResultImage.format;
+	// RMAI
+	attachments[3].format = m_gbufferImages[2].format;
 	attachments[3].samples = VK_SAMPLE_COUNT_1_BIT;
 	attachments[3].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
 	attachments[3].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -965,24 +1090,38 @@ void DeferredRenderer::createGeometryAndLightingRenderPass()
 	attachments[3].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 	attachments[3].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
+	// Lighting result
+	attachments[4].format = m_lightingResultImage.format;
+	attachments[4].samples = VK_SAMPLE_COUNT_1_BIT;
+	attachments[4].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+	attachments[4].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+	attachments[4].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+	attachments[4].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	attachments[4].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	attachments[4].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
 	// --- Reference to render pass attachments used in each subpass
-	std::array<VkAttachmentReference, 2> geomColorAttachmentRefs = {};
+	std::array<VkAttachmentReference, 3> geomColorAttachmentRefs = {};
 	geomColorAttachmentRefs[0].attachment = 1; // corresponds to the index of the corresponding element in the pAttachments array of the VkRenderPassCreateInfo structure
 	geomColorAttachmentRefs[0].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 	geomColorAttachmentRefs[1].attachment = 2;
 	geomColorAttachmentRefs[1].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+	geomColorAttachmentRefs[2].attachment = 3;
+	geomColorAttachmentRefs[2].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
 	std::array<VkAttachmentReference, 1> lightingColorAttachmentRefs = {};
-	lightingColorAttachmentRefs[0].attachment = 3;
+	lightingColorAttachmentRefs[0].attachment = 4;
 	lightingColorAttachmentRefs[0].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
-	std::array<VkAttachmentReference, 3> lightingInputAttachmentRefs = {};
+	std::array<VkAttachmentReference, 4> lightingInputAttachmentRefs = {};
 	lightingInputAttachmentRefs[0].attachment = 1;
 	lightingInputAttachmentRefs[0].layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	lightingInputAttachmentRefs[1].attachment = 2;
 	lightingInputAttachmentRefs[1].layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-	lightingInputAttachmentRefs[2].attachment = 0;
-	lightingInputAttachmentRefs[2].layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+	lightingInputAttachmentRefs[2].attachment = 3;
+	lightingInputAttachmentRefs[2].layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	lightingInputAttachmentRefs[3].attachment = 0;
+	lightingInputAttachmentRefs[3].layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 
 	VkAttachmentReference geomDepthAttachmentRef = {};
 	geomDepthAttachmentRef.attachment = 0;
@@ -1069,6 +1208,65 @@ void DeferredRenderer::createGeometryAndLightingRenderPass()
 	renderPassInfo.pDependencies = dependencies.data();
 
 	if (vkCreateRenderPass(m_device, &renderPassInfo, nullptr, m_geomAndLightRenderPass.replace()) != VK_SUCCESS)
+	{
+		throw std::runtime_error("failed to create render pass!");
+	}
+}
+
+void DeferredRenderer::createBloomRenderPasses()
+{
+	m_bloomRenderPasses.resize(2, { m_device, vkDestroyRenderPass });
+
+	std::array<VkAttachmentDescription, 1> attachments = {};
+
+	attachments[0].format = m_postEffectImages[0].format;
+	attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
+	attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+	attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+	attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+	attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	attachments[0].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+	std::array<VkAttachmentReference, 1> colorAttachmentRefs = {};
+	colorAttachmentRefs[0].attachment = 0;
+	colorAttachmentRefs[0].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+	std::array<VkSubpassDescription, 1> subPasses = {};
+
+	subPasses[0].pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+	subPasses[0].colorAttachmentCount = static_cast<uint32_t>(colorAttachmentRefs.size());
+	subPasses[0].pColorAttachments = colorAttachmentRefs.data();
+
+	std::array<VkSubpassDependency, 1> dependencies = {};
+
+	dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+	dependencies[0].dstSubpass = 0;
+	dependencies[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+	dependencies[0].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+	dependencies[0].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+	dependencies[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+
+	VkRenderPassCreateInfo renderPassInfo = {};
+	renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+	renderPassInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
+	renderPassInfo.pAttachments = attachments.data();
+	renderPassInfo.subpassCount = static_cast<uint32_t>(subPasses.size());
+	renderPassInfo.pSubpasses = subPasses.data();
+	renderPassInfo.dependencyCount = static_cast<uint32_t>(dependencies.size());
+	renderPassInfo.pDependencies = dependencies.data();
+
+	// Brightnesss and Gaussian blur passes
+	if (vkCreateRenderPass(m_device, &renderPassInfo, nullptr, m_bloomRenderPasses[0].replace()) != VK_SUCCESS)
+	{
+		throw std::runtime_error("failed to create render pass!");
+	}
+
+	attachments[0].format = m_lightingResultImage.format;
+	attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+
+	// Merge pass
+	if (vkCreateRenderPass(m_device, &renderPassInfo, nullptr, m_bloomRenderPasses[1].replace()) != VK_SUCCESS)
 	{
 		throw std::runtime_error("failed to create render pass!");
 	}
@@ -1212,7 +1410,7 @@ void DeferredRenderer::createSkyboxDescriptorSetLayout()
 
 void DeferredRenderer::createStaticMeshDescriptorSetLayout()
 {
-	std::array<VkDescriptorSetLayoutBinding, 6> bindings = {};
+	std::array<VkDescriptorSetLayoutBinding, 7> bindings = {};
 
 	// Transformation matrices
 	bindings[0].binding = 0;
@@ -1256,9 +1454,16 @@ void DeferredRenderer::createStaticMeshDescriptorSetLayout()
 	bindings[5].pImmutableSamplers = nullptr;
 	bindings[5].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
+	// AO map
+	bindings[6].binding = 6;
+	bindings[6].descriptorCount = 1;
+	bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	bindings[6].pImmutableSamplers = nullptr;
+	bindings[6].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = bindings.size();
+	layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
 	layoutInfo.pBindings = bindings.data();
 
 	if (vkCreateDescriptorSetLayout(m_device, &layoutInfo, nullptr, m_geomDescriptorSetLayout.replace()) != VK_SUCCESS)
@@ -1269,7 +1474,7 @@ void DeferredRenderer::createStaticMeshDescriptorSetLayout()
 
 void DeferredRenderer::createLightingPassDescriptorSetLayout()
 {
-	std::array<VkDescriptorSetLayoutBinding, 7> bindings = {};
+	std::array<VkDescriptorSetLayoutBinding, 8> bindings = {};
 
 	// Light information
 	bindings[0].binding = 0;
@@ -1292,37 +1497,44 @@ void DeferredRenderer::createLightingPassDescriptorSetLayout()
 	bindings[2].pImmutableSamplers = nullptr;
 	bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-	// depth image
+	// gbuffer 3
 	bindings[3].binding = 3;
 	bindings[3].descriptorCount = 1;
 	bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
 	bindings[3].pImmutableSamplers = nullptr;
 	bindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-	// diffuse irradiance map
+	// depth image
 	bindings[4].binding = 4;
 	bindings[4].descriptorCount = 1;
-	bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
 	bindings[4].pImmutableSamplers = nullptr;
 	bindings[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-	// specular irradiance map (prefiltered environment map)
+	// diffuse irradiance map
 	bindings[5].binding = 5;
 	bindings[5].descriptorCount = 1;
 	bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	bindings[5].pImmutableSamplers = nullptr;
 	bindings[5].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-	// BRDF LUT
+	// specular irradiance map (prefiltered environment map)
 	bindings[6].binding = 6;
 	bindings[6].descriptorCount = 1;
 	bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	bindings[6].pImmutableSamplers = nullptr;
 	bindings[6].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
+	// BRDF LUT
+	bindings[7].binding = 7;
+	bindings[7].descriptorCount = 1;
+	bindings[7].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	bindings[7].pImmutableSamplers = nullptr;
+	bindings[7].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = bindings.size();
+	layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
 	layoutInfo.pBindings = bindings.data();
 
 	if (vkCreateDescriptorSetLayout(m_device, &layoutInfo, nullptr, m_lightingDescriptorSetLayout.replace()) != VK_SUCCESS)
@@ -1331,9 +1543,30 @@ void DeferredRenderer::createLightingPassDescriptorSetLayout()
 	}
 }
 
+void DeferredRenderer::createBloomDescriptorSetLayout()
+{
+	std::array<VkDescriptorSetLayoutBinding, 1> bindings = {};
+
+	// input image
+	bindings[0].binding = 0;
+	bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	bindings[0].descriptorCount = 1;
+	bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
+	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
+	layoutInfo.pBindings = bindings.data();
+
+	if (vkCreateDescriptorSetLayout(m_device, &layoutInfo, nullptr, m_bloomDescriptorSetLayout.replace()) != VK_SUCCESS)
+	{
+		throw std::runtime_error("failed to create descriptor set layout!");
+	}
+}
+
 void DeferredRenderer::createFinalOutputDescriptorSetLayout()
 {
-	std::array<VkDescriptorSetLayoutBinding, 5> bindings = {};
+	std::array<VkDescriptorSetLayoutBinding, 6> bindings = {};
 
 	// Final image, gbuffer, depth image
 	bindings[0].binding = 0;
@@ -1360,12 +1593,18 @@ void DeferredRenderer::createFinalOutputDescriptorSetLayout()
 	bindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 	bindings[3].pImmutableSamplers = nullptr;
 
-	// Uniform buffer
 	bindings[4].binding = 4;
-	bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	bindings[4].descriptorCount = 1;
 	bindings[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 	bindings[4].pImmutableSamplers = nullptr;
+
+	// Uniform buffer
+	bindings[5].binding = 5;
+	bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	bindings[5].descriptorCount = 1;
+	bindings[5].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	bindings[5].pImmutableSamplers = nullptr;
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -1546,11 +1785,13 @@ void DeferredRenderer::createSkyboxPipeline()
 
 	infos.rasterizerInfo.cullMode = VK_CULL_MODE_NONE;
 
-	infos.colorBlendAttachmentStates.resize(2);
+	infos.colorBlendAttachmentStates.resize(3);
 	infos.colorBlendAttachmentStates[1].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
 	infos.colorBlendAttachmentStates[1].blendEnable = VK_FALSE;
+	infos.colorBlendAttachmentStates[2].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+	infos.colorBlendAttachmentStates[2].blendEnable = VK_FALSE;
 
-	infos.colorBlendInfo.attachmentCount = 2;
+	infos.colorBlendInfo.attachmentCount = static_cast<uint32_t>(infos.colorBlendAttachmentStates.size());
 	infos.colorBlendInfo.pAttachments = infos.colorBlendAttachmentStates.data();
 
 	VkDescriptorSetLayout setLayouts[] = { m_skyboxDescriptorSetLayout };
@@ -1605,11 +1846,13 @@ void DeferredRenderer::createStaticMeshPipeline()
 	infos.viewportStateInfo.scissorCount = 1;
 	infos.viewportStateInfo.pScissors = &scissor;
 
-	infos.colorBlendAttachmentStates.resize(2);
+	infos.colorBlendAttachmentStates.resize(3);
 	infos.colorBlendAttachmentStates[1].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
 	infos.colorBlendAttachmentStates[1].blendEnable = VK_FALSE;
+	infos.colorBlendAttachmentStates[2].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+	infos.colorBlendAttachmentStates[2].blendEnable = VK_FALSE;
 
-	infos.colorBlendInfo.attachmentCount = 2;
+	infos.colorBlendInfo.attachmentCount = static_cast<uint32_t>(infos.colorBlendAttachmentStates.size());
 	infos.colorBlendInfo.pAttachments = infos.colorBlendAttachmentStates.data();
 
 	VkDescriptorSetLayout setLayouts[] = { m_geomDescriptorSetLayout };
@@ -1618,7 +1861,7 @@ void DeferredRenderer::createStaticMeshPipeline()
 
 	infos.pushConstantRanges.resize(1);
 	infos.pushConstantRanges[0].offset = 0;
-	infos.pushConstantRanges[0].size = sizeof(uint32_t);
+	infos.pushConstantRanges[0].size = 2 * sizeof(uint32_t);
 	infos.pushConstantRanges[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
 	infos.pipelineLayoutInfo.pushConstantRangeCount = static_cast<uint32_t>(infos.pushConstantRanges.size());
@@ -1700,6 +1943,96 @@ void DeferredRenderer::createLightingPassPipeline()
 	if (vkCreateGraphicsPipelines(m_device, m_pipelineCache, 1, &infos.pipelineInfo, nullptr, m_lightingPipeline.replace()) != VK_SUCCESS)
 	{
 		throw std::runtime_error("failed to create lighting pipeline!");
+	}
+}
+
+void DeferredRenderer::createBloomPipelines()
+{
+	ShaderFileNames shaderFiles;
+	shaderFiles.vs = "../shaders/fullscreen.vert.spv";
+	shaderFiles.fs = "../shaders/bloom_pass/brightness_mask.frag.spv";
+
+	DefaultGraphicsPipelineCreateInfo infos{ m_device, shaderFiles };
+
+	VkDescriptorSetLayout setLayouts[] = { m_bloomDescriptorSetLayout };
+	infos.pipelineLayoutInfo.setLayoutCount = 1;
+	infos.pipelineLayoutInfo.pSetLayouts = setLayouts;
+
+	// brightness_mask and merge
+	m_bloomPipelineLayouts.resize(2, { m_device, vkDestroyPipelineLayout });
+	if (vkCreatePipelineLayout(m_device, &infos.pipelineLayoutInfo, nullptr, m_bloomPipelineLayouts[0].replace()) != VK_SUCCESS)
+	{
+		throw std::runtime_error("failed to create bloom pipeline layout!");
+	}
+
+	infos.pushConstantRanges.resize(1);
+	infos.pushConstantRanges[0].offset = 0;
+	infos.pushConstantRanges[0].size = sizeof(uint32_t);
+	infos.pushConstantRanges[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+	infos.pipelineLayoutInfo.pushConstantRangeCount = static_cast<uint32_t>(infos.pushConstantRanges.size());
+	infos.pipelineLayoutInfo.pPushConstantRanges = infos.pushConstantRanges.data();
+
+	// gaussian blur
+	if (vkCreatePipelineLayout(m_device, &infos.pipelineLayoutInfo, nullptr, m_bloomPipelineLayouts[1].replace()) != VK_SUCCESS)
+	{
+		throw std::runtime_error("failed to create bloom pipeline layout!");
+	}
+
+	VkViewport viewport;
+	VkRect2D scissor;
+	defaultViewportAndScissor(m_swapChain.swapChainExtent, viewport, scissor);
+
+	infos.viewportStateInfo.viewportCount = 1;
+	infos.viewportStateInfo.pViewports = &viewport;
+	infos.viewportStateInfo.scissorCount = 1;
+	infos.viewportStateInfo.pScissors = &scissor;
+
+	infos.depthStencilInfo.depthTestEnable = VK_FALSE;
+	infos.depthStencilInfo.depthWriteEnable = VK_FALSE;
+	infos.depthStencilInfo.depthCompareOp = VK_COMPARE_OP_ALWAYS;
+
+	infos.pipelineInfo.layout = m_bloomPipelineLayouts[0];
+	infos.pipelineInfo.renderPass = m_bloomRenderPasses[0];
+	infos.pipelineInfo.subpass = 0;
+
+	m_bloomPipelines.resize(3, { m_device, vkDestroyPipeline });
+	// brightness mask
+	if (vkCreateGraphicsPipelines(m_device, m_pipelineCache, 1, &infos.pipelineInfo, nullptr, m_bloomPipelines[0].replace()) != VK_SUCCESS)
+	{
+		throw std::runtime_error("failed to create bloom pipeline!");
+	}
+
+	auto shaderCode = readFile("../shaders/bloom_pass/gaussian_blur.frag.spv");
+	createShaderModule(m_device, shaderCode, infos.fragShaderModule);
+	infos.pipelineInfo.layout = m_bloomPipelineLayouts[1];
+	infos.pipelineInfo.renderPass = m_bloomRenderPasses[0];
+	infos.shaderStages[1].module = infos.fragShaderModule;
+
+	// gaussian blur
+	if (vkCreateGraphicsPipelines(m_device, m_pipelineCache, 1, &infos.pipelineInfo, nullptr, m_bloomPipelines[1].replace()) != VK_SUCCESS)
+	{
+		throw std::runtime_error("failed to create bloom pipeline!");
+	}
+
+	shaderCode = readFile("../shaders/bloom_pass/merge.frag.spv");
+	createShaderModule(m_device, shaderCode, infos.fragShaderModule);
+	infos.pipelineInfo.layout = m_bloomPipelineLayouts[0];
+	infos.pipelineInfo.renderPass = m_bloomRenderPasses[1];
+	infos.shaderStages[1].module = infos.fragShaderModule;
+
+	infos.colorBlendAttachmentStates[0].blendEnable = VK_TRUE;
+	infos.colorBlendAttachmentStates[0].colorBlendOp = VK_BLEND_OP_ADD;
+	infos.colorBlendAttachmentStates[0].srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+	infos.colorBlendAttachmentStates[0].dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+	infos.colorBlendAttachmentStates[0].alphaBlendOp = VK_BLEND_OP_ADD;
+	infos.colorBlendAttachmentStates[0].srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+	infos.colorBlendAttachmentStates[0].dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+
+	// merge
+	if (vkCreateGraphicsPipelines(m_device, m_pipelineCache, 1, &infos.pipelineInfo, nullptr, m_bloomPipelines[2].replace()) != VK_SUCCESS)
+	{
+		throw std::runtime_error("failed to create bloom pipeline!");
 	}
 }
 
@@ -1847,8 +2180,13 @@ void DeferredRenderer::createStaticMeshDescriptorSet()
 			m_models[i].albedoMap.getDescriptorInfo(),
 			m_models[i].normalMap.getDescriptorInfo(),
 			m_models[i].roughnessMap.getDescriptorInfo(),
-			m_models[i].metalnessMap.getDescriptorInfo()
+			m_models[i].metalnessMap.getDescriptorInfo(),
+			m_models[i].albedoMap.getDescriptorInfo()
 		};
+		if (m_models[i].aoMap.image.isvalid())
+		{
+			imageInfos[4] = m_models[i].aoMap.getDescriptorInfo();
+		}
 
 		std::vector<VkDescriptorBufferInfo> bufferInfos =
 		{
@@ -1889,10 +2227,11 @@ void DeferredRenderer::createLightingPassDescriptorSets()
 		m_allUniformHostData.offsetOf(reinterpret_cast<const char *>(m_uLightInfo)),
 		sizeof(LightingPassUniformBuffer));
 
-	std::array<VkDescriptorImageInfo, 3> inputAttachmentImageInfos = {};
+	std::array<VkDescriptorImageInfo, 4> inputAttachmentImageInfos = {};
 	inputAttachmentImageInfos[0] = m_gbufferImages[0].getDescriptorInfo();
 	inputAttachmentImageInfos[1] = m_gbufferImages[1].getDescriptorInfo();
-	inputAttachmentImageInfos[2] = m_depthImage.getDescriptorInfo();
+	inputAttachmentImageInfos[2] = m_gbufferImages[2].getDescriptorInfo();
+	inputAttachmentImageInfos[3] = m_depthImage.getDescriptorInfo();
 
 	std::array<VkDescriptorImageInfo, 3> samplerImageInfos = {};
 	samplerImageInfos[0] = m_skybox.diffuseIrradianceMap.getDescriptorInfo();
@@ -1919,11 +2258,49 @@ void DeferredRenderer::createLightingPassDescriptorSets()
 
 	descriptorWrites[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	descriptorWrites[2].dstSet = m_lightingDescriptorSet;
-	descriptorWrites[2].dstBinding = 4;
+	descriptorWrites[2].dstBinding = 5;
 	descriptorWrites[2].dstArrayElement = 0;
 	descriptorWrites[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	descriptorWrites[2].descriptorCount = static_cast<uint32_t>(samplerImageInfos.size());
 	descriptorWrites[2].pImageInfo = samplerImageInfos.data();
+
+	vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
+}
+
+void DeferredRenderer::createBloomDescriptorSets()
+{
+	std::array<VkDescriptorImageInfo, 3> imageInfos =
+	{
+		m_lightingResultImage.getDescriptorInfo(),
+		m_postEffectImages[0].getDescriptorInfo(),
+		m_postEffectImages[1].getDescriptorInfo()
+	};
+
+	std::array<VkWriteDescriptorSet, 3> descriptorWrites = {};
+
+	descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	descriptorWrites[0].dstSet = m_bloomDescriptorSets[0];
+	descriptorWrites[0].dstBinding = 0;
+	descriptorWrites[0].dstArrayElement = 0;
+	descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	descriptorWrites[0].descriptorCount = 1;
+	descriptorWrites[0].pImageInfo = &imageInfos[0];
+
+	descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	descriptorWrites[1].dstSet = m_bloomDescriptorSets[1];
+	descriptorWrites[1].dstBinding = 0;
+	descriptorWrites[1].dstArrayElement = 0;
+	descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	descriptorWrites[1].descriptorCount = 1;
+	descriptorWrites[1].pImageInfo = &imageInfos[1];
+
+	descriptorWrites[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	descriptorWrites[2].dstSet = m_bloomDescriptorSets[2];
+	descriptorWrites[2].dstBinding = 0;
+	descriptorWrites[2].dstArrayElement = 0;
+	descriptorWrites[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	descriptorWrites[2].descriptorCount = 1;
+	descriptorWrites[2].pImageInfo = &imageInfos[2];
 
 	vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
 }
@@ -1934,17 +2311,18 @@ void DeferredRenderer::createFinalOutputPassDescriptorSets()
 		m_allUniformHostData.offsetOf(reinterpret_cast<const char *>(m_uDisplayInfo)),
 		sizeof(DisplayInfoUniformBuffer));
 
-	std::array<VkDescriptorImageInfo, 4> imageInfos;
+	std::array<VkDescriptorImageInfo, 5> imageInfos;
 	imageInfos[0] = m_lightingResultImage.getDescriptorInfo();
 	imageInfos[1] = m_gbufferImages[0].getDescriptorInfo();
 	imageInfos[2] = m_gbufferImages[1].getDescriptorInfo();
-	imageInfos[3] = m_depthImage.getDescriptorInfo();
+	imageInfos[3] = m_gbufferImages[2].getDescriptorInfo();
+	imageInfos[4] = m_depthImage.getDescriptorInfo();
 
 	std::array<VkWriteDescriptorSet, 2> descriptorWrites = {};
 
 	descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	descriptorWrites[0].dstSet = m_finalOutputDescriptorSet;
-	descriptorWrites[0].dstBinding = 4;
+	descriptorWrites[0].dstBinding = 5;
 	descriptorWrites[0].dstArrayElement = 0;
 	descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	descriptorWrites[0].descriptorCount = 1;
@@ -2095,11 +2473,12 @@ void DeferredRenderer::createGeomAndLightingCommandBuffer()
 	renderPassInfo.renderArea.offset = { 0, 0 };
 	renderPassInfo.renderArea.extent = m_swapChain.swapChainExtent;
 
-	std::array<VkClearValue, 4> clearValues = {};
+	std::array<VkClearValue, 5> clearValues = {};
 	clearValues[0].depthStencil = { 1.0f, 0 };
 	clearValues[1].color = { { 0.0f, 0.0f, 0.0f, 0.0f } }; // g-buffer 1
 	clearValues[2].color = { { 0.0f, 0.0f, 0.0f, 0.0f } }; // g-buffer 2
-	clearValues[3].color = { { 0.0f, 0.0f, 0.0f, 0.0f } }; // lighting result
+	clearValues[3].color = { { 0.0f, 0.0f, 0.0f, 0.0f } }; // g-buffer 3
+	clearValues[4].color = { { 0.0f, 0.0f, 0.0f, 0.0f } }; // lighting result
 
 	renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
 	renderPassInfo.pClearValues = clearValues.data();
@@ -2133,7 +2512,16 @@ void DeferredRenderer::createGeomAndLightingCommandBuffer()
 		vkCmdBindIndexBuffer(m_geomAndLightingCommandBuffer, m_models[j].indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
 
 		vkCmdBindDescriptorSets(m_geomAndLightingCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_geomPipelineLayout, 0, 1, &m_geomDescriptorSets[j], 0, nullptr);
-		vkCmdPushConstants(m_geomAndLightingCommandBuffer, m_geomPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(uint32_t), &m_models[j].materialType);
+
+		struct
+		{
+			uint32_t materialId;
+			uint32_t hasAoMap;
+		} pushConst;
+		pushConst.materialId = m_models[j].materialType;
+		pushConst.hasAoMap = m_models[j].aoMap.image.isvalid();
+
+		vkCmdPushConstants(m_geomAndLightingCommandBuffer, m_geomPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pushConst), &pushConst);
 
 		vkCmdDrawIndexed(m_geomAndLightingCommandBuffer, static_cast<uint32_t>(m_models[j].indexBuffer.numElements), 1, 0, 0, 0);
 	}
@@ -2151,6 +2539,94 @@ void DeferredRenderer::createGeomAndLightingCommandBuffer()
 	vkCmdEndRenderPass(m_geomAndLightingCommandBuffer);
 
 	if (vkEndCommandBuffer(m_geomAndLightingCommandBuffer) != VK_SUCCESS)
+	{
+		throw std::runtime_error("failed to record command buffer!");
+	}
+}
+
+void DeferredRenderer::createPostEffectCommandBuffer()
+{
+	VkCommandBufferBeginInfo beginInfo = {};
+	beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+	beginInfo.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
+
+	vkBeginCommandBuffer(m_postEffectCommandBuffer, &beginInfo);
+
+	VkRenderPassBeginInfo renderPassInfo = {};
+	renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+	renderPassInfo.renderPass = m_bloomRenderPasses[0]; // clear
+	renderPassInfo.framebuffer = m_postEffectFramebuffers[0];
+	renderPassInfo.renderArea.offset = { 0, 0 };
+	renderPassInfo.renderArea.extent = m_swapChain.swapChainExtent;
+
+	std::array<VkClearValue, 1> clearValues = {};
+	clearValues[0].color = { { 0.0f, 0.0f, 0.0f, 0.0f } };
+
+	renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
+	renderPassInfo.pClearValues = clearValues.data();
+
+	// brightness mask
+	vkCmdBeginRenderPass(m_postEffectCommandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+	vkCmdBindPipeline(m_postEffectCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_bloomPipelines[0]);
+	vkCmdBindDescriptorSets(m_postEffectCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_bloomPipelineLayouts[0], 0, 1, &m_bloomDescriptorSets[0], 0, nullptr);
+
+	vkCmdDraw(m_postEffectCommandBuffer, 3, 1, 0, 0);
+
+	vkCmdEndRenderPass(m_postEffectCommandBuffer);
+
+	// gaussian blur
+	for (uint32_t i = 0; i < 5; ++i)
+	{
+		// horizontal
+		renderPassInfo.framebuffer = m_postEffectFramebuffers[1];
+
+		vkCmdBeginRenderPass(m_postEffectCommandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+		vkCmdBindPipeline(m_postEffectCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_bloomPipelines[1]);
+		vkCmdBindDescriptorSets(m_postEffectCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_bloomPipelineLayouts[1], 0, 1, &m_bloomDescriptorSets[1], 0, nullptr);
+
+		uint32_t isHorizontal = VK_TRUE;
+		vkCmdPushConstants(m_postEffectCommandBuffer, m_bloomPipelineLayouts[1], VK_SHADER_STAGE_FRAGMENT_BIT,
+			0, sizeof(uint32_t), &isHorizontal);
+
+		vkCmdDraw(m_postEffectCommandBuffer, 3, 1, 0, 0);
+
+		vkCmdEndRenderPass(m_postEffectCommandBuffer);
+
+		// vertical
+		renderPassInfo.framebuffer = m_postEffectFramebuffers[0];
+
+		vkCmdBeginRenderPass(m_postEffectCommandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+		vkCmdBindPipeline(m_postEffectCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_bloomPipelines[1]);
+		vkCmdBindDescriptorSets(m_postEffectCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_bloomPipelineLayouts[1], 0, 1, &m_bloomDescriptorSets[2], 0, nullptr);
+
+		isHorizontal = VK_FALSE;
+		vkCmdPushConstants(m_postEffectCommandBuffer, m_bloomPipelineLayouts[1], VK_SHADER_STAGE_FRAGMENT_BIT,
+			0, sizeof(uint32_t), &isHorizontal);
+
+		vkCmdDraw(m_postEffectCommandBuffer, 3, 1, 0, 0);
+
+		vkCmdEndRenderPass(m_postEffectCommandBuffer);
+	}
+
+	// merge
+	renderPassInfo.renderPass = m_bloomRenderPasses[1]; // no clear
+	renderPassInfo.framebuffer = m_postEffectFramebuffers[2]; // lighting result image
+	renderPassInfo.clearValueCount = 0;
+	renderPassInfo.pClearValues = nullptr;
+
+	vkCmdBeginRenderPass(m_postEffectCommandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+	vkCmdBindPipeline(m_postEffectCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_bloomPipelines[2]);
+	vkCmdBindDescriptorSets(m_postEffectCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_bloomPipelineLayouts[0], 0, 1, &m_bloomDescriptorSets[1], 0, nullptr);
+
+	vkCmdDraw(m_postEffectCommandBuffer, 3, 1, 0, 0);
+
+	vkCmdEndRenderPass(m_postEffectCommandBuffer);
+
+	if (vkEndCommandBuffer(m_postEffectCommandBuffer) != VK_SUCCESS)
 	{
 		throw std::runtime_error("failed to record command buffer!");
 	}
@@ -2214,6 +2690,8 @@ void DeferredRenderer::prefilterEnvironmentAndComputeBrdfLut()
 	submitInfo.commandBufferCount = 1;
 	submitInfo.pCommandBuffers = &m_brdfLutCommandBuffer;
 	
+	auto tStart = std::chrono::high_resolution_clock::now();
+
 	if (!m_bakedBrdfReady)
 	{
 		if (vkQueueSubmit(m_computeQueue, 1, &submitInfo, m_brdfLutFence) != VK_SUCCESS)
@@ -2261,6 +2739,9 @@ void DeferredRenderer::prefilterEnvironmentAndComputeBrdfLut()
 				m_skybox.specularIrradianceMap.image, m_skybox.specularIrradianceMap.format, 6, m_skybox.specularIrradianceMap.mipLevels,
 				VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 		}
+
+		auto tEnd = std::chrono::high_resolution_clock::now();
+		std::cout << "Took " << std::chrono::duration<float, std::milli>(tEnd - tStart).count() << "ms to do precalculation.\n";
 	}
 }
 

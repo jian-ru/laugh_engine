@@ -20,11 +20,6 @@
 #include "vtextoverlay.h"
 #include "vmesh.h"
 
-#define STB_IMAGE_IMPLEMENTATION
-#include "stb_image.h"
-#define TINYOBJLOADER_IMPLEMENTATION
-#include "tiny_obj_loader.h"
-
 
 enum DisplayMode
 {
@@ -35,6 +30,7 @@ enum DisplayMode
 	DISPLAY_MODE_DEPTH,
 	DISPLAY_MODE_ROUGHNESS,
 	DISPLAY_MODE_METALNESS,
+	DISPLAY_MODE_AO,
 	DISPLAY_MODE_COUNT
 };
 

@@ -20,5 +20,8 @@ C:/VulkanSDK/1.0.30.0/Bin/glslangValidator.exe -V env_prefilter_pass/env_prefilt
 C:/VulkanSDK/1.0.30.0/Bin/glslangValidator.exe -V env_prefilter_pass/spec_env_prefilter.frag -o env_prefilter_pass/spec_env_prefilter.frag.spv
 C:/VulkanSDK/1.0.30.0/Bin/glslangValidator.exe -V env_prefilter_pass/diff_env_prefilter.frag -o env_prefilter_pass/diff_env_prefilter.frag.spv
 
+C:/VulkanSDK/1.0.30.0/Bin/glslangValidator.exe -V bloom_pass/brightness_mask.frag -o bloom_pass/brightness_mask.frag.spv
+C:/VulkanSDK/1.0.30.0/Bin/glslangValidator.exe -V bloom_pass/gaussian_blur.frag -o bloom_pass/gaussian_blur.frag.spv
+C:/VulkanSDK/1.0.30.0/Bin/glslangValidator.exe -V bloom_pass/merge.frag -o bloom_pass/merge.frag.spv
 
 pause

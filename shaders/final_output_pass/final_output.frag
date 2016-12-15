@@ -5,13 +5,14 @@
 layout (set = 0, binding = 0) uniform sampler2D finalOutput;
 layout (set = 0, binding = 1) uniform sampler2D gbuffer1;
 layout (set = 0, binding = 2) uniform sampler2D gbuffer2;
-layout (set = 0, binding = 3) uniform sampler2D depthImage;
+layout (set = 0, binding = 3) uniform sampler2D gbuffer3;
+layout (set = 0, binding = 4) uniform sampler2D depthImage;
 
 layout (location = 0) in vec2 inUV;
 
 layout (location = 0) out vec4 outColor;
 
-layout(std140, set = 0, binding = 4) uniform UBO
+layout(std140, set = 0, binding = 5) uniform UBO
 {
 	int displayMode;
 };
@@ -50,13 +51,13 @@ void main()
 	vec3 finalColor = texture(finalOutput, inUV).rgb;
 	vec4 gb1 = texture(gbuffer1, inUV);
 	vec4 gb2 = texture(gbuffer2, inUV);
+	vec4 RMAI = texture(gbuffer3, inUV);
 	float depth = texture(depthImage, inUV).r;
 	
 	vec3 albedo = unpackRGBA(gb1.w).rgb;
 	vec3 pos = gb2.xyz;
 	vec3 nrm = gb1.xyz;
-	vec4 RMI = unpackRGBA(gb2.w);
-	uint matId = uint(round(RMI.z * 255.0));
+	uint matId = uint(round(RMAI.w * 255.0));
 	
 	if (displayMode == 4)
 	{
@@ -86,11 +87,15 @@ void main()
 	}
 	else if (displayMode == 5) // roughness
 	{
-		outColor = vec4(RMI.xxx, 1.0);
+		outColor = vec4(RMAI.xxx, 1.0);
 	}
 	else if (displayMode == 6) // metalness
 	{
-		outColor = vec4(RMI.yyy, 1.0);
+		outColor = vec4(RMAI.yyy, 1.0);
+	}
+	else if (displayMode == 7)
+	{
+		outColor = vec4(RMAI.zzz, 1.0);
 	}
 }
 
