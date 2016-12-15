@@ -48,5 +48,5 @@ Average frame time (Blinn-Phong): 2.46
 Device: GT 750M
 Unit: milliseconds
 
-Average frame time (PBR):
-Average frame time (Blinn-Phong):
+Average frame time (PBR): 19.36
+Average frame time (Blinn-Phong): 19.04
