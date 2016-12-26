@@ -1,6 +1,8 @@
 #pragma once
 
+#include <set>
 #include <unordered_map>
+#include <memory>
 #include "VInstance.h"
 #include "VWindow.h"
 #include "VDevice.h"
@@ -33,10 +35,33 @@ namespace rj
 			std::vector<VkDescriptorSetLayoutBinding> bindings;
 		};
 
-		struct DefaultGraphicsPipelineCreateInfo
+		struct PipelineLayoutCreateInfo
 		{
-			VkPipelineLayoutCreateInfo pipelineLayoutInfo;
+			std::set<VkDescriptorSetLayout> descriptorSetLayouts;
+			std::vector<VkPushConstantRange> pushConstantRanges;
+		};
 
+		struct ComputePipelineCreateInfo
+		{
+			VkComputePipelineCreateInfo pipelineInfo;
+
+			VDeleter<VkShaderModule> computeShaderModule;
+			VkSpecializationInfo computeSpecializationInfo = {};
+			std::vector<VkSpecializationMapEntry> computeSpecializationMapEntries;
+
+			ComputePipelineCreateInfo(const VDeleter<VkDevice> &device)
+				: computeShaderModule{ device, vkDestroyShaderModule }
+			{
+				pipelineInfo = {};
+				pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+				pipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+				pipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+				pipelineInfo.stage.pName = "main";
+			}
+		};
+
+		struct GraphicsPipelineCreateInfo
+		{
 			VkPipelineVertexInputStateCreateInfo vertexInputInfo;
 			VkPipelineInputAssemblyStateCreateInfo inputAssemblyInfo;
 			VkPipelineViewportStateCreateInfo viewportStateInfo;
@@ -45,24 +70,41 @@ namespace rj
 			VkPipelineDepthStencilStateCreateInfo depthStencilInfo;
 			std::vector<VkPipelineColorBlendAttachmentState> colorBlendAttachmentStates;
 			VkPipelineColorBlendStateCreateInfo colorBlendInfo;
+			std::vector<VkDynamicState> dynamicStates;
 			VkPipelineDynamicStateCreateInfo dynamicStateInfo;
-			std::vector<VkPushConstantRange> pushConstantRanges;
+
+			VDeleter<VkShaderModule> vertShaderModule;
+			VkSpecializationInfo vertSpecializationInfo = {};
+			std::vector<VkSpecializationMapEntry> vertSpecializationMapEntries;
+
+			VDeleter<VkShaderModule> hullShaderModule;
+			VkSpecializationInfo hullSpecializationInfo = {};
+			std::vector<VkSpecializationMapEntry> hullSpecializationMapEntries;
+
+			VDeleter<VkShaderModule> domainShaderModule;
+			VkSpecializationInfo domainSpecializationInfo = {};
+			std::vector<VkSpecializationMapEntry> domainSpecializationMapEntries;
+			
+			VDeleter<VkShaderModule> geomShaderModule;
+			VkSpecializationInfo geomSpecializationInfo = {};
+			std::vector<VkSpecializationMapEntry> geomSpecializationMapEntries;
+			
+			VDeleter<VkShaderModule> fragShaderModule;
+			VkSpecializationInfo fragSpecializationInfo = {};
+			std::vector<VkSpecializationMapEntry> fragSpecializationMapEntries;
+			
+			std::vector<VkPipelineShaderStageCreateInfo> shaderStages;
 
 			VkGraphicsPipelineCreateInfo pipelineInfo;
 
-			VDeleter<VkShaderModule> vertShaderModule;
-			VDeleter<VkShaderModule> geomShaderModule;
-			VDeleter<VkShaderModule> fragShaderModule;
-
-			std::vector<VkPipelineShaderStageCreateInfo> shaderStages;
-
-			DefaultGraphicsPipelineCreateInfo(const VDeleter<VkDevice> &device)
+			GraphicsPipelineCreateInfo(const VDeleter<VkDevice> &device)
 				:
 				vertShaderModule{ device, vkDestroyShaderModule },
+				hullShaderModule{ device, vkDestroyShaderModule },
+				domainShaderModule{ device, vkDestroyShaderModule },
 				geomShaderModule{ device, vkDestroyShaderModule },
 				fragShaderModule{ device, vkDestroyShaderModule }
 			{
-				pipelineLayoutInfo = {};
 				vertexInputInfo = {};
 				inputAssemblyInfo = {};
 				viewportStateInfo = {};
@@ -107,11 +149,7 @@ namespace rj
 
 				dynamicStateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
 
-				pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-
 				pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-				pipelineInfo.stageCount = static_cast<uint32_t>(shaderStages.size());
-				pipelineInfo.pStages = shaderStages.data();
 				pipelineInfo.pVertexInputState = &vertexInputInfo;
 				pipelineInfo.pInputAssemblyState = &inputAssemblyInfo;
 				pipelineInfo.pViewportState = &viewportStateInfo;
@@ -297,7 +335,7 @@ namespace rj
 		}
 		// --- Render pass creation ---
 
-		// --- Descriptor set layout ---
+		// --- Descriptor set layout creation ---
 		void beginCreateDescriptorSetLayout()
 		{
 			m_curDescriptorSetInfo = {};
@@ -333,7 +371,116 @@ namespace rj
 			m_curDescriptorSetInfo = {};
 			return m_curSetLayoutName;
 		}
-		// --- Descriptor set layout ---
+		// --- Descriptor set layout creation ---
+
+		// --- Pipeline layouts creation ---
+		void beginCreatePipelineLayout()
+		{
+			m_curPipelineLayoutInfo = {};
+			m_curPipelineLayoutName = static_cast<uint32_t>(m_pipelineLayouts.size());
+			m_pipelineLayouts[m_curPipelineLayoutName] = VDeleter<VkPipelineLayout>{ m_device, vkDestroyPipelineLayout };
+		}
+
+		void pipelineLayoutAddDescriptorSetLayouts(const std::vector<uint32_t> &setLayoutNames)
+		{
+			for (auto name : setLayoutNames)
+			{
+				auto found = m_descriptorSetLayouts.find(name);
+				
+				if (found == m_descriptorSetLayouts.end())
+				{
+					throw std::runtime_error("cannot find descriptor set layout");
+				}
+				else
+				{
+					m_curPipelineLayoutInfo.descriptorSetLayouts.insert(found->second);
+				}
+			}
+		}
+
+		void pipelineLayoutAddPushConstantRange(uint32_t offset, uint32_t size, VkShaderStageFlags shaderStages)
+		{
+			m_curPipelineLayoutInfo.pushConstantRanges.push_back({});
+			VkPushConstantRange &psr = m_curPipelineLayoutInfo.pushConstantRanges.back();
+
+			psr.offset = offset;
+			psr.size = size;
+			psr.stageFlags = shaderStages;
+		}
+
+		uint32_t endCreatePipelineLayout()
+		{
+			if (m_curPipelineLayoutInfo.descriptorSetLayouts.size() == 0)
+			{
+				throw std::runtime_error("pipeline layout contains at least one descriptor set layout");
+			}
+
+			VkPipelineLayoutCreateInfo info = {};
+
+			info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+			info.setLayoutCount = static_cast<uint32_t>(m_curPipelineLayoutInfo.descriptorSetLayouts.size());
+			std::vector<VkDescriptorSetLayout> setLayouts(
+				m_curPipelineLayoutInfo.descriptorSetLayouts.begin(),
+				m_curPipelineLayoutInfo.descriptorSetLayouts.end());
+			info.pSetLayouts = setLayouts.data();
+			info.pushConstantRangeCount = static_cast<uint32_t>(m_curPipelineLayoutInfo.pushConstantRanges.size());
+			info.pPushConstantRanges = m_curPipelineLayoutInfo.pushConstantRanges.data();
+
+			if (vkCreatePipelineLayout(m_device, &info, nullptr, m_pipelineLayouts[m_curPipelineLayoutName].replace()) != VK_SUCCESS)
+			{
+				throw std::runtime_error("failed to create lighting pipeline layout!");
+			}
+
+			m_curPipelineLayoutInfo = {};
+			return m_curPipelineLayoutName;
+		}
+		// --- Pipeline layouts creation ---
+
+		// --- Pipeline creation ---
+		void beginCreateGraphicsPipeline()
+		{
+			m_curGraphicsPipelineInfo = std::make_shared<GraphicsPipelineCreateInfo>(m_device);
+			m_curPipelineName = static_cast<uint32_t>(m_pipelines.size());
+			m_pipelines[m_curPipelineName] = VDeleter<VkPipeline>{ m_device, vkDestroyPipeline };
+		}
+
+		void graphicsPipelineAddShaderStage(VkShaderStageFlagBits stage, const std::string &spvFileName)
+		{
+			auto shaderByteCode = readFile(spvFileName);
+
+			m_curGraphicsPipelineInfo->shaderStages.push_back({});
+			VkPipelineShaderStageCreateInfo &shaderStageInfo = m_curGraphicsPipelineInfo->shaderStages.back();
+			shaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+			shaderStageInfo.stage = stage;
+			shaderStageInfo.pName = "main";
+
+			switch (stage)
+			{
+			case VK_SHADER_STAGE_VERTEX_BIT:
+				createShaderModule(m_device, shaderByteCode, m_curGraphicsPipelineInfo->vertShaderModule);
+				shaderStageInfo.module = m_curGraphicsPipelineInfo->vertShaderModule;
+				break;
+			case VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT:
+				createShaderModule(m_device, shaderByteCode, m_curGraphicsPipelineInfo->hullShaderModule);
+				shaderStageInfo.module = m_curGraphicsPipelineInfo->hullShaderModule;
+				break;
+			case VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT:
+				createShaderModule(m_device, shaderByteCode, m_curGraphicsPipelineInfo->domainShaderModule);
+				shaderStageInfo.module = m_curGraphicsPipelineInfo->domainShaderModule;
+				break;
+			case VK_SHADER_STAGE_GEOMETRY_BIT:
+				createShaderModule(m_device, shaderByteCode, m_curGraphicsPipelineInfo->geomShaderModule);
+				shaderStageInfo.module = m_curGraphicsPipelineInfo->geomShaderModule;
+				break;
+			case VK_SHADER_STAGE_FRAGMENT_BIT:
+				createShaderModule(m_device, shaderByteCode, m_curGraphicsPipelineInfo->fragShaderModule);
+				shaderStageInfo.module = m_curGraphicsPipelineInfo->fragShaderModule;
+				break;
+			default:
+				throw std::runtime_error("unknown graphics shader stage");
+			}
+		}
+		// --- Pipeline creation ---
 
 	protected:
 		void createPipelineCache()
@@ -368,7 +515,17 @@ namespace rj
 		uint32_t m_curSetLayoutName;
 		std::unordered_map<uint32_t, VDeleter<VkDescriptorSetLayout>> m_descriptorSetLayouts;
 
+		PipelineLayoutCreateInfo m_curPipelineLayoutInfo;
+		uint32_t m_curPipelineLayoutName;
+		std::unordered_map<uint32_t, VDeleter<VkPipelineLayout>> m_pipelineLayouts;
 
+		union
+		{
+			std::shared_ptr<GraphicsPipelineCreateInfo> m_curGraphicsPipelineInfo;
+			std::shared_ptr<ComputePipelineCreateInfo> m_curComputePipelineInfo;
+		};
+		uint32_t m_curPipelineName;
+		std::unordered_map<uint32_t, VDeleter<VkPipeline>> m_pipelines;
 
 		std::unordered_map<uint32_t, VDeleter<VkSampler>> m_samplers;
 	};
