@@ -68,13 +68,18 @@ namespace rj
 
 			VkPipelineInputAssemblyStateCreateInfo inputAssemblyInfo;
 
+			VkPipelineTessellationStateCreateInfo tessellationInfo;
+
 			// If multiple viewports and scissors are not enabled, count <= 1
 			std::vector<VkViewport> viewports;
 			std::vector<VkRect2D> scissors;
 			VkPipelineViewportStateCreateInfo viewportStateInfo;
 			
 			VkPipelineRasterizationStateCreateInfo rasterizerInfo;
+
+			std::vector<VkSampleMask> sampleMask;
 			VkPipelineMultisampleStateCreateInfo multisamplingInfo;
+			
 			VkPipelineDepthStencilStateCreateInfo depthStencilInfo;
 
 			std::vector<VkPipelineColorBlendAttachmentState> colorBlendAttachmentStates;
@@ -122,6 +127,7 @@ namespace rj
 			{
 				vertexInputInfo = {};
 				inputAssemblyInfo = {};
+				tessellationInfo = {};
 				viewportStateInfo = {};
 				rasterizerInfo = {};
 				multisamplingInfo = {};
@@ -135,6 +141,8 @@ namespace rj
 
 				inputAssemblyInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
 				inputAssemblyInfo.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+				tessellationInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO;
 
 				viewportStateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
 				viewportStateInfo.viewportCount = 1;
@@ -452,7 +460,7 @@ namespace rj
 		// --- Pipeline layouts creation ---
 
 		// --- Pipeline creation ---
-		void beginCreateGraphicsPipeline()
+		void beginCreateGraphicsPipeline(VkPipe)
 		{
 			m_curGraphicsPipelineInfo = std::make_shared<GraphicsPipelineCreateInfo>(m_device);
 			m_curPipelineName = static_cast<uint32_t>(m_pipelines.size());
@@ -495,6 +503,9 @@ namespace rj
 			default:
 				throw std::runtime_error("unknown graphics shader stage");
 			}
+
+			m_curGraphicsPipelineInfo->pipelineInfo.stageCount = static_cast<uint32_t>(m_curGraphicsPipelineInfo->shaderStages.size());
+			m_curGraphicsPipelineInfo->pipelineInfo.pStages = m_curGraphicsPipelineInfo->shaderStages.data();
 		}
 
 		void graphicsPipelineAddSpecializationConstant(VkShaderStageFlagBits stage,
@@ -567,6 +578,16 @@ namespace rj
 			specializationInfo->pMapEntries = mapEntries->data();
 			specializationInfo->dataSize = data->size();
 			specializationInfo->pData = data->data();
+
+			VkPipelineShaderStageCreateInfo *shaderStageInfo = nullptr;
+			for (auto &ss : m_curGraphicsPipelineInfo->shaderStages)
+			{
+				if (ss.stage == stage)
+				{
+					shaderStageInfo = &ss;
+				}
+			}
+			shaderStageInfo->pSpecializationInfo = specializationInfo;
 		}
 
 		void graphicsPipelineAddBindingDescription(uint32_t binding, uint32_t stride, VkVertexInputRate inputRate = VK_VERTEX_INPUT_RATE_VERTEX)
@@ -577,6 +598,11 @@ namespace rj
 			bindingDesc.binding = binding;
 			bindingDesc.stride = stride;
 			bindingDesc.inputRate = inputRate;
+
+			m_curGraphicsPipelineInfo->vertexInputInfo.vertexBindingDescriptionCount =
+				static_cast<uint32_t>(m_curGraphicsPipelineInfo->viBindingDescs.size());
+			m_curGraphicsPipelineInfo->vertexInputInfo.pVertexBindingDescriptions =
+				m_curGraphicsPipelineInfo->viBindingDescs.data();
 		}
 
 		void graphicsPipelineAddAttributeDescription(uint32_t location, uint32_t binding, VkFormat format, uint32_t offset)
@@ -588,6 +614,11 @@ namespace rj
 			attrDesc.binding = binding;
 			attrDesc.format = format;
 			attrDesc.offset = offset;
+
+			m_curGraphicsPipelineInfo->vertexInputInfo.vertexAttributeDescriptionCount =
+				static_cast<uint32_t>(m_curGraphicsPipelineInfo->viAttrDescs.size());
+			m_curGraphicsPipelineInfo->vertexInputInfo.pVertexAttributeDescriptions =
+				m_curGraphicsPipelineInfo->viAttrDescs.data();
 		}
 
 		void graphicsPipelineConfigureInputAssembly(VkPrimitiveTopology topology, VkBool32 enablePrimitiveRestart = VK_FALSE, VkPipelineInputAssemblyStateCreateFlags flags = 0)
@@ -596,6 +627,14 @@ namespace rj
 
 			info.topology = topology;
 			info.primitiveRestartEnable = enablePrimitiveRestart;
+			info.flags = flags;
+		}
+
+		void graphicsPipelineConfigureTessellationState(uint32_t numCPsPerPatch, VkPipelineTessellationStateCreateFlags flags = 0)
+		{
+			auto &info = m_curGraphicsPipelineInfo->tessellationInfo;
+
+			info.patchControlPoints = numCPsPerPatch;
 			info.flags = flags;
 		}
 
@@ -661,11 +700,131 @@ namespace rj
 			info.flags = flags;
 		}
 
-		void graphicsPipelineConfigureMultisampleState()
+		void graphicsPipelineConfigureMultisampleState(VkSampleCountFlagBits sampleCount, VkBool32 perSampleShading = VK_FALSE, float minSampleShadingFraction = 1.f,
+			const std::vector<VkSampleMask> &sampleMask = {}, VkBool32 alphaToCoverageEnable = VK_FALSE, VkBool32 alphaToOneEnable = VK_FALSE,
+			VkPipelineMultisampleStateCreateFlags flags = 0)
 		{
 			auto &info = m_curGraphicsPipelineInfo->multisamplingInfo;
 
-			info
+			info.rasterizationSamples = sampleCount;
+			info.sampleShadingEnable = perSampleShading;
+			info.minSampleShading = minSampleShadingFraction;
+			m_curGraphicsPipelineInfo->sampleMask = sampleMask;
+			info.pSampleMask = nullptr;
+			if (!sampleMask.empty())
+			{
+				info.pSampleMask = m_curGraphicsPipelineInfo->sampleMask.data();
+			}
+			info.alphaToCoverageEnable = alphaToCoverageEnable;
+			info.alphaToOneEnable = alphaToOneEnable;
+		}
+
+		void graphicsPipelineConfigureDepthState(VkBool32 depthTestEnable, VkBool32 depthWriteEnable, VkCompareOp depthCompareOp,
+			VkBool32 depthBoundsTestEnable = VK_FALSE, float minDepthBounds = 0.f, float maxDepthBounds = 1.f)
+		{
+			auto &info = m_curGraphicsPipelineInfo->depthStencilInfo;
+
+			info.depthTestEnable = depthTestEnable;
+			info.depthWriteEnable = depthWriteEnable;
+			info.depthCompareOp = depthCompareOp;
+			info.depthBoundsTestEnable = depthBoundsTestEnable;
+			info.minDepthBounds = minDepthBounds;
+			info.maxDepthBounds = maxDepthBounds;
+		}
+
+		void graphicsPipelineConfigureStencilState(VkBool32 stencilTestEnable,
+			VkStencilOp failOp, VkStencilOp passOp, VkStencilOp depthFailOp, VkCompareOp compareOp,
+			uint32_t reference, uint32_t compareMask = 0xffffffff, uint32_t writeMask = 0xffffffff,
+			bool frontOp = true)
+		{
+			auto &info = m_curGraphicsPipelineInfo->depthStencilInfo;
+			auto &stencilOpState = frontOp ? info.front : info.back;
+
+			info.stencilTestEnable = stencilTestEnable;
+			stencilOpState.failOp = failOp;
+			stencilOpState.passOp = passOp;
+			stencilOpState.depthFailOp = depthFailOp;
+			stencilOpState.compareOp = compareOp;
+			stencilOpState.compareMask = compareMask;
+			stencilOpState.writeMask = writeMask;
+			stencilOpState.reference = reference;
+		}
+
+		// If logic op is enabled, blending is automatically disabled on all color attachments
+		// Logic op can only be applied to sint, uint, snorm, or unorm attachments.
+		// For floating point attachments, fragment outputs are pass through without modification.
+		void graphicsPipelineConfigureLogicOp(VkBool32 logicOpEnable, VkLogicOp logicOp)
+		{
+			auto &info = m_curGraphicsPipelineInfo->colorBlendInfo;
+
+			info.logicOpEnable = logicOpEnable;
+			info.logicOp = logicOp;
+		}
+
+		void graphicsPipeLineAddColorBlendAttachment(VkBool32 blendEnable,
+			VkBlendFactor srcColorBlendFactor, VkBlendFactor dstColorBlendFactor, VkBlendOp colorBlendOp, bool alphaSameAsColor = true,
+			VkBlendFactor srcAlphaBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA, VkBlendFactor dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO, VkBlendOp alphaBlendOp = VK_BLEND_OP_ADD,
+			VkColorComponentFlags colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT)
+		{
+			m_curGraphicsPipelineInfo->colorBlendAttachmentStates.push_back({});
+			VkPipelineColorBlendAttachmentState &info = m_curGraphicsPipelineInfo->colorBlendAttachmentStates.back();
+
+			info.blendEnable = blendEnable;
+			info.srcColorBlendFactor = srcColorBlendFactor;
+			info.dstColorBlendFactor = dstColorBlendFactor;
+			info.colorBlendOp = colorBlendOp;
+			info.srcAlphaBlendFactor = alphaSameAsColor ? srcColorBlendFactor : srcAlphaBlendFactor;
+			info.dstAlphaBlendFactor = alphaSameAsColor ? dstColorBlendFactor : dstAlphaBlendFactor;
+			info.alphaBlendOp = alphaSameAsColor ? colorBlendOp : alphaBlendOp;
+			info.colorWriteMask = colorWriteMask;
+
+			m_curGraphicsPipelineInfo->colorBlendInfo.attachmentCount =
+				static_cast<uint32_t>(m_curGraphicsPipelineInfo->colorBlendAttachmentStates.size());
+			m_curGraphicsPipelineInfo->colorBlendInfo.pAttachments =
+				m_curGraphicsPipelineInfo->colorBlendAttachmentStates.data();
+		}
+
+		void graphicsPipelineSetBlendConstant(float R, float G, float B, float A)
+		{
+			float *bc = m_curGraphicsPipelineInfo->colorBlendInfo.blendConstants;
+			bc[0] = R;
+			bc[1] = G;
+			bc[2] = B;
+			bc[3] = A;
+		}
+
+		void graphicsPipelineAddDynamicState(VkDynamicState dynamicState)
+		{
+			m_curGraphicsPipelineInfo->dynamicStates.push_back(dynamicState);
+			m_curGraphicsPipelineInfo->dynamicStateInfo.dynamicStateCount = static_cast<uint32_t>(m_curGraphicsPipelineInfo->dynamicStates.size());
+			m_curGraphicsPipelineInfo->dynamicStateInfo.pDynamicStates = m_curGraphicsPipelineInfo->dynamicStates.data();
+		}
+
+		uint32_t endCreateGraphicsPipeline()
+		{
+			auto &info = m_curGraphicsPipelineInfo->pipelineInfo;
+
+			info.stageCount = static_cast<uint32_t>(m_curGraphicsPipelineInfo->shaderStages.size());
+			info.pStages = m_curGraphicsPipelineInfo->shaderStages.data();
+			info.pVertexInputState = &m_curGraphicsPipelineInfo->vertexInputInfo;
+			info.pInputAssemblyState = &m_curGraphicsPipelineInfo->inputAssemblyInfo;
+			info.pTessellationState = nullptr;
+			if (m_curGraphicsPipelineInfo->tessellationInfo.patchControlPoints > 0)
+			{
+				info.pTessellationState = &m_curGraphicsPipelineInfo->tessellationInfo;
+			}
+			info.pViewportState = &m_curGraphicsPipelineInfo->viewportStateInfo;
+			info.pRasterizationState = &m_curGraphicsPipelineInfo->rasterizerInfo;
+			info.pMultisampleState = &m_curGraphicsPipelineInfo->multisamplingInfo;
+			info.pDepthStencilState = &m_curGraphicsPipelineInfo->depthStencilInfo;
+			info.pColorBlendState = &m_curGraphicsPipelineInfo->colorBlendInfo;
+			if (!m_curGraphicsPipelineInfo->dynamicStates.empty())
+			{
+				info.pDynamicState = &m_curGraphicsPipelineInfo->dynamicStateInfo;
+			}
+
+
+			m_curGraphicsPipelineInfo = nullptr;
 		}
 		// --- Pipeline creation ---
 
