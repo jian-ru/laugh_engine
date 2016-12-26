@@ -62,35 +62,50 @@ namespace rj
 
 		struct GraphicsPipelineCreateInfo
 		{
+			std::vector<VkVertexInputBindingDescription> viBindingDescs;
+			std::vector<VkVertexInputAttributeDescription> viAttrDescs;
 			VkPipelineVertexInputStateCreateInfo vertexInputInfo;
+
 			VkPipelineInputAssemblyStateCreateInfo inputAssemblyInfo;
+
+			// If multiple viewports and scissors are not enabled, count <= 1
+			std::vector<VkViewport> viewports;
+			std::vector<VkRect2D> scissors;
 			VkPipelineViewportStateCreateInfo viewportStateInfo;
+			
 			VkPipelineRasterizationStateCreateInfo rasterizerInfo;
 			VkPipelineMultisampleStateCreateInfo multisamplingInfo;
 			VkPipelineDepthStencilStateCreateInfo depthStencilInfo;
+
 			std::vector<VkPipelineColorBlendAttachmentState> colorBlendAttachmentStates;
 			VkPipelineColorBlendStateCreateInfo colorBlendInfo;
+
 			std::vector<VkDynamicState> dynamicStates;
 			VkPipelineDynamicStateCreateInfo dynamicStateInfo;
 
 			VDeleter<VkShaderModule> vertShaderModule;
 			VkSpecializationInfo vertSpecializationInfo = {};
+			std::vector<char> vertSpecializationData;
 			std::vector<VkSpecializationMapEntry> vertSpecializationMapEntries;
 
 			VDeleter<VkShaderModule> hullShaderModule;
 			VkSpecializationInfo hullSpecializationInfo = {};
+			std::vector<char> hullSpecializationData;
 			std::vector<VkSpecializationMapEntry> hullSpecializationMapEntries;
 
 			VDeleter<VkShaderModule> domainShaderModule;
 			VkSpecializationInfo domainSpecializationInfo = {};
+			std::vector<char> domainSpecializationData;
 			std::vector<VkSpecializationMapEntry> domainSpecializationMapEntries;
 			
 			VDeleter<VkShaderModule> geomShaderModule;
 			VkSpecializationInfo geomSpecializationInfo = {};
+			std::vector<char> geomSpecializationData;
 			std::vector<VkSpecializationMapEntry> geomSpecializationMapEntries;
 			
 			VDeleter<VkShaderModule> fragShaderModule;
 			VkSpecializationInfo fragSpecializationInfo = {};
+			std::vector<char> fragSpecializationData;
 			std::vector<VkSpecializationMapEntry> fragSpecializationMapEntries;
 			
 			std::vector<VkPipelineShaderStageCreateInfo> shaderStages;
@@ -444,7 +459,7 @@ namespace rj
 			m_pipelines[m_curPipelineName] = VDeleter<VkPipeline>{ m_device, vkDestroyPipeline };
 		}
 
-		void graphicsPipelineAddShaderStage(VkShaderStageFlagBits stage, const std::string &spvFileName)
+		void graphicsPipelineAddShaderStage(VkShaderStageFlagBits stage, const std::string &spvFileName, VkPipelineShaderStageCreateFlags flags = 0)
 		{
 			auto shaderByteCode = readFile(spvFileName);
 
@@ -453,6 +468,7 @@ namespace rj
 			shaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 			shaderStageInfo.stage = stage;
 			shaderStageInfo.pName = "main";
+			shaderStageInfo.flags = flags;
 
 			switch (stage)
 			{
@@ -479,6 +495,177 @@ namespace rj
 			default:
 				throw std::runtime_error("unknown graphics shader stage");
 			}
+		}
+
+		void graphicsPipelineAddSpecializationConstant(VkShaderStageFlagBits stage,
+			uint32_t constantID, uint32_t offset, uint32_t size, void *srcData)
+		{
+			auto checkShaderModule = [](const VDeleter<VkShaderModule> &module)
+			{
+				if (!module.isvalid())
+				{
+					throw std::runtime_error("try to add specialization constant to shader stage but the stage doesn't exist");
+				}
+			};
+
+			if (!srcData) throw std::runtime_error("data cannot be null");
+			if (size == 0) throw std::runtime_error("size need to be greater than 0");
+
+			std::vector<VkSpecializationMapEntry> *mapEntries = nullptr;
+			std::vector<char>* data = nullptr;
+			VkSpecializationInfo *specializationInfo = nullptr;
+
+			switch (stage)
+			{
+			case VK_SHADER_STAGE_VERTEX_BIT:
+				checkShaderModule(m_curGraphicsPipelineInfo->vertShaderModule);
+				mapEntries = &m_curGraphicsPipelineInfo->vertSpecializationMapEntries;
+				data = &m_curGraphicsPipelineInfo->vertSpecializationData;
+				specializationInfo = &m_curGraphicsPipelineInfo->vertSpecializationInfo;
+				break;
+			case VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT:
+				checkShaderModule(m_curGraphicsPipelineInfo->hullShaderModule);
+				mapEntries = &m_curGraphicsPipelineInfo->hullSpecializationMapEntries;
+				data = &m_curGraphicsPipelineInfo->hullSpecializationData;
+				specializationInfo = &m_curGraphicsPipelineInfo->hullSpecializationInfo;
+				break;
+			case VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT:
+				checkShaderModule(m_curGraphicsPipelineInfo->domainShaderModule);
+				mapEntries = &m_curGraphicsPipelineInfo->domainSpecializationMapEntries;
+				data = &m_curGraphicsPipelineInfo->domainSpecializationData;
+				specializationInfo = &m_curGraphicsPipelineInfo->domainSpecializationInfo;
+				break;
+			case VK_SHADER_STAGE_GEOMETRY_BIT:
+				checkShaderModule(m_curGraphicsPipelineInfo->geomShaderModule);
+				mapEntries = &m_curGraphicsPipelineInfo->geomSpecializationMapEntries;
+				data = &m_curGraphicsPipelineInfo->geomSpecializationData;
+				specializationInfo = &m_curGraphicsPipelineInfo->geomSpecializationInfo;
+				break;
+			case VK_SHADER_STAGE_FRAGMENT_BIT:
+				checkShaderModule(m_curGraphicsPipelineInfo->fragShaderModule);
+				mapEntries = &m_curGraphicsPipelineInfo->fragSpecializationMapEntries;
+				data = &m_curGraphicsPipelineInfo->fragSpecializationData;
+				specializationInfo = &m_curGraphicsPipelineInfo->fragSpecializationInfo;
+				break;
+			default:
+				throw std::runtime_error("unknown shader stage");
+			}
+
+			mapEntries->push_back({});
+			auto &mapEntry = mapEntries->back();
+			mapEntry.constantID = constantID;
+			mapEntry.offset = offset;
+			mapEntry.size = size;
+
+			if (data->size() < offset + size)
+			{
+				data->resize(offset + size);
+			}
+			memcpy(&(*data)[offset], srcData, size);
+
+			specializationInfo->mapEntryCount = static_cast<uint32_t>(mapEntries->size());
+			specializationInfo->pMapEntries = mapEntries->data();
+			specializationInfo->dataSize = data->size();
+			specializationInfo->pData = data->data();
+		}
+
+		void graphicsPipelineAddBindingDescription(uint32_t binding, uint32_t stride, VkVertexInputRate inputRate = VK_VERTEX_INPUT_RATE_VERTEX)
+		{
+			m_curGraphicsPipelineInfo->viBindingDescs.push_back({});
+			VkVertexInputBindingDescription &bindingDesc = m_curGraphicsPipelineInfo->viBindingDescs.back();
+
+			bindingDesc.binding = binding;
+			bindingDesc.stride = stride;
+			bindingDesc.inputRate = inputRate;
+		}
+
+		void graphicsPipelineAddAttributeDescription(uint32_t location, uint32_t binding, VkFormat format, uint32_t offset)
+		{
+			m_curGraphicsPipelineInfo->viAttrDescs.push_back({});
+			auto &attrDesc = m_curGraphicsPipelineInfo->viAttrDescs.back();
+
+			attrDesc.location = location;
+			attrDesc.binding = binding;
+			attrDesc.format = format;
+			attrDesc.offset = offset;
+		}
+
+		void graphicsPipelineConfigureInputAssembly(VkPrimitiveTopology topology, VkBool32 enablePrimitiveRestart = VK_FALSE, VkPipelineInputAssemblyStateCreateFlags flags = 0)
+		{
+			auto &info = m_curGraphicsPipelineInfo->inputAssemblyInfo;
+
+			info.topology = topology;
+			info.primitiveRestartEnable = enablePrimitiveRestart;
+			info.flags = flags;
+		}
+
+		void graphicsPipelineAddViewportAndScissor(
+			float viewportX, float viewportY, float viewportWidth, float viewportHeight, float minDepth = 0.f, float maxDepth = 1.f,
+			int32_t scissorX = 0, int32_t scissorY = 0, uint32_t scissorWidth = 0, uint32_t scissorHeight = 0, bool coverEntireViewport = true)
+		{
+			if (viewportWidth < 0.f || viewportHeight < 0.f || scissorWidth < 0 || scissorHeight < 0)
+			{
+				throw std::invalid_argument("invalid arguments to graphicsPipelineAddViewportAndScissor");
+			}
+
+			m_curGraphicsPipelineInfo->viewports.push_back({});
+			auto &viewport = m_curGraphicsPipelineInfo->viewports.back();
+
+			viewport.x = viewportX;
+			viewport.y = viewportY;
+			viewport.width = viewportWidth;
+			viewport.height = viewportHeight;
+			viewport.minDepth = minDepth;
+			viewport.maxDepth = maxDepth;
+
+			m_curGraphicsPipelineInfo->scissors.push_back({});
+			auto &scissor = m_curGraphicsPipelineInfo->scissors.back();
+
+			if (coverEntireViewport)
+			{
+				scissor.offset.x = static_cast<int32_t>(viewportX);
+				scissor.offset.y = static_cast<int32_t>(viewportY);
+				scissor.extent.width = static_cast<int32_t>(viewportWidth);
+				scissor.extent.height = static_cast<int32_t>(viewportHeight);
+			}
+			else
+			{
+				scissor.offset = { scissorX, scissorY };
+				scissor.extent = { scissorWidth, scissorHeight };
+			}
+
+			auto &info = m_curGraphicsPipelineInfo->viewportStateInfo;
+			info.viewportCount = static_cast<uint32_t>(m_curGraphicsPipelineInfo->viewports.size());
+			info.pViewports = m_curGraphicsPipelineInfo->viewports.data();
+			info.scissorCount = static_cast<uint32_t>(m_curGraphicsPipelineInfo->scissors.size());
+			info.pScissors = m_curGraphicsPipelineInfo->scissors.data();
+		}
+
+		void graphicsPipelineConfigureRasterizer(VkPolygonMode polygonMode, VkCullModeFlags cullMode, VkFrontFace frontFace, float lineWidth = 1.f,
+			VkBool32 depthBiasEnable = VK_FALSE, float depthBiasConstantFactor = 0.f, float depthBiasSlopeFactor = 1.f,
+			VkBool32 depthClampEnable = VK_FALSE, float depthBiasClamp = 1.f,
+			VkBool32 rasterizerDiscardEnable = VK_FALSE, VkPipelineRasterizationStateCreateFlags flags = 0)
+		{
+			auto &info = m_curGraphicsPipelineInfo->rasterizerInfo;
+
+			info.polygonMode = polygonMode;
+			info.cullMode = cullMode;
+			info.frontFace = frontFace;
+			info.lineWidth = lineWidth;
+			info.depthBiasEnable = depthBiasEnable;
+			info.depthBiasConstantFactor = depthBiasConstantFactor;
+			info.depthBiasSlopeFactor = depthBiasSlopeFactor;
+			info.depthClampEnable = depthClampEnable;
+			info.depthBiasClamp = depthBiasClamp;
+			info.rasterizerDiscardEnable = rasterizerDiscardEnable;
+			info.flags = flags;
+		}
+
+		void graphicsPipelineConfigureMultisampleState()
+		{
+			auto &info = m_curGraphicsPipelineInfo->multisamplingInfo;
+
+			info
 		}
 		// --- Pipeline creation ---
 

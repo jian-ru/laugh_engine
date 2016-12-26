@@ -59,5 +59,17 @@
     <ClInclude Include="VWindow.h">
       <Filter>Header Files\Vulkan</Filter>
     </ClInclude>
+    <ClInclude Include="VDevice.h">
+      <Filter>Header Files\Vulkan</Filter>
+    </ClInclude>
+    <ClInclude Include="VInstance.h">
+      <Filter>Header Files\Vulkan</Filter>
+    </ClInclude>
+    <ClInclude Include="VSwapChain.h">
+      <Filter>Header Files\Vulkan</Filter>
+    </ClInclude>
+    <ClInclude Include="vk_helpers.h">
+      <Filter>Header Files\Vulkan</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

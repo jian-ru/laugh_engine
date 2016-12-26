@@ -160,9 +160,13 @@
     <ClInclude Include="deferred_renderer.h" />
     <ClInclude Include="vbase.h" />
     <ClInclude Include="VDeleter.h" />
+    <ClInclude Include="VDevice.h" />
+    <ClInclude Include="VInstance.h" />
+    <ClInclude Include="vk_helpers.h" />
     <ClInclude Include="VManager.h" />
     <ClInclude Include="vmesh.h" />
     <ClInclude Include="VQueueFamilyIndices.h" />
+    <ClInclude Include="VSwapChain.h" />
     <ClInclude Include="vtextoverlay.h" />
     <ClInclude Include="vutils.h" />
     <ClInclude Include="VWindow.h" />
