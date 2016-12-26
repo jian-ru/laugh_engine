@@ -115,9 +115,9 @@ void main()
 		vec3 specColor = mix(dielectricF0, albedo, metalness); // since metal has no albedo, we use the space to store its F0
 		
 		finalColor = diffColor * diffIr + specIr * (specColor * brdfTerm.x + brdfTerm.y);
+		finalColor *= aoVal;
 		
 		// Debug
-		// finalColor *= aoVal;
 		// finalColor = vec3(aoVal);
 		// finalColor = nrm;
 		// finalColor = abs(pos);
