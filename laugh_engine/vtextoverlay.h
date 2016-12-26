@@ -136,16 +136,16 @@ public:
 		VkCommandBufferBeginInfo cmdBufInfo = {};
 		cmdBufInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 
-		VkClearValue clearValues[1];
-		clearValues[0].color = { { 0.0f, 0.0f, 0.0f, 0.0f } };
+		//VkClearValue clearValues[1];
+		//clearValues[0].color = { { 0.0f, 0.0f, 0.0f, 0.0f } };
 
 		VkRenderPassBeginInfo renderPassBeginInfo = {};
 		renderPassBeginInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
 		renderPassBeginInfo.renderPass = renderPass;
 		renderPassBeginInfo.renderArea.extent.width = swapChain.swapChainExtent.width;
 		renderPassBeginInfo.renderArea.extent.height = swapChain.swapChainExtent.height;
-		renderPassBeginInfo.clearValueCount = 1;
-		renderPassBeginInfo.pClearValues = clearValues;
+		//renderPassBeginInfo.clearValueCount = 1;
+		//renderPassBeginInfo.pClearValues = clearValues;
 
 		renderPassBeginInfo.framebuffer = framebuffers[imageIdx];
 

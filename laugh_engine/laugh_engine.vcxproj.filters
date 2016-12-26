@@ -13,16 +13,19 @@
       <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
       <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
     </Filter>
+    <Filter Include="Header Files\Vulkan">
+      <UniqueIdentifier>{6c6a7299-51ff-469b-a0fc-470b8f5a6c3c}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="VManager.cpp">
+      <Filter>Resource Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="vdeleter.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="vutils.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -43,6 +46,30 @@
     </ClInclude>
     <ClInclude Include="vtextoverlay.h">
       <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="VDeleter.h">
+      <Filter>Header Files\Vulkan</Filter>
+    </ClInclude>
+    <ClInclude Include="VQueueFamilyIndices.h">
+      <Filter>Header Files\Vulkan</Filter>
+    </ClInclude>
+    <ClInclude Include="VManager.h">
+      <Filter>Header Files\Vulkan</Filter>
+    </ClInclude>
+    <ClInclude Include="VWindow.h">
+      <Filter>Header Files\Vulkan</Filter>
+    </ClInclude>
+    <ClInclude Include="VDevice.h">
+      <Filter>Header Files\Vulkan</Filter>
+    </ClInclude>
+    <ClInclude Include="VInstance.h">
+      <Filter>Header Files\Vulkan</Filter>
+    </ClInclude>
+    <ClInclude Include="VSwapChain.h">
+      <Filter>Header Files\Vulkan</Filter>
+    </ClInclude>
+    <ClInclude Include="vk_helpers.h">
+      <Filter>Header Files\Vulkan</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>
