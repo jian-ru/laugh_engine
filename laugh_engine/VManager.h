@@ -1000,7 +1000,7 @@ namespace rj
 
 		// --- Image creation ---
 
-		// --- 
+		// --- Image creation ---
 
 	protected:
 		void createPipelineCache()
@@ -1048,6 +1048,8 @@ namespace rj
 		std::unordered_map<uint32_t, VDeleter<VkPipeline>> m_pipelines;
 
 		std::unordered_map<uint32_t, VDeleter<VkCommandPool>> m_commandPools;
+
+
 
 		std::unordered_map<uint32_t, VDeleter<VkSampler>> m_samplers;
 	};

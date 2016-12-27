@@ -71,5 +71,8 @@
     <ClInclude Include="vk_helpers.h">
       <Filter>Header Files\Vulkan</Filter>
     </ClInclude>
+    <ClInclude Include="VImage.h">
+      <Filter>Header Files\Vulkan</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

@@ -161,6 +161,7 @@
     <ClInclude Include="vbase.h" />
     <ClInclude Include="VDeleter.h" />
     <ClInclude Include="VDevice.h" />
+    <ClInclude Include="VImage.h" />
     <ClInclude Include="VInstance.h" />
     <ClInclude Include="vk_helpers.h" />
     <ClInclude Include="VManager.h" />
