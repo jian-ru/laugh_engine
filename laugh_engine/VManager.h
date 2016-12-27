@@ -47,6 +47,7 @@ namespace rj
 
 			VDeleter<VkShaderModule> computeShaderModule;
 			VkSpecializationInfo computeSpecializationInfo = {};
+			std::vector<char> computeSpecializationData;
 			std::vector<VkSpecializationMapEntry> computeSpecializationMapEntries;
 
 			ComputePipelineCreateInfo(const VDeleter<VkDevice> &device)
@@ -459,12 +460,53 @@ namespace rj
 		}
 		// --- Pipeline layouts creation ---
 
-		// --- Pipeline creation ---
-		void beginCreateGraphicsPipeline(VkPipe)
+		// --- Graphics pipeline creation ---
+		void beginCreateGraphicsPipeline(uint32_t layoutName, uint32_t renderPassName, uint32_t subpassIdx,
+			uint32_t basePipelineName = std::numeric_limits<uint32_t>::max(), VkPipelineCreateFlags flags = 0)
 		{
 			m_curGraphicsPipelineInfo = std::make_shared<GraphicsPipelineCreateInfo>(m_device);
 			m_curPipelineName = static_cast<uint32_t>(m_pipelines.size());
 			m_pipelines[m_curPipelineName] = VDeleter<VkPipeline>{ m_device, vkDestroyPipeline };
+
+			auto &pipelineInfo = m_curGraphicsPipelineInfo->pipelineInfo;
+			pipelineInfo.flags = flags;
+
+			auto layoutFound = m_pipelineLayouts.find(layoutName);
+			if (layoutFound != m_pipelineLayouts.end())
+			{
+				pipelineInfo.layout = layoutFound->second;
+			}
+			else
+			{
+				throw std::runtime_error("Invalid pipeline layout");
+			}
+
+			auto renderPassFound = m_renderPasses.find(renderPassName);
+			if (renderPassFound != m_renderPasses.end())
+			{
+				pipelineInfo.renderPass = renderPassFound->second;
+			}
+			else
+			{
+				throw std::runtime_error("Invalid render pass");
+			}
+
+			pipelineInfo.subpass = subpassIdx;
+
+			pipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
+			if (flags & VK_PIPELINE_CREATE_DERIVATIVE_BIT)
+			{
+				auto basePipelineFound = m_pipelines.find(basePipelineName);
+				if (basePipelineFound != m_pipelines.end())
+				{
+					pipelineInfo.basePipelineHandle = basePipelineFound->second;
+					pipelineInfo.basePipelineIndex = -1;
+				}
+				else
+				{
+					throw std::runtime_error("base pipeline not found");
+				}
+			}
 		}
 
 		void graphicsPipelineAddShaderStage(VkShaderStageFlagBits stage, const std::string &spvFileName, VkPipelineShaderStageCreateFlags flags = 0)
@@ -519,8 +561,8 @@ namespace rj
 				}
 			};
 
-			if (!srcData) throw std::runtime_error("data cannot be null");
-			if (size == 0) throw std::runtime_error("size need to be greater than 0");
+			if (!srcData) throw std::invalid_argument("data cannot be null");
+			if (size == 0) throw std::invalid_argument("size need to be greater than 0");
 
 			std::vector<VkSpecializationMapEntry> *mapEntries = nullptr;
 			std::vector<char>* data = nullptr;
@@ -823,10 +865,104 @@ namespace rj
 				info.pDynamicState = &m_curGraphicsPipelineInfo->dynamicStateInfo;
 			}
 
+			if (vkCreateGraphicsPipelines(m_device, m_pipelineCache, 1, &info, nullptr, m_pipelines[m_curPipelineName].replace()) != VK_SUCCESS)
+			{
+				throw std::runtime_error("failed to create pipeline!");
+			}
 
 			m_curGraphicsPipelineInfo = nullptr;
+			return m_curPipelineName;
 		}
-		// --- Pipeline creation ---
+		// --- Graphics pipeline creation ---
+
+		// --- Compute pipeline creation ---
+		void beginCreateComputePipeline(uint32_t layoutName,
+			uint32_t basePipelineName = std::numeric_limits<uint32_t>::max(), VkPipelineCreateFlags flags = 0)
+		{
+			m_curComputePipelineInfo = std::make_shared<ComputePipelineCreateInfo>(m_device);
+			m_curPipelineName = static_cast<uint32_t>(m_pipelines.size());
+			m_pipelines[m_curPipelineName] = VDeleter<VkPipeline>{ m_device, vkDestroyPipeline };
+
+			auto &pipelineInfo = m_curComputePipelineInfo->pipelineInfo;
+			pipelineInfo.flags = flags;
+
+			auto layoutFound = m_pipelineLayouts.find(layoutName);
+			if (layoutFound != m_pipelineLayouts.end())
+			{
+				pipelineInfo.layout = layoutFound->second;
+			}
+			else
+			{
+				throw std::runtime_error("Invalid pipeline layout");
+			}
+
+			if (flags & VK_PIPELINE_CREATE_DERIVATIVE_BIT)
+			{
+				auto basePipelineFound = m_pipelines.find(basePipelineName);
+				if (basePipelineFound != m_pipelines.end())
+				{
+					pipelineInfo.basePipelineHandle = basePipelineFound->second;
+					pipelineInfo.basePipelineIndex = -1;
+				}
+				else
+				{
+					throw std::runtime_error("Invalid base pipeline");
+				}
+			}
+		}
+
+		void computePipelineAddShaderStage(const std::string &spvFileName, VkPipelineShaderStageCreateFlags flags = 0)
+		{
+			auto shaderByteCode = readFile(spvFileName);
+			createShaderModule(m_device, shaderByteCode, m_curComputePipelineInfo->computeShaderModule);
+
+			auto &info = m_curComputePipelineInfo->pipelineInfo.stage;
+			info.module = m_curComputePipelineInfo->computeShaderModule;
+			info.flags = flags;
+		}
+
+		void computePipelineAddSpecializationConstant(uint32_t constantID, uint32_t offset, uint32_t size, void *srcData)
+		{
+			if (!srcData) throw std::invalid_argument("data cannot be null");
+			if (size == 0) throw std::invalid_argument("size need to be greater than 0");
+			if (!m_curComputePipelineInfo->computeShaderModule.isvalid()) throw std::runtime_error("Cannot add specialization data to empty compute shader stage");
+
+			auto &specializationInfo = m_curComputePipelineInfo->computeSpecializationInfo;
+			auto &mapEntries = m_curComputePipelineInfo->computeSpecializationMapEntries;
+			mapEntries.push_back({});
+			auto &mapEntry = mapEntries.back();
+			auto &specializationData = m_curComputePipelineInfo->computeSpecializationData;
+
+			mapEntry.constantID = constantID;
+			mapEntry.offset = offset;
+			mapEntry.size = size;
+
+			if (specializationData.size() < offset + size)
+			{
+				specializationData.resize(offset + size);
+			}
+			memcpy(&specializationData[offset], srcData, size);
+
+			specializationInfo.mapEntryCount = static_cast<uint32_t>(mapEntries.size());
+			specializationInfo.pMapEntries = mapEntries.data();
+			specializationInfo.dataSize = specializationData.size();
+			specializationInfo.pData = specializationData.data();
+
+			m_curComputePipelineInfo->pipelineInfo.stage.pSpecializationInfo = &specializationInfo;
+		}
+
+		uint32_t endCreateComputePipeline()
+		{
+			if (vkCreateComputePipelines(m_device, m_pipelineCache, 1, &m_curComputePipelineInfo->pipelineInfo,
+				nullptr, m_pipelines[m_curPipelineName].replace()) != VK_SUCCESS)
+			{
+				throw std::runtime_error("failed to create compute pipeline!");
+			}
+
+			m_curComputePipelineInfo = nullptr;
+			return m_curPipelineName;
+		}
+		// --- Compute pipeline creation ---
 
 	protected:
 		void createPipelineCache()
