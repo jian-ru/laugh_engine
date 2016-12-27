@@ -179,7 +179,7 @@ namespace rj
 
 			for (uint32_t i = 0; i < m_swapChainImages.size(); i++)
 			{
-				createImageView2D(m_device, m_swapChainImages[i], m_swapChainImageFormat, VK_IMAGE_ASPECT_COLOR_BIT, 1, m_swapChainImageViews[i]);
+				createImageView(m_swapChainImageViews[i], m_device, m_swapChainImages[i], VK_IMAGE_VIEW_TYPE_2D, m_swapChainImageFormat, VK_IMAGE_ASPECT_COLOR_BIT);
 			}
 		}
 

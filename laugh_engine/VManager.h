@@ -523,23 +523,23 @@ namespace rj
 			switch (stage)
 			{
 			case VK_SHADER_STAGE_VERTEX_BIT:
-				createShaderModule(m_device, shaderByteCode, m_curGraphicsPipelineInfo->vertShaderModule);
+				createShaderModule(m_curGraphicsPipelineInfo->vertShaderModule, m_device, shaderByteCode);
 				shaderStageInfo.module = m_curGraphicsPipelineInfo->vertShaderModule;
 				break;
 			case VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT:
-				createShaderModule(m_device, shaderByteCode, m_curGraphicsPipelineInfo->hullShaderModule);
+				createShaderModule(m_curGraphicsPipelineInfo->hullShaderModule, m_device, shaderByteCode);
 				shaderStageInfo.module = m_curGraphicsPipelineInfo->hullShaderModule;
 				break;
 			case VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT:
-				createShaderModule(m_device, shaderByteCode, m_curGraphicsPipelineInfo->domainShaderModule);
+				createShaderModule(m_curGraphicsPipelineInfo->domainShaderModule, m_device, shaderByteCode);
 				shaderStageInfo.module = m_curGraphicsPipelineInfo->domainShaderModule;
 				break;
 			case VK_SHADER_STAGE_GEOMETRY_BIT:
-				createShaderModule(m_device, shaderByteCode, m_curGraphicsPipelineInfo->geomShaderModule);
+				createShaderModule(m_curGraphicsPipelineInfo->geomShaderModule, m_device, shaderByteCode);
 				shaderStageInfo.module = m_curGraphicsPipelineInfo->geomShaderModule;
 				break;
 			case VK_SHADER_STAGE_FRAGMENT_BIT:
-				createShaderModule(m_device, shaderByteCode, m_curGraphicsPipelineInfo->fragShaderModule);
+				createShaderModule(m_curGraphicsPipelineInfo->fragShaderModule, m_device, shaderByteCode);
 				shaderStageInfo.module = m_curGraphicsPipelineInfo->fragShaderModule;
 				break;
 			default:
@@ -914,7 +914,7 @@ namespace rj
 		void computePipelineAddShaderStage(const std::string &spvFileName, VkPipelineShaderStageCreateFlags flags = 0)
 		{
 			auto shaderByteCode = readFile(spvFileName);
-			createShaderModule(m_device, shaderByteCode, m_curComputePipelineInfo->computeShaderModule);
+			createShaderModule(m_curComputePipelineInfo->computeShaderModule, m_device, shaderByteCode);
 
 			auto &info = m_curComputePipelineInfo->pipelineInfo.stage;
 			info.module = m_curComputePipelineInfo->computeShaderModule;
@@ -964,6 +964,44 @@ namespace rj
 		}
 		// --- Compute pipeline creation ---
 
+		// --- Command pool creation ---
+		uint32_t createCommandPool(VkQueueFlagBits submitQueueType, VkCommandPoolCreateFlags flags = 0)
+		{
+			uint32_t queueFamilyIndex;
+			const auto &queueFamilyIndices = m_device.getQueueFamilyIndices();
+			switch(submitQueueType)
+			{
+			case VK_QUEUE_GRAPHICS_BIT:
+				queueFamilyIndex = queueFamilyIndices.graphicsFamily;
+				break;
+			case VK_QUEUE_COMPUTE_BIT:
+				queueFamilyIndex = queueFamilyIndices.computeFamily;
+				break;
+			case VK_QUEUE_TRANSFER_BIT:
+				queueFamilyIndex = queueFamilyIndices.transferFamily;
+			default:
+				throw std::invalid_argument("unsupported queue type specified during command pool creation");
+			}
+
+			uint32_t newPoolName = static_cast<uint32_t>(m_commandPools.size());
+			m_commandPools[newPoolName] = VDeleter<VkCommandPool>{ m_device, vkDestroyCommandPool };
+
+			VkCommandPoolCreateInfo poolInfo = {};
+			poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+			poolInfo.queueFamilyIndex = queueFamilyIndex;
+			poolInfo.flags = flags;
+
+			if (vkCreateCommandPool(m_device, &poolInfo, nullptr, m_commandPools[newPoolName].replace()) != VK_SUCCESS)
+			{
+				throw std::runtime_error("failed to create command pool!");
+			}
+		}
+		// --- Command pool creation ---
+
+		// --- Image creation ---
+
+		// --- 
+
 	protected:
 		void createPipelineCache()
 		{
@@ -1008,6 +1046,8 @@ namespace rj
 		};
 		uint32_t m_curPipelineName;
 		std::unordered_map<uint32_t, VDeleter<VkPipeline>> m_pipelines;
+
+		std::unordered_map<uint32_t, VDeleter<VkCommandPool>> m_commandPools;
 
 		std::unordered_map<uint32_t, VDeleter<VkSampler>> m_samplers;
 	};
