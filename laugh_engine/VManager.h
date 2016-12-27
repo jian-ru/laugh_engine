@@ -7,6 +7,7 @@
 #include "VWindow.h"
 #include "VDevice.h"
 #include "VQueueFamilyIndices.h"
+#include "VImage.h"
 
 
 namespace rj
@@ -203,6 +204,7 @@ namespace rj
 			m_swapChain{ m_device, m_window }
 		{
 			createPipelineCache();
+			createSingleSubmitCommandPool();
 		}
 
 		// --- Render pass creation ---
@@ -999,8 +1001,118 @@ namespace rj
 		// --- Command pool creation ---
 
 		// --- Image creation ---
+		uint32_t createImage2D(uint32_t width, uint32_t height, VkFormat format, VkImageUsageFlags usage, VkMemoryPropertyFlags memProps,
+			uint32_t mipLevels = 1, uint32_t arrayLayers = 1, VkSampleCountFlagBits sampleCount = VK_SAMPLE_COUNT_1_BIT,
+			VkImageLayout initialLayout = VK_IMAGE_LAYOUT_PREINITIALIZED, VkImageTiling tiling = VK_IMAGE_TILING_OPTIMAL)
+		{
+			uint32_t imageName = static_cast<uint32_t>(m_images.size());
+			m_images.emplace(std::piecewise_construct, std::forward_as_tuple(imageName), std::forward_as_tuple(m_device));
+			m_images.at(imageName).initAs2DImage(width, height, format, usage, memProps, mipLevels, arrayLayers, sampleCount, initialLayout, tiling);
+			return imageName;
+		}
 
+		uint32_t createImageCube(uint32_t width, uint32_t height, VkFormat format, VkImageUsageFlags usage, VkMemoryPropertyFlags memProps,
+			uint32_t mipLevels = 1,
+			VkImageLayout initialLayout = VK_IMAGE_LAYOUT_PREINITIALIZED, VkImageTiling tiling = VK_IMAGE_TILING_OPTIMAL)
+		{
+			uint32_t imageName = static_cast<uint32_t>(m_images.size());
+			m_images.emplace(std::piecewise_construct, std::forward_as_tuple(imageName), std::forward_as_tuple(m_device));
+			m_images.at(imageName).initAsCubeImage(width, height, format, usage, memProps, mipLevels, initialLayout, tiling);
+			return imageName;
+		}
 		// --- Image creation ---
+
+		// --- Image view creation ---
+		uint32_t createImageView(uint32_t imageName, VkImageViewType viewType, VkImageAspectFlags aspectMask,
+			uint32_t baseMipLevel = 0, uint32_t levelCount = 1, uint32_t baseArrayLayer = 0, uint32_t layerCount = 1,
+			VkComponentMapping componentMapping = {}, VkImageViewCreateFlags flags = 0)
+		{
+			auto found = m_images.find(imageName);
+			if (found == m_images.end())
+			{
+				throw std::invalid_argument("Invalid image name");
+			}
+			auto &image = found->second;
+
+			uint32_t viewName = static_cast<uint32_t>(m_imageViews.size());
+			m_imageViews.emplace(std::piecewise_construct, std::forward_as_tuple(viewName),
+				std::forward_as_tuple(m_device, image));
+			m_imageViews.at(viewName).init(viewType, aspectMask, baseMipLevel, levelCount, baseArrayLayer, layerCount,
+				componentMapping, flags);
+
+			return viewName;
+		}
+
+		uint32_t createImageViewCube(uint32_t imageName, VkImageAspectFlags aspectMask,
+			uint32_t baseMipLevel = 0, uint32_t levelCount = 1, uint32_t baseArrayLayer = 0,
+			VkComponentMapping componentMapping = {}, VkImageViewCreateFlags flags = 0)
+		{
+			return this->createImageView(imageName, VK_IMAGE_VIEW_TYPE_CUBE, aspectMask, baseMipLevel, levelCount, baseArrayLayer, 6,
+				componentMapping, flags);
+		}
+
+		uint32_t createImageView2D(uint32_t imageName, VkImageAspectFlags aspectMask,
+			uint32_t baseMipLevel = 0, uint32_t levelCount = 1, uint32_t baseArrayLayer = 0,
+			VkComponentMapping componentMapping = {}, VkImageViewCreateFlags flags = 0)
+		{
+			return this->createImageView(imageName, VK_IMAGE_VIEW_TYPE_2D, aspectMask,
+				baseMipLevel, levelCount, baseArrayLayer, 1, componentMapping, flags);
+		}
+		// --- Image view creation ---
+
+		// --- Image layout transition ---
+		void transitionImageLayout(uint32_t imageName, VkImageLayout newLayout, bool tryPreserveContent = true)
+		{
+			auto found = m_images.find(imageName);
+			if (found == m_images.end())
+			{
+				throw std::invalid_argument("Invalid image name");
+			}
+			auto &image = found->second;
+			VkImageLayout oldLayout = tryPreserveContent ? image.layout() : VK_IMAGE_LAYOUT_UNDEFINED;
+
+			beginSingleTimeCommands();
+			recordImageLayoutTransitionCommands(m_singleTimeCommandBuffer, image, image.format(), 0, image.levels(),
+				0, image.layers(), oldLayout, newLayout);
+			endSingleTimeCommands();
+		}
+		// --- Image layout transition ---
+
+		// --- Command buffer related ---
+		void beginSingleTimeCommands()
+		{
+			VkCommandBufferAllocateInfo allocInfo = {};
+			allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+			allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+			allocInfo.commandPool = m_commandPools[m_singleSubmitCommandPoolName];
+			allocInfo.commandBufferCount = 1;
+
+			vkAllocateCommandBuffers(m_device, &allocInfo, &m_singleTimeCommandBuffer);
+
+			VkCommandBufferBeginInfo beginInfo = {};
+			beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+			beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+			vkBeginCommandBuffer(m_singleTimeCommandBuffer, &beginInfo);
+		}
+
+		void endSingleTimeCommands()
+		{
+			vkEndCommandBuffer(m_singleTimeCommandBuffer);
+
+			VkSubmitInfo submitInfo = {};
+			submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+			submitInfo.commandBufferCount = 1;
+			submitInfo.pCommandBuffers = &m_singleTimeCommandBuffer;
+
+			vkQueueSubmit(m_device.getGraphicsQueue(), 1, &submitInfo, VK_NULL_HANDLE);
+			vkQueueWaitIdle(m_device.getGraphicsQueue());
+
+			vkFreeCommandBuffers(m_device, m_commandPools[m_singleSubmitCommandPoolName], 1, &m_singleTimeCommandBuffer);
+
+			m_singleTimeCommandBuffer = VK_NULL_HANDLE;
+		}
+		// --- Command buffer related ---
 
 	protected:
 		void createPipelineCache()
@@ -1011,6 +1123,11 @@ namespace rj
 			{
 				throw std::runtime_error("failed to create pipeline cache.");
 			}
+		}
+
+		void createSingleSubmitCommandPool()
+		{
+			createCommandPool(VK_QUEUE_GRAPHICS_BIT, VK_COMMAND_POOL_CREATE_TRANSIENT_BIT);
 		}
 
 
@@ -1047,10 +1164,15 @@ namespace rj
 		uint32_t m_curPipelineName;
 		std::unordered_map<uint32_t, VDeleter<VkPipeline>> m_pipelines;
 
+		const uint32_t m_singleSubmitCommandPoolName = 0;
 		std::unordered_map<uint32_t, VDeleter<VkCommandPool>> m_commandPools;
 
+		VkCommandBuffer m_singleTimeCommandBuffer = VK_NULL_HANDLE;
 
+		std::unordered_map<uint32_t, 
 
+		std::unordered_map<uint32_t, VImage> m_images;
+		std::unordered_map<uint32_t, VImageView> m_imageViews;
 		std::unordered_map<uint32_t, VDeleter<VkSampler>> m_samplers;
 	};
 }

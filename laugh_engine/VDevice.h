@@ -12,9 +12,7 @@ namespace rj
 {
 	namespace helper_functions
 	{
-		/**
-		* Check device specific extension support
-		*/
+		// Check device specific extension support
 		bool checkDeviceExtensionSupport(VkPhysicalDevice device, const std::vector<const char *> &deviceExtensions)
 		{
 			uint32_t extensionCount;
@@ -73,6 +71,10 @@ namespace rj
 		{
 			return m_queueFamilyIndices;
 		}
+
+		VkQueue getGraphicsQueue() const { assert(m_graphicsQueue); return m_graphicsQueue; }
+		VkQueue getComputeQueue() const { assert(m_computeQueue); return m_computeQueue; }
+		VkQueue getPresentQueue() const { assert(m_presentQueue); return m_presentQueue; }
 
 	protected:
 		void pickPhysicalDevice()

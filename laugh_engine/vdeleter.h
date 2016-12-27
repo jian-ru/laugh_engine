@@ -5,6 +5,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <functional>
+#include <cassert>
 
 
 namespace rj
