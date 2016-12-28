@@ -8,6 +8,20 @@ namespace rj
 {
 	namespace helper_functions
 	{
+		struct FormatInfo
+		{
+			uint32_t blockSize;
+			VkExtent3D blockExtent;
+		};
+		
+		std::unordered_map<VkFormat, FormatInfo> g_formatInfoTable =
+		{
+			{ VK_FORMAT_R8G8B8A8_UNORM, { 4, { 1, 1, 1 } } },
+			{ VK_FORMAT_R32G32_SFLOAT, { 8, { 1, 1, 1 } } },
+			{ VK_FORMAT_R32G32B32A32_SFLOAT, { 16, { 1, 1, 1 } } },
+			{ VK_FORMAT_BC3_UNORM_BLOCK, { 16, { 4, 4, 1 } } }
+		};
+
 		std::vector<char> readFile(const std::string& filename)
 		{
 			std::ifstream file(filename, std::ios::ate | std::ios::binary);
@@ -275,5 +289,62 @@ namespace rj
 			vkBindBufferMemory(device, buffer, bufferMemory, 0);
 		}
 		// --- Buffer creation ---
+
+		// --- Data transfer ---
+
+		// If depth > 1, levelCount and layerCount must be 1
+		// Copy layer by layer. Within each layer, copy level by level.
+		void recordCopyBufferToImageCommands(VkCommandBuffer commandBuffer,
+			VkBuffer srcBuffer, VkImage dstImage, VkFormat format, VkImageAspectFlags aspectMask,
+			uint32_t width, uint32_t height, uint32_t depth = 1, uint32_t levelCount = 1, uint32_t layerCount = 1)
+		{
+			assert(width > 0 && height > 0 && depth > 0);
+			assert(depth == 1 || levelCount == 1 && layerCount == 1);
+
+			const auto &formatInfo = g_formatInfoTable.at(format);
+			const uint32_t blockSize = formatInfo.blockSize;
+			const uint32_t blockWidth = formatInfo.blockExtent.width;
+			const uint32_t blockHeight = formatInfo.blockExtent.height;
+			const uint32_t blockDepth = formatInfo.blockExtent.depth;
+
+			// Copy mip levels from staging buffer
+			std::vector<VkBufferImageCopy> bufferCopyRegions;
+			uint32_t offset = 0;
+
+			for (uint32_t layer = 0; layer < layerCount; layer++)
+			{
+				for (uint32_t level = 0; level < levelCount; level++)
+				{
+					uint32_t imgWidth = (width >> level);
+					uint32_t imgHeight = (height >> level);
+					uint32_t blockCountX = (imgWidth + (blockWidth - 1)) / blockWidth;
+					uint32_t blockCountY = (imgHeight + (blockHeight - 1)) / blockHeight;
+					uint32_t blockCountZ = (depth + (blockDepth - 1)) / blockDepth;
+
+					VkBufferImageCopy bufferCopyRegion = {};
+					bufferCopyRegion.imageSubresource.aspectMask = aspectMask;
+					bufferCopyRegion.imageSubresource.mipLevel = level;
+					bufferCopyRegion.imageSubresource.baseArrayLayer = layer;
+					bufferCopyRegion.imageSubresource.layerCount = 1;
+					bufferCopyRegion.imageExtent.width = imgWidth;
+					bufferCopyRegion.imageExtent.height = imgHeight;
+					bufferCopyRegion.imageExtent.depth = depth;
+					bufferCopyRegion.bufferOffset = offset;
+
+					bufferCopyRegions.push_back(bufferCopyRegion);
+
+					offset += blockCountX * blockCountY * blockCountZ * blockSize;
+				}
+			}
+
+			vkCmdCopyBufferToImage(
+				commandBuffer,
+				srcBuffer,
+				dstImage,
+				VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+				static_cast<uint32_t>(bufferCopyRegions.size()),
+				bufferCopyRegions.data());
+		}
+		// --- Data transfer ---
 	}
 }

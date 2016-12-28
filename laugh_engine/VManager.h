@@ -8,6 +8,7 @@
 #include "VDevice.h"
 #include "VQueueFamilyIndices.h"
 #include "VImage.h"
+#include "VBuffer.h"
 
 
 namespace rj
@@ -1060,7 +1061,7 @@ namespace rj
 		}
 		// --- Image view creation ---
 
-		// --- Image layout transition ---
+		// --- Image utilities ---
 		void transitionImageLayout(uint32_t imageName, VkImageLayout newLayout, bool tryPreserveContent = true)
 		{
 			auto found = m_images.find(imageName);
@@ -1076,7 +1077,49 @@ namespace rj
 				0, image.layers(), oldLayout, newLayout);
 			endSingleTimeCommands();
 		}
-		// --- Image layout transition ---
+
+		// TODO: Add support for more formats
+		void transferHostDataToImage(uint32_t imageName, VkDeviceSize sizeInBytes, void *hostData,
+			VkImageAspectFlags aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, VkImageLayout finalLayout = VK_IMAGE_LAYOUT_UNDEFINED)
+		{
+			if (!hostData) throw std::invalid_argument("hostData cannot be null");
+			if (sizeInBytes == 0) throw std::invalid_argument("sizeInBytes cannot be 0");
+
+			transitionImageLayout(imageName, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+			auto found = m_images.find(imageName);
+			auto &image = found->second;
+
+			VBuffer stagingBuffer{ m_device };
+			stagingBuffer.init(sizeInBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+			void *mapped = stagingBuffer.mapBuffer();
+			memcpy(mapped, hostData, sizeInBytes);
+			stagingBuffer.unmapBuffer();
+			mapped = nullptr;
+
+			beginSingleTimeCommands();
+			recordCopyBufferToImageCommands(m_singleTimeCommandBuffer, stagingBuffer, image, image.format(), aspectMask,
+				image.extent().width, image.extent().height, image.extent().depth, image.levels(), image.layers());
+			endSingleTimeCommands();
+
+			if (finalLayout != VK_IMAGE_LAYOUT_UNDEFINED)
+			{
+				transitionImageLayout(imageName, finalLayout);
+			}
+		}
+		// --- Image utilities ---
+
+		// --- Buffer creation ---
+		uint32_t createBuffer(VkDeviceSize sizeInBytes, VkBufferUsageFlags usage, VkMemoryPropertyFlags memProps)
+		{
+			uint32_t bufferName = static_cast<uint32_t>(m_buffers.size());
+			m_buffers.emplace(std::piecewise_construct, std::forward_as_tuple(bufferName), std::forward_as_tuple(m_device));
+			m_buffers.at(bufferName).init(sizeInBytes, usage, memProps);
+			return bufferName;
+		}
+		// --- Buffer creation ---
 
 		// --- Command buffer related ---
 		void beginSingleTimeCommands()
@@ -1169,7 +1212,7 @@ namespace rj
 
 		VkCommandBuffer m_singleTimeCommandBuffer = VK_NULL_HANDLE;
 
-		std::unordered_map<uint32_t, 
+		std::unordered_map<uint32_t, VBuffer> m_buffers;
 
 		std::unordered_map<uint32_t, VImage> m_images;
 		std::unordered_map<uint32_t, VImageView> m_imageViews;
