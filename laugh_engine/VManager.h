@@ -1,6 +1,6 @@
 #pragma once
 
-#include <mutex>
+#include <shared_mutex>
 #include <set>
 #include <unordered_map>
 #include <memory>
@@ -1099,7 +1099,7 @@ namespace rj
 		}
 
 		// TODO: Add support for more formats
-		void transferHostDataToImage(uint32_t imageName, VkDeviceSize sizeInBytes, void *hostData,
+		void transferHostDataToImage(uint32_t imageName, VkDeviceSize sizeInBytes, const void *hostData,
 			VkImageAspectFlags aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, VkImageLayout finalLayout = VK_IMAGE_LAYOUT_UNDEFINED)
 		{
 			if (!hostData) throw std::invalid_argument("hostData cannot be null");
@@ -1139,7 +1139,7 @@ namespace rj
 			return bufferName;
 		}
 
-		void transferHostDataToBuffer(uint32_t bufferName, VkDeviceSize sizeInBytes, void *hostData, VkDeviceSize dstOffset = 0)
+		void transferHostDataToBuffer(uint32_t bufferName, VkDeviceSize sizeInBytes, const void *hostData, VkDeviceSize dstOffset = 0)
 		{
 			if (!hostData) throw std::invalid_argument("hostData cannot be null");
 			if (sizeInBytes == 0) throw std::invalid_argument("sizeInBytes cannot be 0");
@@ -1400,27 +1400,23 @@ namespace rj
 			}
 
 			uint32_t newPoolName;
+			newPoolName = static_cast<uint32_t>(m_commandPools.size());
+			m_commandPools.emplace(std::piecewise_construct, std::forward_as_tuple(newPoolName),
+				std::forward_as_tuple(m_device, vkDestroyCommandPool));
+
+			VkCommandPoolCreateInfo poolInfo = {};
+			poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+			poolInfo.queueFamilyIndex = queueFamilyIndex;
+			poolInfo.flags = flags;
+
+			auto &pool = m_commandPools[newPoolName];
+			if (vkCreateCommandPool(m_device, &poolInfo, nullptr, pool.replace()) != VK_SUCCESS)
 			{
-				std::lock_guard<std::mutex> guard(g_commandPoolMutex);
-
-				newPoolName = static_cast<uint32_t>(m_commandPools.size());
-				m_commandPools.emplace(std::piecewise_construct, std::forward_as_tuple(newPoolName),
-					std::forward_as_tuple(m_device, vkDestroyCommandPool));
-			
-				VkCommandPoolCreateInfo poolInfo = {};
-				poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-				poolInfo.queueFamilyIndex = queueFamilyIndex;
-				poolInfo.flags = flags;
-
-				auto &pool = m_commandPools[newPoolName];
-				if (vkCreateCommandPool(m_device, &poolInfo, nullptr, pool.replace()) != VK_SUCCESS)
-				{
-					throw std::runtime_error("failed to create command pool!");
-				}
+				throw std::runtime_error("failed to create command pool!");
 			}
 
 			{
-				std::lock_guard<std::mutex> gaurd(g_commandBufferMutex);
+				std::lock_guard<std::shared_mutex> gaurd(g_commandBufferMutex);
 				m_commandBufferTable[newPoolName] = {};
 			}
 
@@ -1429,11 +1425,10 @@ namespace rj
 
 		void resetCommandPool(uint32_t commandPoolName, VkCommandPoolResetFlags flags = 0)
 		{
+			std::lock_guard<std::shared_mutex> guard(g_commandBufferMutex); // no command buffer is in-use
+
 			VkCommandPool pool = VK_NULL_HANDLE;
-			{
-				std::lock_guard<std::mutex> guard(g_commandPoolMutex);
-				pool = m_commandPools.at(commandPoolName);
-			}
+			pool = m_commandPools.at(commandPoolName);
 
 			if (vkResetCommandPool(m_device, pool, flags) != VK_SUCCESS)
 			{
@@ -1442,8 +1437,6 @@ namespace rj
 
 			if (flags & VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT)
 			{
-				std::lock_guard<std::mutex> guard(g_commandBufferMutex);
-
 				auto &cbNames = m_commandBufferTable[commandPoolName];
 				for (auto cbName : cbNames)
 				{
@@ -1494,10 +1487,9 @@ namespace rj
 			VkCommandBufferLevel level = VK_COMMAND_BUFFER_LEVEL_PRIMARY)
 		{
 			VkCommandPool pool = VK_NULL_HANDLE;
-			{
-				std::lock_guard<std::mutex> guard(g_commandPoolMutex);
-				pool = m_commandPools.at(poolName);
-			}
+			std::vector<VkCommandBuffer> cbs(count);
+			
+			pool = m_commandPools.at(poolName);
 
 			VkCommandBufferAllocateInfo allocInfo = {};
 			allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -1505,7 +1497,6 @@ namespace rj
 			allocInfo.commandPool = pool;
 			allocInfo.commandBufferCount = count;
 
-			std::vector<VkCommandBuffer> cbs(count);
 			if (vkAllocateCommandBuffers(m_device, &allocInfo, cbs.data()) != VK_SUCCESS)
 			{
 				throw std::runtime_error("failed to allocate command buffers!");
@@ -1514,7 +1505,8 @@ namespace rj
 			std::vector<uint32_t> commandBufferNames;
 			commandBufferNames.reserve(count);
 			{
-				std::lock_guard<std::mutex> guard(g_commandBufferMutex);
+				std::lock_guard<std::shared_mutex> guard(g_commandBufferMutex);
+
 				auto &poolCbs = m_commandBufferTable.at(poolName);
 				for (auto cb : cbs)
 				{
@@ -1540,9 +1532,11 @@ namespace rj
 		}
 
 		// TODO: support secondary command buffer
-		void beginCommandBuffer(uint32_t commandBufferName, VkCommandBufferUsageFlags flags = 0)
+		void beginCommandBuffer(uint32_t commandBufferName, VkCommandBufferUsageFlags flags = 0) const
 		{
-			auto &commandBuffer = m_commandBuffers.at(commandBufferName);
+			g_commandBufferMutex.lock_shared(); // some command buffer(s) are in-use
+
+			const auto &commandBuffer = m_commandBuffers.at(commandBufferName);
 
 			VkCommandBufferBeginInfo info = {};
 			info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -1554,20 +1548,24 @@ namespace rj
 			}
 		}
 
-		void endCommandBuffer(uint32_t commandBufferName)
+		void endCommandBuffer(uint32_t commandBufferName) const
 		{
-			auto &commandBuffer = m_commandBuffers.at(commandBufferName);
+			const auto &commandBuffer = m_commandBuffers.at(commandBufferName);
 
 			if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS)
 			{
 				throw std::runtime_error("Unable to end command buffer!");
 			}
+
+			// std::lock_guard<std::shared_mutex> will unblock for a writer if
+			// all readers have called std::shared_mutex::unlock_shared()
+			g_commandBufferMutex.unlock_shared();
 		}
 
 		void cmdBindVertexBuffer(uint32_t cmdBufferName, const std::vector<uint32_t> &bufferNames,
-			const std::vector<VkDeviceSize> &offsets, uint32_t firstBinding = 0)
+			const std::vector<VkDeviceSize> &offsets, uint32_t firstBinding = 0) const
 		{
-			auto &cmdBuffer = m_commandBuffers.at(cmdBufferName);
+			const auto &cmdBuffer = m_commandBuffers.at(cmdBufferName);
 
 			uint32_t numVertBuffers = static_cast<uint32_t>(bufferNames.size());
 			std::vector<VkBuffer> vertBuffers;
@@ -1580,20 +1578,20 @@ namespace rj
 			vkCmdBindVertexBuffers(cmdBuffer, firstBinding, numVertBuffers, vertBuffers.data(), offsets.data());
 		}
 
-		void cmdBindIndexBuffer(uint32_t cmdBufferName, uint32_t indexBufferName, VkIndexType type, VkDeviceSize offset = 0)
+		void cmdBindIndexBuffer(uint32_t cmdBufferName, uint32_t indexBufferName, VkIndexType type, VkDeviceSize offset = 0) const
 		{
-			auto &cmdBuffer = m_commandBuffers.at(cmdBufferName);
-			auto &idxBuffer = m_buffers.at(indexBufferName);
+			const auto &cmdBuffer = m_commandBuffers.at(cmdBufferName);
+			const auto &idxBuffer = m_buffers.at(indexBufferName);
 
 			vkCmdBindIndexBuffer(cmdBuffer, idxBuffer, offset, type);
 		}
 
 		void cmdBeginRenderPass(uint32_t cmdBufferName, uint32_t renderPassName, uint32_t frameBufferName,
-			std::vector<VkClearValue> &clearValues, VkRect2D renderArea = {}, VkSubpassContents subpassContents = VK_SUBPASS_CONTENTS_INLINE)
+			std::vector<VkClearValue> &clearValues, VkRect2D renderArea = {}, VkSubpassContents subpassContents = VK_SUBPASS_CONTENTS_INLINE) const
 		{
-			auto &cmdBuffer = m_commandBuffers.at(cmdBufferName);
-			auto &renderPass = m_renderPasses.at(renderPassName);
-			auto &framebuffer = m_framebuffers.at(frameBufferName);
+			const auto &cmdBuffer = m_commandBuffers.at(cmdBufferName);
+			const auto &renderPass = m_renderPasses.at(renderPassName);
+			const auto &framebuffer = m_framebuffers.at(frameBufferName);
 
 			renderArea.extent.width = renderArea.extent.width == 0 ? framebuffer.width() : renderArea.extent.width;
 			renderArea.extent.height = renderArea.extent.height == 0 ? framebuffer.height() : renderArea.extent.height;
@@ -1609,19 +1607,33 @@ namespace rj
 			vkCmdBeginRenderPass(cmdBuffer, &info, subpassContents);
 		}
 
-		void cmdBindPipeline(uint32_t cmdBufferName, VkPipelineBindPoint pipelineBindPoint, uint32_t pipelineName)
+		void cmdEndRenderPass(uint32_t cmdBufferName) const
 		{
-			auto &cmdBuffer = m_commandBuffers.at(cmdBufferName);
-			auto &pipeline = m_pipelines.at(pipelineName);
+			const auto &cmdBuffer = m_commandBuffers.at(cmdBufferName);
+
+			vkCmdEndRenderPass(cmdBuffer);
+		}
+
+		void cmdNextSubpass(uint32_t cmdBufferName, VkSubpassContents subpassContents = VK_SUBPASS_CONTENTS_INLINE) const
+		{
+			const auto &cmdBuffer = m_commandBuffers.at(cmdBufferName);
+
+			vkCmdNextSubpass(cmdBuffer, subpassContents);
+		}
+
+		void cmdBindPipeline(uint32_t cmdBufferName, VkPipelineBindPoint pipelineBindPoint, uint32_t pipelineName) const
+		{
+			const auto &cmdBuffer = m_commandBuffers.at(cmdBufferName);
+			const auto &pipeline = m_pipelines.at(pipelineName);
 
 			vkCmdBindPipeline(cmdBuffer, pipelineBindPoint, pipeline);
 		}
 
 		void cmdBindDescriptorSets(uint32_t cmdBufferName, VkPipelineBindPoint pipelineBindPoint, uint32_t pipelineLayoutName,
-			const std::vector<uint32_t> &descriptorSetNames, uint32_t firstSet = 0, const std::vector<uint32_t> &dynamicOffsets = {})
+			const std::vector<uint32_t> &descriptorSetNames, uint32_t firstSet = 0, const std::vector<uint32_t> &dynamicOffsets = {}) const
 		{
-			auto &cmdBuffer = m_commandBuffers.at(cmdBufferName);
-			auto &pipelineLayout = m_pipelineLayouts.at(pipelineLayoutName);
+			const auto &cmdBuffer = m_commandBuffers.at(cmdBufferName);
+			const auto &pipelineLayout = m_pipelineLayouts.at(pipelineLayoutName);
 
 			uint32_t numSets = static_cast<uint32_t>(descriptorSetNames.size());
 			std::vector<VkDescriptorSet> sets;
@@ -1638,10 +1650,10 @@ namespace rj
 		}
 
 		void cmdSetViewport(uint32_t cmdBufferName, uint32_t framebufferName, float topLeftU = 0.f, float topLeftV = 0.f,
-			float width = 1.f, float height = 1.f, float minDepth = 0.f, float maxDepth = 1.f)
+			float width = 1.f, float height = 1.f, float minDepth = 0.f, float maxDepth = 1.f) const
 		{
-			auto &cmdBuffer = m_commandBuffers.at(cmdBufferName);
-			auto &framebuffer = m_framebuffers.at(framebufferName);
+			const auto &cmdBuffer = m_commandBuffers.at(cmdBufferName);
+			const auto &framebuffer = m_framebuffers.at(framebufferName);
 
 			float fbWidth = static_cast<float>(framebuffer.width());
 			float fbHeight = static_cast<float>(framebuffer.height());
@@ -1658,9 +1670,9 @@ namespace rj
 		}
 
 		void cmdSetViewport(uint32_t cmdBufferName, float x, float y, float width, float height,
-			float minDepth = 0.f, float maxDepth = 1.f)
+			float minDepth = 0.f, float maxDepth = 1.f) const
 		{
-			auto &cmdBuffer = m_commandBuffers.at(cmdBufferName);
+			const auto &cmdBuffer = m_commandBuffers.at(cmdBufferName);
 
 			VkViewport viewport = {};
 			viewport.x = x;
@@ -1674,10 +1686,10 @@ namespace rj
 		}
 
 		void cmdSetScissor(uint32_t cmdBufferName, uint32_t framebufferName,
-			float topLeftU = 0.f, float topLeftV = 0.f, float width = 1.f, float height = 1.f)
+			float topLeftU = 0.f, float topLeftV = 0.f, float width = 1.f, float height = 1.f) const
 		{
-			auto &cmdBuffer = m_commandBuffers.at(cmdBufferName);
-			auto &framebuffer = m_framebuffers.at(framebufferName);
+			const auto &cmdBuffer = m_commandBuffers.at(cmdBufferName);
+			const auto &framebuffer = m_framebuffers.at(framebufferName);
 
 			float fbWidth = static_cast<float>(framebuffer.width());
 			float fbHeight = static_cast<float>(framebuffer.height());
@@ -1694,9 +1706,9 @@ namespace rj
 			vkCmdSetScissor(cmdBuffer, 0, 1, &scissor);
 		}
 
-		void cmdSetScissor(uint32_t cmdBufferName, int32_t x, int32_t y, uint32_t width, uint32_t height)
+		void cmdSetScissor(uint32_t cmdBufferName, int32_t x, int32_t y, uint32_t width, uint32_t height) const
 		{
-			auto &cmdBuffer = m_commandBuffers.at(cmdBufferName);
+			const auto &cmdBuffer = m_commandBuffers.at(cmdBufferName);
 
 			VkRect2D scissor = {};
 			scissor.offset = { x, y };
@@ -1704,7 +1716,158 @@ namespace rj
 
 			vkCmdSetScissor(cmdBuffer, 0, 1, &scissor);
 		}
+
+		void cmdDrawIndexed(uint32_t cmdBufferName, uint32_t indexCount, uint32_t instanceCount = 1, uint32_t firstIndex = 0,
+			int32_t vertexOffset = 0, uint32_t firstInstance = 0) const
+		{
+			const auto &cmdBuffer = m_commandBuffers.at(cmdBufferName);
+
+			vkCmdDrawIndexed(cmdBuffer, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
+		}
+
+		void cmdDraw(uint32_t cmdBufferName, uint32_t vertexCount, uint32_t instanceCount = 1,
+			uint32_t firstVertex = 0, uint32_t firstInstance = 0) const
+		{
+			const auto &cmdBuffer = m_commandBuffers.at(cmdBufferName);
+
+			vkCmdDraw(cmdBuffer, vertexCount, instanceCount, firstVertex, firstInstance);
+		}
+
+		void cmdPushConstants(uint32_t cmdBufferName, uint32_t pipelineLayoutName, VkShaderStageFlags shaderStages,
+			uint32_t offset, uint32_t sizeInBytes, const void *pValues) const
+		{
+			const auto &cmdBuffer = m_commandBuffers.at(cmdBufferName);
+			const auto &pipelineLayout = m_pipelineLayouts.at(pipelineLayoutName);
+
+			vkCmdPushConstants(cmdBuffer, pipelineLayout, shaderStages, offset, sizeInBytes, pValues);
+		}
+
+		void cmdDispatch(uint32_t cmdBufferName, uint32_t numBlocksX, uint32_t numBlocksY, uint32_t numBlocksZ)
+		{
+			const auto &cmdBuffer = m_commandBuffers.at(cmdBufferName);
+
+			vkCmdDispatch(cmdBuffer, numBlocksX, numBlocksY, numBlocksZ);
+		}
+
+		void queueWaitIdle(VkQueueFlags queueType) const
+		{
+			VkQueue queue = VK_NULL_HANDLE;
+			switch (queueType)
+			{
+			case VK_QUEUE_COMPUTE_BIT:
+				queue = m_device.getComputeQueue();
+				break;
+			default:
+				queue = m_device.getGraphicsQueue();
+				break;
+			}
+			vkQueueWaitIdle(queue);
+		}
+
+		void queueSubmit(VkQueueFlags queueType, const std::vector<uint32_t> &cmdBufferNames,
+			const std::vector<uint32_t> &waitSemaphoreNames = {},
+			const std::vector<VkPipelineStageFlags> &waitStageMasks = {},
+			const std::vector<uint32_t> &signalSemaphoreNames = {}) const
+		{
+			assert(!cmdBufferNames.empty());
+
+			VkQueue queue = VK_NULL_HANDLE;
+			switch (queueType)
+			{
+			case VK_QUEUE_COMPUTE_BIT:
+				queue = m_device.getComputeQueue();
+				break;
+			default:
+				queue = m_device.getGraphicsQueue();
+				break;
+			}
+
+			std::vector<VkCommandBuffer> cmdBuffers;
+			cmdBuffers.reserve(cmdBufferNames.size());
+			for (auto name : cmdBufferNames)
+			{
+				cmdBuffers.push_back(m_commandBuffers.at(name));
+			}
+
+			std::vector<VkSemaphore> waitSemaphores;
+			waitSemaphores.reserve(waitSemaphoreNames.size());
+			for (auto name : waitSemaphoreNames)
+			{
+				waitSemaphores.push_back(m_semaphores[name]);
+			}
+
+			std::vector<VkSemaphore> signalSemaphores;
+			signalSemaphores.reserve(signalSemaphoreNames.size());
+			for (auto name : signalSemaphoreNames)
+			{
+				signalSemaphores.push_back(m_semaphores[name]);
+			}
+
+			VkSubmitInfo info = {};
+			info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+			info.commandBufferCount = static_cast<uint32_t>(cmdBuffers.size());
+			info.pCommandBuffers = cmdBuffers.data();
+			info.pWaitDstStageMask = waitStageMasks.data();
+			info.waitSemaphoreCount = static_cast<uint32_t>(waitSemaphores.size());
+			info.pWaitSemaphores = waitSemaphores.data();
+			info.signalSemaphoreCount = static_cast<uint32_t>(signalSemaphores.size());
+			info.pSignalSemaphores = signalSemaphores.data();
+		}
 		// --- Command buffer related ---
+
+		// --- Synchronization objects ---
+		uint32_t createSemaphore(VkSemaphoreCreateFlags flags = 0)
+		{
+			uint32_t semaphoreName;
+			if (!m_availableSemaphoreNames.empty())
+			{
+				semaphoreName = m_availableSemaphoreNames.back();
+				m_availableSemaphoreNames.pop_back();
+			}
+			else
+			{
+				semaphoreName = static_cast<uint32_t>(m_semaphores.size());
+				m_semaphores.emplace_back(m_device, vkDestroySemaphore);
+			}
+
+			VkSemaphoreCreateInfo info = {};
+			info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+			info.flags = flags;
+
+			if (vkCreateSemaphore(m_device, &info, nullptr, m_semaphores[semaphoreName].replace()) != VK_SUCCESS)
+			{
+				throw std::runtime_error("unable to create semaphore");
+			}
+
+			return semaphoreName;
+		}
+
+		uint32_t createFence(VkFenceCreateFlags flags = 0)
+		{
+			uint32_t fenceName;
+			if (!m_availableFenceNames.empty())
+			{
+				fenceName = m_availableFenceNames.back();
+				m_availableFenceNames.pop_back();
+			}
+			else
+			{
+				fenceName = static_cast<uint32_t>(m_fences.size());
+				m_fences.emplace_back(m_device, vkDestroyFence);
+			}
+
+			VkFenceCreateInfo info = {};
+			info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+			info.flags = flags;
+
+			if (vkCreateFence(m_device, &info, nullptr, m_fences[fenceName].replace()) != VK_SUCCESS)
+			{
+				throw std::runtime_error("failed to create fence");
+			}
+
+			return fenceName;
+		}
+		// --- Synchronization objects ---
 
 	protected:
 		void createPipelineCache()
@@ -1756,13 +1919,12 @@ namespace rj
 		uint32_t m_curPipelineName;
 		std::unordered_map<uint32_t, VDeleter<VkPipeline>> m_pipelines;
 
-		static std::mutex g_commandPoolMutex;
 		const uint32_t m_singleSubmitCommandPoolName = 0;
 		std::unordered_map<uint32_t, VDeleter<VkCommandPool>> m_commandPools;
 
 		VkCommandBuffer m_singleTimeCommandBuffer;
 
-		static std::mutex g_commandBufferMutex;
+		static std::shared_mutex g_commandBufferMutex;
 		std::vector<uint32_t> m_commandBufferAvaiableNames;
 		std::unordered_map<uint32_t, std::vector<uint32_t>> m_commandBufferTable; // command buffers of each pool
 		std::unordered_map<uint32_t, VkCommandBuffer> m_commandBuffers;
@@ -1782,5 +1944,11 @@ namespace rj
 		DescriptorSetUpdateInfo m_curDescriptorSetInfo;
 		uint32_t m_curDescriptorSetName;
 		std::unordered_map<uint32_t, VkDescriptorSet> m_descriptorSets;
+
+		std::vector<uint32_t> m_availableSemaphoreNames;
+		std::vector<VDeleter<VkSemaphore>> m_semaphores;
+
+		std::vector<uint32_t> m_availableFenceNames;
+		std::vector<VDeleter<VkFence>> m_fences;
 	};
 }
