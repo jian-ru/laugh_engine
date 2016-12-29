@@ -9,6 +9,8 @@
 #include "VQueueFamilyIndices.h"
 #include "VImage.h"
 #include "VBuffer.h"
+#include "VSampler.h"
+#include "VFramebuffer.h"
 
 
 namespace rj
@@ -34,6 +36,7 @@ namespace rj
 
 		struct DescriptorSetLayoutCreateInfo
 		{
+			std::vector<std::vector<VkSampler>> immutableSamplers;
 			std::vector<VkDescriptorSetLayoutBinding> bindings;
 		};
 
@@ -371,16 +374,38 @@ namespace rj
 		}
 
 		void setLayoutAddBinding(uint32_t bindingPoint, VkDescriptorType type, VkShaderStageFlags shaderStages,
-			uint32_t count = 1, uint32_t immutableSamplerName = std::numeric_limits<uint32_t>::max())
+			uint32_t count = 1, const std::vector<uint32_t> &immutableSamplerNames = {})
 		{
 			m_curDescriptorSetInfo.bindings.push_back({});
 			VkDescriptorSetLayoutBinding &binding = m_curDescriptorSetInfo.bindings.back();
+			m_curDescriptorSetInfo.immutableSamplers.push_back({});
+			std::vector<VkSampler> &immutableSamplers = m_curDescriptorSetInfo.immutableSamplers.back();
 
 			binding.binding = bindingPoint;
 			binding.descriptorType = type;
 			binding.descriptorCount = count;
 			binding.stageFlags = shaderStages;
-			binding.pImmutableSamplers = &m_samplers[immutableSamplerName];
+
+			if (!immutableSamplerNames.empty())
+			{
+				immutableSamplers.reserve(immutableSamplerNames.size());
+				for (auto name : immutableSamplerNames)
+				{
+					immutableSamplers.push_back(m_samplers.at(name));
+				}
+			}
+
+			for (uint32_t i = 0; i < m_curDescriptorSetInfo.bindings.size(); ++i)
+			{
+				auto &b = m_curDescriptorSetInfo.bindings[i];
+				auto &is = m_curDescriptorSetInfo.immutableSamplers[i];
+
+				b.pImmutableSamplers = nullptr;
+				if (!is.empty())
+				{
+					b.pImmutableSamplers = is.data();
+				}
+			}
 		}
 
 		uint32_t endCreateDescriptorSetLayout()
@@ -1087,8 +1112,7 @@ namespace rj
 
 			transitionImageLayout(imageName, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
-			auto found = m_images.find(imageName);
-			auto &image = found->second;
+			auto &image = m_images.at(imageName);
 
 			VBuffer stagingBuffer{ m_device };
 			stagingBuffer.init(sizeInBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
@@ -1111,7 +1135,7 @@ namespace rj
 		}
 		// --- Image utilities ---
 
-		// --- Buffer creation ---
+		// --- Buffer related ---
 		uint32_t createBuffer(VkDeviceSize sizeInBytes, VkBufferUsageFlags usage, VkMemoryPropertyFlags memProps)
 		{
 			uint32_t bufferName = static_cast<uint32_t>(m_buffers.size());
@@ -1119,7 +1143,81 @@ namespace rj
 			m_buffers.at(bufferName).init(sizeInBytes, usage, memProps);
 			return bufferName;
 		}
-		// --- Buffer creation ---
+
+		void transferHostDataToBuffer(uint32_t bufferName, VkDeviceSize sizeInBytes, void *hostData, VkDeviceSize dstOffset = 0)
+		{
+			if (!hostData) throw std::invalid_argument("hostData cannot be null");
+			if (sizeInBytes == 0) throw std::invalid_argument("sizeInBytes cannot be 0");
+
+			auto &dstBuffer = m_buffers.at(bufferName);
+
+			VBuffer stagingBuffer{ m_device };
+			stagingBuffer.init(sizeInBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+			void *mapped = stagingBuffer.mapBuffer();
+			memcpy(mapped, hostData, sizeInBytes);
+			stagingBuffer.unmapBuffer();
+			mapped = nullptr;
+
+			beginSingleTimeCommands();
+			recordCopyBufferToBufferCommands(m_singleTimeCommandBuffer, stagingBuffer, dstBuffer, sizeInBytes, 0, dstOffset);
+			endSingleTimeCommands();
+		}
+		// --- Buffer related ---
+
+		// --- Sampler creation ---
+		uint32_t creationSampler(VkFilter magFilter, VkFilter minFilter, VkSamplerMipmapMode mipmapMode,
+			VkSamplerAddressMode addressModeU, VkSamplerAddressMode addressModeV, VkSamplerAddressMode addressModeW,
+			float minLod = 0.f, float maxLod = 0.f, float mipLodBias = 0.f, VkBool32 anisotropyEnable = VK_FALSE,
+			float maxAnisotropy = 0.f, VkBool32 compareEnable = VK_FALSE, VkCompareOp compareOp = VK_COMPARE_OP_NEVER,
+			VkBorderColor borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK, VkBool32 unnormailzedCoords = VK_FALSE,
+			VkSamplerCreateFlags flags = 0)
+		{
+			uint32_t samplerName = static_cast<uint32_t>(m_samplers.size());
+			m_samplers.emplace(std::piecewise_construct, std::forward_as_tuple(samplerName), std::forward_as_tuple(m_device));
+			m_samplers.at(samplerName).init(magFilter, minFilter, mipmapMode, addressModeU, addressModeV, addressModeW,
+				minLod, maxLod, mipLodBias, anisotropyEnable, maxAnisotropy, compareEnable, compareOp,
+				borderColor, unnormailzedCoords, flags);
+			return samplerName;
+		}
+		// --- Sampler creation ---
+
+		// --- Framebuffer creation ---
+		uint32_t createFramebuffer(uint32_t renderPassName, const std::vector<uint32_t> &attachmentViewNames)
+		{
+			VkRenderPass renderPass = m_renderPasses.at(renderPassName);
+			
+			bool first = true;
+			uint32_t width, height, layers;
+			std::vector<VkImageView> attachmentViews;
+			for (auto name : attachmentViewNames)
+			{
+				auto &view = m_imageViews.at(name);
+				VkExtent3D extent = view.image()->extent(view.baseLevel());
+
+				if (!first)
+				{
+					if (extent.width != width || extent.height != height || extent.depth != 1 ||
+						view.layers() != layers)
+					{
+						throw std::runtime_error("Image view cannot be used as framebuffer attachment");
+					}
+					first = false;
+				}
+
+				width = extent.width;
+				height = extent.height;
+				layers = view.layers();
+				attachmentViews.push_back(view);
+			}
+
+			uint32_t fbName = static_cast<uint32_t>(m_framebuffers.size());
+			m_framebuffers.emplace(std::piecewise_construct, std::forward_as_tuple(fbName), std::forward_as_tuple(m_device));
+			m_framebuffers.at(fbName).init(renderPass, attachmentViews, width, height, layers);
+			return fbName;
+		}
+		// --- Framebuffer creation ---
 
 		// --- Command buffer related ---
 		void beginSingleTimeCommands()
@@ -1216,6 +1314,8 @@ namespace rj
 
 		std::unordered_map<uint32_t, VImage> m_images;
 		std::unordered_map<uint32_t, VImageView> m_imageViews;
-		std::unordered_map<uint32_t, VDeleter<VkSampler>> m_samplers;
+		std::unordered_map<uint32_t, VSampler> m_samplers;
+
+		std::unordered_map<uint32_t, VFramebuffer> m_framebuffers;
 	};
 }

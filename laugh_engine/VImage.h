@@ -58,7 +58,15 @@ namespace rj
 
 		// --- Geters ---
 		bool isCubeImage() const { return m_isCubeImage; }
-		VkExtent3D extent() const { return m_extent; }
+
+		VkExtent3D extent(uint32_t level = 0) const
+		{
+			assert(level < m_mipLevelCount);
+			assert(m_extent.depth == 1 || level == 0);
+
+			return { (m_extent.width >> level), (m_extent.height >> level), m_extent.depth };
+		}
+		
 		uint32_t levels() const { return m_mipLevelCount; }
 		uint32_t layers() const { return m_arrayLayerCount; }
 		VkSampleCountFlagBits sampleCount() const { return m_sampleCount; }
@@ -151,6 +159,7 @@ namespace rj
 		uint32_t levels() const { return m_levelCount; }
 		uint32_t baseLayer() const { return m_baseArrayLayer; }
 		uint32_t layers() const { return m_layerCount; }
+		const VImage *image() const { return &m_image; }
 		// --- Geters ---
 
 	protected:

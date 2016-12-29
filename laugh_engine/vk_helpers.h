@@ -345,6 +345,17 @@ namespace rj
 				static_cast<uint32_t>(bufferCopyRegions.size()),
 				bufferCopyRegions.data());
 		}
+
+		void recordCopyBufferToBufferCommands(VkCommandBuffer commandBuffer,
+			VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize sizeInBytes,
+			VkDeviceSize srcOffset = 0, VkDeviceSize dstOffset = 0)
+		{
+			VkBufferCopy copyRegion = {};
+			copyRegion.srcOffset = srcOffset;
+			copyRegion.dstOffset = dstOffset;
+			copyRegion.size = sizeInBytes;
+			vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion);
+		}
 		// --- Data transfer ---
 	}
 }
