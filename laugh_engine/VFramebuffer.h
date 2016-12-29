@@ -42,6 +42,13 @@ namespace rj
 			m_layers = layers;
 		}
 
+		operator VkFramebuffer() const { return m_framebuffer; }
+
+		uint32_t attachmentCount() const { return m_attachmentCount; }
+		uint32_t width() const { return m_width; }
+		uint32_t height() const { return m_height; }
+		uint32_t layers() const { return m_layers; }
+
 	protected:
 		const VDevice *m_pDevice;
 

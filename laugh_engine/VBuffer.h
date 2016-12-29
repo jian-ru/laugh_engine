@@ -24,6 +24,7 @@ namespace rj
 		{
 			assert((m_memoryProperties & (VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
 				== (VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT));
+			assert(offset < m_sizeInBytes && offset + sizeInBytes <= m_sizeInBytes);
 
 			sizeInBytes = sizeInBytes == 0 ? m_sizeInBytes : sizeInBytes;
 			void *mapped = nullptr;
