@@ -11,6 +11,7 @@
 #include "VBuffer.h"
 #include "VSampler.h"
 #include "VFramebuffer.h"
+#include "VDescriptorPool.h"
 
 
 namespace rj
@@ -189,9 +190,36 @@ namespace rj
 				pipelineInfo.pDynamicState = nullptr;
 			}
 		};
+
+		struct DescriptorPoolCreateInfo
+		{
+			uint32_t maxSetCount;
+			std::vector<VkDescriptorPoolSize> poolSizes;
+		};
+
+		struct DescriptorSetUpdateInfo
+		{
+			std::unordered_map<uint32_t, std::vector<VkDescriptorBufferInfo>> bufferInfos;
+			std::unordered_map<uint32_t, std::vector<VkDescriptorImageInfo>> imageInfos;
+			std::vector<VkWriteDescriptorSet> writeInfos;
+		};
 	}
 
 	using namespace helper_functions;
+
+	struct DescriptorSetUpdateBufferInfo
+	{
+		uint32_t bufferName;
+		VkDeviceSize offset;
+		VkDeviceSize sizeInBytes;
+	};
+
+	struct DescriptorSetUpdateImageInfo
+	{
+		uint32_t samplerName;
+		uint32_t imageViewName;
+		VkImageLayout layout;
+	};
 
 	class VManager
 	{
@@ -368,7 +396,7 @@ namespace rj
 		// --- Descriptor set layout creation ---
 		void beginCreateDescriptorSetLayout()
 		{
-			m_curDescriptorSetInfo = {};
+			m_curSetLayoutInfo = {};
 			m_curSetLayoutName = static_cast<uint32_t>(m_descriptorSetLayouts.size());
 			m_descriptorSetLayouts[m_curSetLayoutName] = VDeleter<VkDescriptorSetLayout>{ m_device, vkDestroyDescriptorSetLayout };
 		}
@@ -376,10 +404,10 @@ namespace rj
 		void setLayoutAddBinding(uint32_t bindingPoint, VkDescriptorType type, VkShaderStageFlags shaderStages,
 			uint32_t count = 1, const std::vector<uint32_t> &immutableSamplerNames = {})
 		{
-			m_curDescriptorSetInfo.bindings.push_back({});
-			VkDescriptorSetLayoutBinding &binding = m_curDescriptorSetInfo.bindings.back();
-			m_curDescriptorSetInfo.immutableSamplers.push_back({});
-			std::vector<VkSampler> &immutableSamplers = m_curDescriptorSetInfo.immutableSamplers.back();
+			m_curSetLayoutInfo.bindings.push_back({});
+			VkDescriptorSetLayoutBinding &binding = m_curSetLayoutInfo.bindings.back();
+			m_curSetLayoutInfo.immutableSamplers.push_back({});
+			std::vector<VkSampler> &immutableSamplers = m_curSetLayoutInfo.immutableSamplers.back();
 
 			binding.binding = bindingPoint;
 			binding.descriptorType = type;
@@ -395,10 +423,10 @@ namespace rj
 				}
 			}
 
-			for (uint32_t i = 0; i < m_curDescriptorSetInfo.bindings.size(); ++i)
+			for (uint32_t i = 0; i < m_curSetLayoutInfo.bindings.size(); ++i)
 			{
-				auto &b = m_curDescriptorSetInfo.bindings[i];
-				auto &is = m_curDescriptorSetInfo.immutableSamplers[i];
+				auto &b = m_curSetLayoutInfo.bindings[i];
+				auto &is = m_curSetLayoutInfo.immutableSamplers[i];
 
 				b.pImmutableSamplers = nullptr;
 				if (!is.empty())
@@ -412,15 +440,15 @@ namespace rj
 		{
 			VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 			layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-			layoutInfo.bindingCount = static_cast<uint32_t>(m_curDescriptorSetInfo.bindings.size());
-			layoutInfo.pBindings = m_curDescriptorSetInfo.bindings.data();
+			layoutInfo.bindingCount = static_cast<uint32_t>(m_curSetLayoutInfo.bindings.size());
+			layoutInfo.pBindings = m_curSetLayoutInfo.bindings.data();
 
 			if (vkCreateDescriptorSetLayout(m_device, &layoutInfo, nullptr, m_descriptorSetLayouts[m_curSetLayoutName].replace()) != VK_SUCCESS)
 			{
 				throw std::runtime_error("failed to create descriptor set layout!");
 			}
 
-			m_curDescriptorSetInfo = {};
+			m_curSetLayoutInfo = {};
 			return m_curSetLayoutName;
 		}
 		// --- Descriptor set layout creation ---
@@ -1219,6 +1247,154 @@ namespace rj
 		}
 		// --- Framebuffer creation ---
 
+		// --- Descriptor pool creation ---
+		void beginCreateDescriptorPool(uint32_t maxNumSets)
+		{
+			m_curDescriptorPoolInfo = {};
+			m_curDescriptorPoolInfo.maxSetCount = maxNumSets;
+			m_curDescriptorPoolName = static_cast<uint32_t>(m_descriptorPools.size());
+			m_descriptorPools.emplace(std::piecewise_construct, std::forward_as_tuple(m_curDescriptorPoolName),
+				std::forward_as_tuple(m_device));
+		}
+
+		void descriptorPoolAddDescriptors(VkDescriptorType type, uint32_t count)
+		{
+			auto &poolSizes = m_curDescriptorPoolInfo.poolSizes;
+			
+			VkDescriptorPoolSize ps = {};
+			ps.type = type;
+			ps.descriptorCount = count;
+			poolSizes.push_back(ps);
+		}
+
+		uint32_t endCreateDescriptorPool()
+		{
+			uint32_t maxSet = m_curDescriptorPoolInfo.maxSetCount;
+			auto &poolSizes = m_curDescriptorPoolInfo.poolSizes;
+			m_descriptorPools.at(m_curDescriptorPoolName).init(maxSet, poolSizes);
+			
+			return m_curDescriptorPoolName;
+		}
+		// --- Descriptor pool creation ---
+
+		// --- Descriptor sets ---
+		std::vector<uint32_t> allocateDescriptorSets(uint32_t descriptorPoolName, const std::vector<uint32_t> &setLayoutNames)
+		{
+			auto &pool = m_descriptorPools.at(descriptorPoolName);
+			
+			std::vector<VkDescriptorSetLayout> layouts;
+			layouts.reserve(setLayoutNames.size());
+			for (auto name : setLayoutNames)
+			{
+				layouts.push_back(m_descriptorSetLayouts.at(name));
+			}
+
+			VkDescriptorSetAllocateInfo allocInfo = {};
+			allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+			allocInfo.descriptorPool = pool;
+			allocInfo.descriptorSetCount = static_cast<uint32_t>(layouts.size());
+			allocInfo.pSetLayouts = layouts.data();
+
+			std::vector<VkDescriptorSet> sets(layouts.size());
+			if (vkAllocateDescriptorSets(m_device, &allocInfo, sets.data()) != VK_SUCCESS)
+			{
+				throw std::runtime_error("failed to allocate descriptor set!");
+			}
+
+			std::vector<uint32_t> setNames;
+			setNames.reserve(sets.size());
+			uint32_t setName = static_cast<uint32_t>(m_descriptorSets.size());
+			for (auto set : sets)
+			{
+				setNames.push_back(setName);
+				m_descriptorSets.emplace(setName++, set);
+			}
+
+			return setNames;
+		}
+
+		void beginUpdateDescriptorSet(uint32_t setName)
+		{
+			assert(m_descriptorSets.find(setName) != m_descriptorSets.end());
+			m_curDescriptorSetInfo = {};
+			m_curDescriptorSetName = setName;
+		}
+
+		void descriptorSetAddBufferDescriptor(uint32_t binding, VkDescriptorType type, const std::vector<DescriptorSetUpdateBufferInfo> &updateInfos,
+			uint32_t baseArrayElement = 0)
+		{
+			assert(!updateInfos.empty());
+
+			auto &bufferInfoTable = m_curDescriptorSetInfo.bufferInfos;
+			assert(bufferInfoTable.find(binding) == bufferInfoTable.end());
+			bufferInfoTable[binding] = {};
+			auto &bufferInfos = bufferInfoTable[binding];
+
+			bufferInfos.reserve(updateInfos.size());
+			for (const auto &updateInfo : updateInfos)
+			{
+				VkDescriptorBufferInfo info = {};
+				info.buffer = m_buffers.at(updateInfo.bufferName);
+				info.offset = updateInfo.offset;
+				info.range = updateInfo.sizeInBytes;
+				bufferInfos.push_back(info);
+			}
+
+			auto &writeInfos = m_curDescriptorSetInfo.writeInfos;
+			writeInfos.push_back({});
+			auto &writeInfo = writeInfos.back();
+
+			writeInfo.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			writeInfo.dstSet = m_descriptorSets[m_curDescriptorSetName];
+			writeInfo.dstBinding = binding;
+			writeInfo.dstArrayElement = baseArrayElement;
+			writeInfo.descriptorType = type;
+			writeInfo.descriptorCount = static_cast<uint32_t>(bufferInfos.size());
+			writeInfo.pBufferInfo = bufferInfos.data();
+		}
+
+		void descriptorSetAddImageDescriptor(uint32_t binding, VkDescriptorType type, const std::vector<DescriptorSetUpdateImageInfo> &updateInfos,
+			uint32_t baseArrayElement = 0)
+		{
+			assert(!updateInfos.empty());
+
+			auto &imageInfoTable = m_curDescriptorSetInfo.imageInfos;
+			assert(imageInfoTable.find(binding) == imageInfoTable.end());
+			auto &imageInfos = imageInfoTable.at(binding);
+
+			imageInfos.reserve(updateInfos.size());
+			for (const auto &updateInfo : updateInfos)
+			{
+				VkDescriptorImageInfo info = {};
+				info.sampler = updateInfo.samplerName == std::numeric_limits<uint32_t>::max() ? VK_NULL_HANDLE : m_samplers.at(updateInfo.samplerName);
+				info.imageView = m_imageViews.at(updateInfo.imageViewName);
+				info.imageLayout = updateInfo.layout;
+				imageInfos.push_back(info);
+			}
+
+			auto &writeInfos = m_curDescriptorSetInfo.writeInfos;
+			writeInfos.push_back({});
+			auto &writeInfo = writeInfos.back();
+
+			writeInfo.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			writeInfo.dstSet = m_descriptorSets[m_curDescriptorSetName];
+			writeInfo.dstBinding = binding;
+			writeInfo.dstArrayElement = baseArrayElement;
+			writeInfo.descriptorType = type;
+			writeInfo.descriptorCount = static_cast<uint32_t>(imageInfos.size());
+			writeInfo.pImageInfo = imageInfos.data();
+		}
+
+		void endUpdateDescriptorSet()
+		{
+			vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(m_curDescriptorSetInfo.writeInfos.size()),
+				m_curDescriptorSetInfo.writeInfos.data(), 0, nullptr);
+
+			m_curDescriptorSetName = std::numeric_limits<uint32_t>::max();
+			m_curDescriptorSetInfo = {};
+		}
+		// --- Descriptor sets ---
+
 		// --- Command buffer related ---
 		void beginSingleTimeCommands()
 		{
@@ -1289,7 +1465,7 @@ namespace rj
 		SubpassCreateInfo *m_pCurSubpassInfo;
 		std::unordered_map<uint32_t, VDeleter<VkRenderPass>> m_renderPasses;
 
-		DescriptorSetLayoutCreateInfo m_curDescriptorSetInfo;
+		DescriptorSetLayoutCreateInfo m_curSetLayoutInfo;
 		uint32_t m_curSetLayoutName;
 		std::unordered_map<uint32_t, VDeleter<VkDescriptorSetLayout>> m_descriptorSetLayouts;
 
@@ -1317,5 +1493,13 @@ namespace rj
 		std::unordered_map<uint32_t, VSampler> m_samplers;
 
 		std::unordered_map<uint32_t, VFramebuffer> m_framebuffers;
+
+		DescriptorPoolCreateInfo m_curDescriptorPoolInfo;
+		uint32_t m_curDescriptorPoolName;
+		std::unordered_map<uint32_t, VDescriptorPool> m_descriptorPools;
+
+		DescriptorSetUpdateInfo m_curDescriptorSetInfo;
+		uint32_t m_curDescriptorSetName;
+		std::unordered_map<uint32_t, VkDescriptorSet> m_descriptorSets;
 	};
 }
