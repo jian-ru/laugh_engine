@@ -22,7 +22,7 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="VManager.cpp">
-      <Filter>Resource Files</Filter>
+      <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -72,6 +72,18 @@
       <Filter>Header Files\Vulkan</Filter>
     </ClInclude>
     <ClInclude Include="VImage.h">
+      <Filter>Header Files\Vulkan</Filter>
+    </ClInclude>
+    <ClInclude Include="VBuffer.h">
+      <Filter>Header Files\Vulkan</Filter>
+    </ClInclude>
+    <ClInclude Include="VSampler.h">
+      <Filter>Header Files\Vulkan</Filter>
+    </ClInclude>
+    <ClInclude Include="VFramebuffer.h">
+      <Filter>Header Files\Vulkan</Filter>
+    </ClInclude>
+    <ClInclude Include="VDescriptorPool.h">
       <Filter>Header Files\Vulkan</Filter>
     </ClInclude>
   </ItemGroup>
