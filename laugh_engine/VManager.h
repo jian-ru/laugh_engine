@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mutex>
 #include <set>
 #include <unordered_map>
 #include <memory>
@@ -466,7 +467,7 @@ namespace rj
 			for (auto name : setLayoutNames)
 			{
 				auto found = m_descriptorSetLayouts.find(name);
-				
+
 				if (found == m_descriptorSetLayouts.end())
 				{
 					throw std::runtime_error("cannot find descriptor set layout");
@@ -1020,40 +1021,6 @@ namespace rj
 		}
 		// --- Compute pipeline creation ---
 
-		// --- Command pool creation ---
-		uint32_t createCommandPool(VkQueueFlagBits submitQueueType, VkCommandPoolCreateFlags flags = 0)
-		{
-			uint32_t queueFamilyIndex;
-			const auto &queueFamilyIndices = m_device.getQueueFamilyIndices();
-			switch(submitQueueType)
-			{
-			case VK_QUEUE_GRAPHICS_BIT:
-				queueFamilyIndex = queueFamilyIndices.graphicsFamily;
-				break;
-			case VK_QUEUE_COMPUTE_BIT:
-				queueFamilyIndex = queueFamilyIndices.computeFamily;
-				break;
-			case VK_QUEUE_TRANSFER_BIT:
-				queueFamilyIndex = queueFamilyIndices.transferFamily;
-			default:
-				throw std::invalid_argument("unsupported queue type specified during command pool creation");
-			}
-
-			uint32_t newPoolName = static_cast<uint32_t>(m_commandPools.size());
-			m_commandPools[newPoolName] = VDeleter<VkCommandPool>{ m_device, vkDestroyCommandPool };
-
-			VkCommandPoolCreateInfo poolInfo = {};
-			poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-			poolInfo.queueFamilyIndex = queueFamilyIndex;
-			poolInfo.flags = flags;
-
-			if (vkCreateCommandPool(m_device, &poolInfo, nullptr, m_commandPools[newPoolName].replace()) != VK_SUCCESS)
-			{
-				throw std::runtime_error("failed to create command pool!");
-			}
-		}
-		// --- Command pool creation ---
-
 		// --- Image creation ---
 		uint32_t createImage2D(uint32_t width, uint32_t height, VkFormat format, VkImageUsageFlags usage, VkMemoryPropertyFlags memProps,
 			uint32_t mipLevels = 1, uint32_t arrayLayers = 1, VkSampleCountFlagBits sampleCount = VK_SAMPLE_COUNT_1_BIT,
@@ -1395,6 +1362,74 @@ namespace rj
 		}
 		// --- Descriptor sets ---
 
+		// --- Command pool related ---
+		uint32_t createCommandPool(VkQueueFlagBits submitQueueType, VkCommandPoolCreateFlags flags = 0)
+		{
+			uint32_t queueFamilyIndex;
+			const auto &queueFamilyIndices = m_device.getQueueFamilyIndices();
+			switch (submitQueueType)
+			{
+			case VK_QUEUE_GRAPHICS_BIT:
+				queueFamilyIndex = queueFamilyIndices.graphicsFamily;
+				break;
+			case VK_QUEUE_COMPUTE_BIT:
+				queueFamilyIndex = queueFamilyIndices.computeFamily;
+				break;
+			case VK_QUEUE_TRANSFER_BIT:
+				queueFamilyIndex = queueFamilyIndices.transferFamily;
+			default:
+				throw std::invalid_argument("unsupported queue type specified during command pool creation");
+			}
+
+			uint32_t newPoolName = static_cast<uint32_t>(m_commandPools.size());
+			{
+				std::lock_guard<std::mutex> guard(g_commandPoolMutex);
+				m_commandPools.emplace(std::piecewise_construct, std::forward_as_tuple(newPoolName),
+					std::forward_as_tuple(m_device, vkDestroyCommandPool));
+			}
+
+			VkCommandPoolCreateInfo poolInfo = {};
+			poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+			poolInfo.queueFamilyIndex = queueFamilyIndex;
+			poolInfo.flags = flags;
+
+			auto &pool = m_commandPools[newPoolName];
+			if (vkCreateCommandPool(m_device, &poolInfo, nullptr, pool.replace()) != VK_SUCCESS)
+			{
+				throw std::runtime_error("failed to create command pool!");
+			}
+
+			{
+				std::lock_guard<std::mutex> gaurd(g_commandBufferMutex);
+				m_commandBufferAvaiableNameTable[pool] = {};
+				m_commandBufferTable[pool] = {};
+			}
+
+			return newPoolName;
+		}
+
+		void resetCommandPool(uint32_t commandPoolName, VkCommandPoolResetFlags flags = 0)
+		{
+			VkCommandPool pool = VK_NULL_HANDLE;
+			{
+				std::lock_guard<std::mutex> guard(g_commandPoolMutex);
+				pool = m_commandPools.at(commandPoolName);
+			}
+
+			if (vkResetCommandPool(m_device, pool, flags) != VK_SUCCESS)
+			{
+				throw std::runtime_error("failed to reset command buffer");
+			}
+
+			if (flags & VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT)
+			{
+				std::lock_guard<std::mutex> guard(g_commandBufferMutex);
+				m_commandBufferAvaiableNameTable[pool] = {};
+				m_commandBufferTable[pool] = {};
+			}
+		}
+		// --- Command pool related ---
+
 		// --- Command buffer related ---
 		void beginSingleTimeCommands()
 		{
@@ -1428,6 +1463,44 @@ namespace rj
 			vkFreeCommandBuffers(m_device, m_commandPools[m_singleSubmitCommandPoolName], 1, &m_singleTimeCommandBuffer);
 
 			m_singleTimeCommandBuffer = VK_NULL_HANDLE;
+		}
+
+		std::vector<uint32_t> allocateCommandBuffers(uint32_t poolName, uint32_t count,
+			VkCommandBufferLevel level = VK_COMMAND_BUFFER_LEVEL_PRIMARY)
+		{
+			VkCommandPool pool = VK_NULL_HANDLE;
+			{
+				std::lock_guard<std::mutex> guard(g_commandPoolMutex);
+				pool = m_commandPools.at(poolName);
+			}
+
+			VkCommandBufferAllocateInfo allocInfo = {};
+			allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+			allocInfo.level = level;
+			allocInfo.commandPool = pool;
+			allocInfo.commandBufferCount = count;
+
+			std::vector<VkCommandBuffer> commandBuffers(count);
+			if (vkAllocateCommandBuffers(m_device, &allocInfo, commandBuffers.data()) != VK_SUCCESS)
+			{
+				throw std::runtime_error("failed to allocate command buffers!");
+			}
+
+			uint32_t firstCommandBuffer;
+			{
+				std::lock_guard<std::mutex> guard(g_commandBufferMutex);
+				auto &cbTable = m_commandBufferTable[pool];
+				firstCommandBuffer = static_cast<uint32_t>(cbTable.size());
+				cbTable.insert(cbTable.end(), commandBuffers.begin(), commandBuffers.end());
+			}
+
+			std::vector<uint32_t> commandBufferNames;
+			commandBufferNames.reserve(count);
+			for (uint32_t i = firstCommandBuffer; i < count; ++i)
+			{
+				commandBufferNames.push_back(i);
+			}
+			return commandBufferNames;
 		}
 		// --- Command buffer related ---
 
@@ -1481,8 +1554,13 @@ namespace rj
 		uint32_t m_curPipelineName;
 		std::unordered_map<uint32_t, VDeleter<VkPipeline>> m_pipelines;
 
+		static std::mutex g_commandPoolMutex;
 		const uint32_t m_singleSubmitCommandPoolName = 0;
 		std::unordered_map<uint32_t, VDeleter<VkCommandPool>> m_commandPools;
+
+		static std::mutex g_commandBufferMutex;
+		std::unordered_map<VkCommandPool, std::vector<uint32_t>> m_commandBufferAvaiableNameTable;
+		std::unordered_map<VkCommandPool, std::vector<VkCommandBuffer>> m_commandBufferTable;
 
 		VkCommandBuffer m_singleTimeCommandBuffer = VK_NULL_HANDLE;
 
