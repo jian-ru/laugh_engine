@@ -49,6 +49,12 @@ namespace rj
 			return static_cast<VkSurfaceKHR>(m_surface);
 		}
 
+		GLFWwindow *getWindow() const
+		{
+			assert(m_window);
+			return m_window;
+		}
+
 		void getExtent(uint32_t *pWidth, uint32_t *pHeight) const
 		{
 			*pWidth = m_width;

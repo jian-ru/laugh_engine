@@ -5,14 +5,15 @@
 #include "glm/glm.hpp"
 #include "glm/gtx/hash.hpp"
 
-#include <vulkan/vulkan.h>
-#include <unordered_map>
+#include "gli/gli.hpp"
+#include "gli/convert.hpp"
+#include "gli/generate_mipmaps.hpp"
 
 #include "assimp/Importer.hpp"
 #include "assimp/scene.h"    
 #include "assimp/postprocess.h"
 #include "assimp/cimport.h"
-#include "vutils.h"
+#include "VManager.h"
 
 
 #define DIFF_IRRADIANCE_MAP_SIZE 32
@@ -42,9 +43,9 @@ struct Vertex
 		return bindingDescription;
 	}
 
-	static std::array<VkVertexInputAttributeDescription, 3> getAttributeDescriptions()
+	static std::vector<VkVertexInputAttributeDescription> getAttributeDescriptions()
 	{
-		std::array<VkVertexInputAttributeDescription, 3> attributeDescriptions = {};
+		std::vector<VkVertexInputAttributeDescription> attributeDescriptions(3, {});
 
 		attributeDescriptions[0].binding = 0;
 		attributeDescriptions[0].location = 0;
@@ -65,12 +66,23 @@ struct Vertex
 	}
 };
 
+struct ImageWrapper
+{
+	uint32_t image;
+	std::vector<uint32_t> imageViews;
+
+	VkFormat format;
+	uint32_t width, height, depth = 1;
+	uint32_t mipLevelCount;
+};
+
 namespace std
 {
 	template<> struct hash<Vertex>
 	{
 		size_t operator()(Vertex const& vertex) const
 		{
+			using namespace rj::helper_functions;
 			size_t seed = 0;
 			hash_combine(seed, vertex.pos);
 			hash_combine(seed, vertex.normal);
@@ -78,6 +90,143 @@ namespace std
 			return seed;
 		}
 	};
+}
+
+namespace rj
+{
+	namespace helper_functions
+	{
+		void loadMeshIntoHostBuffers(const std::string &modelFileName,
+			std::vector<Vertex> &hostVerts, std::vector<uint32_t> &hostIndices)
+		{
+			Assimp::Importer meshImporter;
+			const aiScene *scene = nullptr;
+
+			const uint32_t defaultFlags =
+				aiProcess_FlipWindingOrder |
+				aiProcess_Triangulate |
+				aiProcess_PreTransformVertices |
+				aiProcess_GenSmoothNormals;
+
+			scene = meshImporter.ReadFile(modelFileName, defaultFlags);
+
+			std::unordered_map<Vertex, uint32_t> vert2IdxLut;
+
+			for (uint32_t i = 0; i < scene->mNumMeshes; ++i)
+			{
+				const aiMesh *mesh = scene->mMeshes[i];
+				const aiVector3D *vertices = mesh->mVertices;
+				const aiVector3D *normals = mesh->mNormals;
+				const aiVector3D *texCoords = mesh->mTextureCoords[0];
+				const auto *faces = mesh->mFaces;
+
+				if (!normals || !texCoords)
+				{
+					throw std::runtime_error("model must have normals and uvs.");
+				}
+
+				for (uint32_t j = 0; j < mesh->mNumFaces; ++j)
+				{
+					const aiFace &face = faces[j];
+
+					if (face.mNumIndices != 3) continue;
+
+					for (uint32_t k = 0; k < face.mNumIndices; ++k)
+					{
+						uint32_t idx = face.mIndices[k];
+						const aiVector3D &pos = vertices[idx];
+						const aiVector3D &nrm = normals[idx];
+						const aiVector3D &texCoord = texCoords[idx];
+
+						Vertex vert =
+						{
+							glm::vec3(pos.x, pos.y, pos.z),
+							glm::vec3(nrm.x, nrm.y, nrm.z),
+							glm::vec2(texCoord.x, 1.f - texCoord.y)
+						};
+
+						const auto searchResult = vert2IdxLut.find(vert);
+						if (searchResult == vert2IdxLut.end())
+						{
+							uint32_t newIdx = static_cast<uint32_t>(hostVerts.size());
+							vert2IdxLut[vert] = newIdx;
+							hostIndices.emplace_back(newIdx);
+							hostVerts.emplace_back(vert);
+						}
+						else
+						{
+							hostIndices.emplace_back(searchResult->second);
+						}
+					}
+				}
+			}
+		}
+
+		void loadTexture2D(ImageWrapper *pTexRet, VManager *pManager, const std::string &fn, bool generateMipLevels = true)
+		{
+			std::string ext = getFileExtension(fn);
+			if (ext != "ktx" && ext != "dds")
+			{
+				throw std::runtime_error("texture type ." + ext + " is not supported.");
+			}
+
+			gli::texture2d textureSrc(gli::load(fn.c_str()));
+
+			if (textureSrc.empty())
+			{
+				throw std::runtime_error("cannot load texture.");
+			}
+
+			gli::texture2d textureMipmapped;
+			if (textureSrc.levels() == 1 && generateMipLevels)
+			{
+				textureMipmapped = gli::generate_mipmaps(textureSrc, gli::FILTER_LINEAR);
+			}
+			else
+			{
+				textureMipmapped = textureSrc;
+			}
+
+			VkFormat format;
+			switch (textureMipmapped.format())
+			{
+			case gli::FORMAT_RGBA8_UNORM_PACK8:
+				format = VK_FORMAT_R8G8B8A8_UNORM;
+				break;
+			case gli::FORMAT_RGBA32_SFLOAT_PACK32:
+				format = VK_FORMAT_R32G32B32A32_SFLOAT;
+				break;
+			case gli::FORMAT_RGBA_DXT5_UNORM_BLOCK16:
+				format = VK_FORMAT_BC3_UNORM_BLOCK;
+				break;
+			case gli::FORMAT_RG32_SFLOAT_PACK32:
+				format = VK_FORMAT_R32G32_SFLOAT;
+				break;
+			default:
+				throw std::runtime_error("texture format is not supported.");
+			}
+
+			uint32_t width = static_cast<uint32_t>(textureMipmapped.extent().x);
+			uint32_t height = static_cast<uint32_t>(textureMipmapped.extent().y);
+			uint32_t mipLevels = static_cast<uint32_t>(textureMipmapped.levels());
+			size_t sizeInBytes = textureMipmapped.size();
+
+			pTexRet->width = width;
+			pTexRet->height = height;
+			pTexRet->format = format;
+			pTexRet->mipLevelCount = mipLevels;
+
+			pTexRet->image = pManager->createImage2D(width, height, format,
+				VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+				mipLevels);
+
+			pManager->transferHostDataToImage(pTexRet->image, sizeInBytes, textureMipmapped.data(),
+				VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+			pTexRet->imageViews.push_back(pManager->createImageView2D(pTexRet->image, VK_IMAGE_ASPECT_COLOR_BIT, 0, mipLevels));
+		}
+	}
 }
 
 enum MaterialType
@@ -100,6 +249,8 @@ class VMesh
 public:
 	const static uint32_t numMapsPerMesh = 5;
 
+	rj::VManager *pVulkanManager;
+
 	PerModelUniformBuffer *uPerModelInfo = nullptr;
 
 	bool uniformDataChanged = true;
@@ -107,8 +258,8 @@ public:
 	glm::quat worldRotation{ glm::vec3(0.f, 0.f, 0.f) }; // Euler angles to quaternion
 	float scale = 1.f;
 
-	BufferWrapper vertexBuffer;
-	BufferWrapper indexBuffer;
+	uint32_t vertexBuffer;
+	uint32_t indexBuffer;
 
 	ImageWrapper albedoMap;
 	ImageWrapper normalMap;
@@ -118,89 +269,11 @@ public:
 
 	MaterialType_t materialType = MATERIAL_TYPE_FSCHLICK_DGGX_GSMITH;
 
-	static void loadMeshIntoHostBuffers(
-		const std::string &modelFileName,
-		std::vector<Vertex> &hostVerts, std::vector<uint32_t> &hostIndices)
-	{
-		Assimp::Importer meshImporter;
-		const aiScene *scene = nullptr;
 
-		const uint32_t defaultFlags =
-			aiProcess_FlipWindingOrder |
-			aiProcess_Triangulate |
-			aiProcess_PreTransformVertices |
-			//aiProcess_CalcTangentSpace |
-			aiProcess_GenSmoothNormals;
-
-		scene = meshImporter.ReadFile(modelFileName, defaultFlags);
-
-		std::unordered_map<Vertex, uint32_t> vert2IdxLut;
-
-		for (uint32_t i = 0; i < scene->mNumMeshes; ++i)
-		{
-			const aiMesh *mesh = scene->mMeshes[i];
-			const aiVector3D *vertices = mesh->mVertices;
-			const aiVector3D *normals = mesh->mNormals;
-			const aiVector3D *texCoords = mesh->mTextureCoords[0];
-			const auto *faces = mesh->mFaces;
-
-			if (!normals || !texCoords)
-			{
-				throw std::runtime_error("model must have normals, tangents, and uvs.");
-			}
-
-			for (uint32_t j = 0; j < mesh->mNumFaces; ++j)
-			{
-				const aiFace &face = faces[j];
-
-				if (face.mNumIndices != 3) continue;
-
-				for (uint32_t k = 0; k < face.mNumIndices; ++k)
-				{
-					uint32_t idx = face.mIndices[k];
-					const aiVector3D &pos = vertices[idx];
-					const aiVector3D &nrm = normals[idx];
-					const aiVector3D &texCoord = texCoords[idx];
-
-					Vertex vert =
-					{
-						glm::vec3(pos.x, pos.y, pos.z),
-						glm::vec3(nrm.x, nrm.y, nrm.z),
-						glm::vec2(texCoord.x, 1.f - texCoord.y)
-					};
-
-					const auto searchResult = vert2IdxLut.find(vert);
-					if (searchResult == vert2IdxLut.end())
-					{
-						uint32_t newIdx = static_cast<uint32_t>(hostVerts.size());
-						vert2IdxLut[vert] = newIdx;
-						hostIndices.emplace_back(newIdx);
-						hostVerts.emplace_back(vert);
-					}
-					else
-					{
-						hostIndices.emplace_back(searchResult->second);
-					}
-				}
-			}
-		}
-	}
-
-	VMesh(const VDeleter<VkDevice> &device) :
-		vertexBuffer{ device },
-		indexBuffer{ device },
-		albedoMap{ device },
-		normalMap{ device },
-		roughnessMap{ device },
-		metalnessMap{ device },
-		aoMap{ device }
+	VMesh(rj::VManager *pManager) : pVulkanManager(pManager)
 	{}
 
 	void load(
-		VkPhysicalDevice physicalDevice,
-		const VDeleter<VkDevice> &device,
-		VkCommandPool commandPool,
-		VkQueue submitQueue,
 		const std::string &modelFileName,
 		const std::string &albedoMapName,
 		const std::string &normalMapName,
@@ -208,26 +281,28 @@ public:
 		const std::string &metalnessMapName,
 		const std::string &aoMapName = "")
 	{
+		using namespace rj::helper_functions;
+
 		// load textures
 		if (albedoMapName != "")
 		{
-			loadTexture(physicalDevice, device, commandPool, submitQueue, albedoMapName, albedoMap);
+			loadTexture2D(&albedoMap, pVulkanManager, albedoMapName);
 		}
 		if (normalMapName != "")
 		{
-			loadTexture(physicalDevice, device, commandPool, submitQueue, normalMapName, normalMap);
+			loadTexture2D(&normalMap, pVulkanManager, normalMapName);
 		}
 		if (roughnessMapName != "")
 		{
-			loadTexture(physicalDevice, device, commandPool, submitQueue, roughnessMapName, roughnessMap);
+			loadTexture2D(&roughnessMap, pVulkanManager, roughnessMapName);
 		}
 		if (metalnessMapName != "")
 		{
-			loadTexture(physicalDevice, device, commandPool, submitQueue, metalnessMapName, metalnessMap);
+			loadTexture2D(&metalnessMap, pVulkanManager, metalnessMapName);
 		}
 		if (aoMapName != "")
 		{
-			loadTexture(physicalDevice, device, commandPool, submitQueue, aoMapName, aoMap);
+			loadTexture2D(&aoMap, pVulkanManager, aoMapName);
 		}
 
 		// load mesh

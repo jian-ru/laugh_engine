@@ -1,24 +1,12 @@
 #pragma once
 
-#define GLFW_INCLUDE_VULKAN
-#include "GLFW/glfw3.h"
-#define GLM_FORCE_RADIANS
-#define GLM_FORCE_DEPTH_ZERO_TO_ONE
-#include "glm/glm.hpp"
-#include "glm/gtc/matrix_transform.hpp"
-#include "glm/gtx/hash.hpp"
-
 #include <string>
 #include <algorithm>
 #include <sstream>
 #include <iomanip>
 
-#include "common_utils.h"
-#include "vdeleter.h"
-#include "vutils.h"
 #include "camera.h"
-#include "vtextoverlay.h"
-#include "vmesh.h"
+#include "VManager.h"
 
 
 enum DisplayMode
@@ -54,30 +42,6 @@ public:
 		glm::vec3(0.326926917f, 0.0790613592f, -0.198676541f),
 		glm::radians(45.f), float(m_width) / m_height, .1f, 100.f };
 
-#ifdef NDEBUG
-	bool enableValidationLayers = false;
-#else
-	bool enableValidationLayers = true;
-#endif
-	const std::vector<const char*> m_validationLayers{ { "VK_LAYER_LUNARG_standard_validation" } };
-
-	// Device specific extensions
-	const std::vector<const char*> m_deviceExtensions{ { VK_KHR_SWAPCHAIN_EXTENSION_NAME } };
-
-
-	static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
-		VkDebugReportFlagsEXT flags,
-		VkDebugReportObjectTypeEXT objType,
-		uint64_t obj,
-		size_t location,
-		int32_t code,
-		const char* layerPrefix,
-		const char* msg,
-		void* userData)
-	{
-		std::cerr << "validation layer: " << msg << std::endl;
-		return VK_FALSE;
-	}
 
 	static void onWindowResized(GLFWwindow* window, int width, int height)
 	{
@@ -162,39 +126,22 @@ public:
 	virtual void run();
 
 protected:
-	VDeleter<VkInstance> m_instance{ vkDestroyInstance };
-	VDeleter<VkDebugReportCallbackEXT> m_debugReportCB{ m_instance, destroyDebugReportCallbackEXT };
-	
-	GLFWwindow *m_window = nullptr;
-	VDeleter<VkSurfaceKHR> m_surface{ m_instance, vkDestroySurfaceKHR };
+	VkPhysicalDeviceFeatures m_physicalDeviceFeatures;
 
-	VkPhysicalDevice m_physicalDevice = VK_NULL_HANDLE; // implicitly destroyed when the instance is destroyed
-	QueueFamilyIndices m_queueFamilyIndices; // queue families used by this app
-	VDeleter<VkDevice> m_device{ vkDestroyDevice };
+	rj::VManager m_vulkanManager{ this, keyCB, mouseButtonCB, cursorPositionCB, scrollCB, onWindowResized, m_width, m_height, m_windowTitle, getEnabledPhysicalDeviceFeatures() };
 
-	VkQueue m_graphicsQueue; // queues are implicitly released when the logical device is released
-	VkQueue m_presentQueue;
-	VkQueue m_computeQueue;
+	uint32_t m_descriptorPool;
 
-	SwapChainWrapper m_swapChain{ m_device };
-
-	VDeleter<VkDescriptorPool> m_descriptorPool{ m_device, vkDestroyDescriptorPool };
-
-	VDeleter<VkCommandPool> m_graphicsCommandPool{ m_device, vkDestroyCommandPool };
-	VDeleter<VkCommandPool> m_computeCommandPool{ m_device, vkDestroyCommandPool };
-	std::vector<VkCommandBuffer> m_presentCommandBuffers;
-	std::vector<VDeleter<VkFramebuffer>> m_finalOutputFramebuffers; // present framebuffers
-
-	VDeleter<VkPipelineCache> m_pipelineCache{ m_device, vkDestroyPipelineCache };
+	uint32_t m_graphicsCommandPool;
+	uint32_t m_computeCommandPool;
+	std::vector<uint32_t> m_presentCommandBuffers;
+	std::vector<uint32_t> m_finalOutputFramebuffers; // present framebuffer names
 
 	Skybox m_skybox{ m_device };
 	std::vector<VMesh> m_models;
 	std::vector<BakedBRDF> m_bakedBRDFs;
 	bool m_bakedBrdfReady = false;
 	bool m_shouldSaveBakedBrdf = false;
-
-	VTextOverlay m_textOverlay{ m_physicalDevice, m_device, m_queueFamilyIndices, m_graphicsQueue, m_swapChain, m_finalOutputFramebuffers };
-	Timer m_perfTimer;
 
 
 	virtual void initVulkan();
@@ -208,7 +155,7 @@ protected:
 
 	// Let the app pick the queue families they need
 	virtual std::set<int> getUniqueQueueFamilyIndices();
-	virtual void getEnabledPhysicalDeviceFeatures(VkPhysicalDeviceFeatures &features);
+	virtual const VkPhysicalDeviceFeatures &getEnabledPhysicalDeviceFeatures();
 	virtual void getRequiredQueues();
 
 	virtual VkSurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& availableFormats);
@@ -612,10 +559,13 @@ std::set<int> VBaseGraphics::getUniqueQueueFamilyIndices()
 	return{ m_queueFamilyIndices.graphicsFamily, m_queueFamilyIndices.presentFamily };
 }
 
-void VBaseGraphics::getEnabledPhysicalDeviceFeatures(VkPhysicalDeviceFeatures &features)
+const VkPhysicalDeviceFeatures &VBaseGraphics::getEnabledPhysicalDeviceFeatures()
 {
-	features.shaderStorageImageExtendedFormats = VK_TRUE;
-	features.geometryShader = VK_TRUE;
+	m_physicalDeviceFeatures = {};
+	m_physicalDeviceFeatures.shaderStorageImageExtendedFormats = VK_TRUE;
+	m_physicalDeviceFeatures.geometryShader = VK_TRUE;
+
+	return m_physicalDeviceFeatures;
 }
 
 void VBaseGraphics::getRequiredQueues()

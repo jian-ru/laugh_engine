@@ -240,6 +240,8 @@ namespace rj
 			createSingleSubmitCommandPool();
 		}
 
+		virtual ~VManager() {}
+
 		// --- Render pass creation ---
 		void beginCreateRenderPass()
 		{
@@ -1133,10 +1135,27 @@ namespace rj
 		// --- Buffer related ---
 		uint32_t createBuffer(VkDeviceSize sizeInBytes, VkBufferUsageFlags usage, VkMemoryPropertyFlags memProps)
 		{
-			uint32_t bufferName = static_cast<uint32_t>(m_buffers.size());
-			m_buffers.emplace(std::piecewise_construct, std::forward_as_tuple(bufferName), std::forward_as_tuple(m_device));
+			uint32_t bufferName;
+			if (!m_availableBufferNames.empty())
+			{
+				bufferName = m_availableBufferNames.back();
+				m_availableBufferNames.pop_back();
+			}
+			else
+			{
+				bufferName = static_cast<uint32_t>(m_buffers.size());
+				m_buffers.emplace_back(m_device);
+			}
+
 			m_buffers.at(bufferName).init(sizeInBytes, usage, memProps);
 			return bufferName;
+		}
+
+		void desctroyBuffer(uint32_t bufferName)
+		{
+			assert(std::find(m_availableBufferNames.begin(), m_availableBufferNames.end(), bufferName) == m_availableBufferNames.end());
+			assert(bufferName < m_buffers.size());
+			m_availableBufferNames.push_back(bufferName);
 		}
 
 		void transferHostDataToBuffer(uint32_t bufferName, VkDeviceSize sizeInBytes, const void *hostData, VkDeviceSize dstOffset = 0)
@@ -1219,10 +1238,55 @@ namespace rj
 				attachmentViews.push_back(view);
 			}
 
-			uint32_t fbName = static_cast<uint32_t>(m_framebuffers.size());
-			m_framebuffers.emplace(std::piecewise_construct, std::forward_as_tuple(fbName), std::forward_as_tuple(m_device));
-			m_framebuffers.at(fbName).init(renderPass, attachmentViews, width, height, layers);
+			uint32_t fbName;
+			if (!m_availableFramebufferNames.empty())
+			{
+				fbName = m_availableFramebufferNames.back();
+				m_availableFramebufferNames.pop_back();
+			}
+			else
+			{
+				fbName = static_cast<uint32_t>(m_framebuffers.size());
+				m_framebuffers.emplace_back(m_device);
+			}
+
+			m_framebuffers[fbName].init(renderPass, attachmentViews, width, height, layers);
 			return fbName;
+		}
+
+		std::vector<uint32_t> createSwapChainFramebuffers(uint32_t renderPassName)
+		{
+			VkRenderPass renderPass = m_renderPasses.at(renderPassName);
+
+			if (!m_swapChainFramebufferNames.empty())
+			{
+				m_availableFramebufferNames.insert(m_availableFramebufferNames.end(),
+					m_swapChainFramebufferNames.begin(), m_swapChainFramebufferNames.end());
+				m_swapChainFramebufferNames.clear();
+			}
+
+			const auto &views = m_swapChain.imageViews();
+			VkExtent2D extent = m_swapChain.extent();
+
+			for (const auto &view : views)
+			{
+				uint32_t fbName;
+				if (!m_availableFramebufferNames.empty())
+				{
+					fbName = m_availableFramebufferNames.back();
+					m_availableFramebufferNames.pop_back();
+				}
+				else
+				{
+					fbName = static_cast<uint32_t>(m_framebuffers.size());
+					m_framebuffers.emplace_back(m_device);
+				}
+
+				m_framebuffers.at(fbName).init(renderPass, { view }, extent.width, extent.height, 1);
+				m_swapChainFramebufferNames.push_back(fbName);
+			}
+
+			return m_swapChainFramebufferNames;
 		}
 
 		VkExtent2D getFramebufferExtent(uint32_t framebufferName)
@@ -1764,6 +1828,14 @@ namespace rj
 			vkQueueWaitIdle(queue);
 		}
 
+		void deviceWaitIdle()
+		{
+			if (vkDeviceWaitIdle(m_device) != VK_SUCCESS)
+			{
+				throw std::runtime_error("failed to wait for device idle");
+			}
+		}
+
 		void queueSubmit(VkQueueFlags queueType, const std::vector<uint32_t> &cmdBufferNames,
 			const std::vector<uint32_t> &waitSemaphoreNames = {},
 			const std::vector<VkPipelineStageFlags> &waitStageMasks = {},
@@ -1867,7 +1939,88 @@ namespace rj
 
 			return fenceName;
 		}
+
+		void waitForFences(const std::vector<uint32_t> &fenceNames, VkBool32 waitAll = VK_TRUE,
+			uint64_t timeout = std::numeric_limits<uint64_t>::max())
+		{
+			uint32_t fenceCount = static_cast<uint32_t>(fenceNames.size());
+			std::vector<VkFence> fences;
+			fences.reserve(fenceCount);
+			for (auto name : fenceNames)
+			{
+				fences.push_back(m_fences.at(name));
+			}
+
+			if (vkWaitForFences(m_device, fenceCount, fences.data(), waitAll, timeout) != VK_SUCCESS)
+			{
+				throw std::runtime_error("failed to wait for fences");
+			}
+		}
+
+		void resetFences(const std::vector<uint32_t> &fenceNames)
+		{
+			uint32_t fenceCount = static_cast<uint32_t>(fenceNames.size());
+			std::vector<VkFence> fences;
+			fences.reserve(fenceCount);
+			for (auto name : fenceNames)
+			{
+				fences.push_back(m_fences.at(name));
+			}
+
+			if (vkResetFences(m_device, fenceCount, fences.data()) != VK_SUCCESS)
+			{
+				throw std::runtime_error("failed to reset fences");
+			}
+		}
 		// --- Synchronization objects ---
+
+		// --- Window system ---
+		void swapChainNextImageIndex(uint32_t *pIdx, uint32_t signalSemaphoreName, uint32_t waitFenceName,
+			uint64_t timeout = std::numeric_limits<uint64_t>::max())
+		{
+			VkSemaphore semaphore = signalSemaphoreName == std::numeric_limits<uint32_t>::max() ? VK_NULL_HANDLE : m_semaphores[signalSemaphoreName];
+			VkFence fence = waitFenceName == std::numeric_limits<uint32_t>::max() ? VK_NULL_HANDLE : m_fences[waitFenceName];
+
+			if (vkAcquireNextImageKHR(m_device, m_swapChain, timeout, semaphore, fence, pIdx) != VK_SUCCESS)
+			{
+				throw std::runtime_error("failed to acquire next image index");
+			}
+		}
+
+		void queuePresent(const std::vector<uint32_t> &waitSemaphoreNames, uint32_t imageIdx)
+		{
+			VkSwapchainKHR swapChain = m_swapChain;
+			std::vector<VkSemaphore> waitSemaphores;
+			waitSemaphores.reserve(waitSemaphoreNames.size());
+			for (auto name : waitSemaphoreNames)
+			{
+				waitSemaphores.push_back(m_semaphores[name]);
+			}
+
+			VkPresentInfoKHR info = {};
+			info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+			info.waitSemaphoreCount = static_cast<uint32_t>(waitSemaphoreNames.size());
+			info.pWaitSemaphores = waitSemaphores.data();
+			info.swapchainCount = 1;
+			info.pSwapchains = &swapChain;
+			info.pImageIndices = &imageIdx;
+
+			if (vkQueuePresentKHR(m_device.getPresentQueue(), &info) != VK_SUCCESS)
+			{
+				throw std::runtime_error("failed to present swap chain image");
+			}
+		}
+
+		int widnowShouldClose() const
+		{
+			return glfwWindowShouldClose(m_window.getWindow());
+		}
+
+		void windowPollEvents() const
+		{
+			glfwPollEvents();
+		}
+		// --- Window system ---
 
 	protected:
 		void createPipelineCache()
@@ -1886,7 +2039,7 @@ namespace rj
 		}
 
 
-#ifndef NDEBUG
+#ifdef NDEBUG
 		bool m_enableValidationLayers = false;
 #else
 		bool m_enableValidationLayers = true;
@@ -1929,13 +2082,16 @@ namespace rj
 		std::unordered_map<uint32_t, std::vector<uint32_t>> m_commandBufferTable; // command buffers of each pool
 		std::unordered_map<uint32_t, VkCommandBuffer> m_commandBuffers;
 
-		std::unordered_map<uint32_t, VBuffer> m_buffers;
+		std::vector<uint32_t> m_availableBufferNames;
+		std::vector<VBuffer> m_buffers;
 
 		std::unordered_map<uint32_t, VImage> m_images;
 		std::unordered_map<uint32_t, VImageView> m_imageViews;
 		std::unordered_map<uint32_t, VSampler> m_samplers;
 
-		std::unordered_map<uint32_t, VFramebuffer> m_framebuffers;
+		std::vector<uint32_t> m_swapChainFramebufferNames;
+		std::vector<uint32_t> m_availableFramebufferNames;
+		std::vector<VFramebuffer> m_framebuffers;
 
 		DescriptorPoolCreateInfo m_curDescriptorPoolInfo;
 		uint32_t m_curDescriptorPoolName;

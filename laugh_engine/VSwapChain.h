@@ -55,6 +55,18 @@ namespace rj
 			createSwapChainImageViews();
 		}
 
+		operator VkSwapchainKHR() const { return m_swapChain; }
+
+		const std::vector<VDeleter<VkImageView>> &imageViews() const
+		{
+			return m_swapChainImageViews;
+		}
+
+		VkExtent2D extent() const
+		{
+			return m_swapChainExtent;
+		}
+
 	protected:
 		void createSwapChain()
 		{
