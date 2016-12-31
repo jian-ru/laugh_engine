@@ -2032,6 +2032,13 @@ namespace rj
 		}
 		// --- Window system ---
 
+		// --- Device properties ---
+		void getPhysicalDeviceProperties(VkPhysicalDeviceProperties *pProps) const
+		{
+			vkGetPhysicalDeviceProperties(m_device, pProps);
+		}
+		// --- Device properties ---
+
 	protected:
 		void createPipelineCache()
 		{

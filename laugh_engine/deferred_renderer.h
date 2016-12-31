@@ -112,6 +112,10 @@ public:
 	{
 		m_verNumMajor = 0;
 		m_verNumMinor = 1;
+
+		VkPhysicalDeviceProperties props;
+		m_vulkanManager.getPhysicalDeviceProperties(&props);
+		m_allUniformHostData.setAlignment(props.limits.minUniformBufferOffsetAlignment);
 	}
 
 	virtual void run();
@@ -122,69 +126,70 @@ protected:
 	std::vector<uint32_t> m_bloomRenderPasses;
 	uint32_t m_finalOutputRenderPass;
 
-	VDeleter<VkDescriptorSetLayout> m_brdfLutDescriptorSetLayout{ m_device, vkDestroyDescriptorSetLayout };
-	VDeleter<VkDescriptorSetLayout> m_specEnvPrefilterDescriptorSetLayout{ m_device, vkDestroyDescriptorSetLayout };
-	VDeleter<VkDescriptorSetLayout> m_skyboxDescriptorSetLayout{ m_device, vkDestroyDescriptorSetLayout };
-	VDeleter<VkDescriptorSetLayout> m_geomDescriptorSetLayout{ m_device, vkDestroyDescriptorSetLayout };
-	VDeleter<VkDescriptorSetLayout> m_lightingDescriptorSetLayout{ m_device, vkDestroyDescriptorSetLayout };
-	VDeleter<VkDescriptorSetLayout> m_bloomDescriptorSetLayout{ m_device, vkDestroyDescriptorSetLayout };
-	VDeleter<VkDescriptorSetLayout> m_finalOutputDescriptorSetLayout{ m_device, vkDestroyDescriptorSetLayout };
+	uint32_t m_brdfLutDescriptorSetLayout;
+	uint32_t m_specEnvPrefilterDescriptorSetLayout;
+	uint32_t m_skyboxDescriptorSetLayout;
+	uint32_t m_geomDescriptorSetLayout;
+	uint32_t m_lightingDescriptorSetLayout;
+	uint32_t m_bloomDescriptorSetLayout;
+	uint32_t m_finalOutputDescriptorSetLayout;
 
-	VDeleter<VkPipelineLayout> m_brdfLutPipelineLayout{ m_device, vkDestroyPipelineLayout };
-	VDeleter<VkPipeline> m_brdfLutPipeline{ m_device, vkDestroyPipeline };
-	VDeleter<VkPipelineLayout> m_diffEnvPrefilterPipelineLayout{ m_device, vkDestroyPipelineLayout };
-	VDeleter<VkPipeline> m_diffEnvPrefilterPipeline{ m_device, vkDestroyPipeline };
-	VDeleter<VkPipelineLayout> m_specEnvPrefilterPipelineLayout{ m_device, vkDestroyPipelineLayout };
-	VDeleter<VkPipeline> m_specEnvPrefilterPipeline{ m_device, vkDestroyPipeline };
-	VDeleter<VkPipelineLayout> m_skyboxPipelineLayout{ m_device, vkDestroyPipelineLayout };
-	VDeleter<VkPipeline> m_skyboxPipeline{ m_device, vkDestroyPipeline };
-	VDeleter<VkPipelineLayout> m_geomPipelineLayout{ m_device, vkDestroyPipelineLayout };
-	VDeleter<VkPipeline> m_geomPipeline{ m_device, vkDestroyPipeline };
-	VDeleter<VkPipelineLayout> m_lightingPipelineLayout{ m_device, vkDestroyPipelineLayout };
-	VDeleter<VkPipeline> m_lightingPipeline{ m_device, vkDestroyPipeline };
-	std::vector<VDeleter<VkPipelineLayout>> m_bloomPipelineLayouts;
-	std::vector<VDeleter<VkPipeline>> m_bloomPipelines;
-	VDeleter<VkPipelineLayout> m_finalOutputPipelineLayout{ m_device, vkDestroyPipelineLayout };
-	VDeleter<VkPipeline> m_finalOutputPipeline{ m_device, vkDestroyPipeline };
+	uint32_t m_brdfLutPipelineLayout;
+	uint32_t m_diffEnvPrefilterPipelineLayout;
+	uint32_t m_specEnvPrefilterPipelineLayout;
+	uint32_t m_skyboxPipelineLayout;
+	uint32_t m_geomPipelineLayout;
+	uint32_t m_lightingPipelineLayout;
+	std::vector<uint32_t> m_bloomPipelineLayouts;
+	uint32_t m_finalOutputPipelineLayout;
 
-	ImageWrapper m_depthImage{ m_device };
-	ImageWrapper m_lightingResultImage{ m_device, VK_FORMAT_R16G16B16A16_SFLOAT };
-	std::vector<ImageWrapper> m_gbufferImages = { { m_device, VK_FORMAT_R32G32B32A32_SFLOAT }, { m_device, VK_FORMAT_R32G32B32A32_SFLOAT }, { m_device, VK_FORMAT_R8G8B8A8_UNORM } };
-	std::vector<ImageWrapper> m_postEffectImages = { { m_device, VK_FORMAT_R16G16B16A16_SFLOAT }, { m_device, VK_FORMAT_R16G16B16A16_SFLOAT } };
+	uint32_t m_brdfLutPipeline;
+	uint32_t m_diffEnvPrefilterPipeline;
+	uint32_t m_specEnvPrefilterPipeline;
+	uint32_t m_skyboxPipeline;
+	uint32_t m_geomPipeline;
+	uint32_t m_lightingPipeline;
+	std::vector<uint32_t> m_bloomPipelines;
+	uint32_t m_finalOutputPipeline;
 
-	AllUniformBlob<ALL_UNIFORM_BLOB_SIZE> m_allUniformHostData{ m_physicalDevice };
+	ImageWrapper m_depthImage;
+	ImageWrapper m_lightingResultImage; // VK_FORMAT_R16G16B16A16_SFLOAT
+	std::vector<ImageWrapper> m_gbufferImages; // GB1: VK_FORMAT_R32G32B32A32_SFLOAT, GB2: VK_FORMAT_R32G32B32A32_SFLOAT, GB3: VK_FORMAT_R8G8B8A8_UNORM
+	std::vector<ImageWrapper> m_postEffectImages; // Image1: VK_FORMAT_R16G16B16A16_SFLOAT, Image2: VK_FORMAT_R16G16B16A16_SFLOAT
+
+	rj::helper_functions::UniformBlob<ALL_UNIFORM_BLOB_SIZE> m_allUniformHostData;
 	CubeMapCameraUniformBuffer *m_uCubeViews = nullptr;
 	TransMatsUniformBuffer *m_uTransMats = nullptr;
 	LightingPassUniformBuffer *m_uLightInfo = nullptr;
 	DisplayInfoUniformBuffer *m_uDisplayInfo = nullptr;
-	BufferWrapper m_allUniformBuffer{ m_device };
+	BufferWrapper m_allUniformBuffer;
 
-	VkDescriptorSet m_brdfLutDescriptorSet;
-	VkDescriptorSet m_specEnvPrefilterDescriptorSet;
-	VkDescriptorSet m_skyboxDescriptorSet;
-	std::vector<VkDescriptorSet> m_geomDescriptorSets; // one set per model
-	VkDescriptorSet m_lightingDescriptorSet;
-	std::vector<VkDescriptorSet> m_bloomDescriptorSets;
-	VkDescriptorSet m_finalOutputDescriptorSet;
+	uint32_t m_brdfLutDescriptorSet;
+	uint32_t m_specEnvPrefilterDescriptorSet;
+	uint32_t m_skyboxDescriptorSet;
+	std::vector<uint32_t> m_geomDescriptorSets; // one set per model
+	uint32_t m_lightingDescriptorSet;
+	std::vector<uint32_t> m_bloomDescriptorSets;
+	uint32_t m_finalOutputDescriptorSet;
 
-	VDeleter<VkFramebuffer> m_diffEnvPrefilterFramebuffer{ m_device, vkDestroyFramebuffer };
-	std::vector<VDeleter<VkFramebuffer>> m_specEnvPrefilterFramebuffers;
-	VDeleter<VkFramebuffer> m_geomAndLightingFramebuffer{ m_device, vkDestroyFramebuffer };
-	std::vector<VDeleter<VkFramebuffer>> m_postEffectFramebuffers;
+	uint32_t m_diffEnvPrefilterFramebuffer;
+	std::vector<uint32_t> m_specEnvPrefilterFramebuffers;
+	uint32_t m_geomAndLightingFramebuffer;
+	std::vector<uint32_t> m_postEffectFramebuffers;
 
-	VDeleter<VkSemaphore> m_imageAvailableSemaphore{ m_device, vkDestroySemaphore };
-	VDeleter<VkSemaphore> m_geomAndLightingCompleteSemaphore{ m_device, vkDestroySemaphore };
-	VDeleter<VkSemaphore> m_postEffectSemaphore{ m_device, vkDestroySemaphore };
-	VDeleter<VkSemaphore> m_finalOutputFinishedSemaphore{ m_device, vkDestroySemaphore };
-	VDeleter<VkSemaphore> m_renderFinishedSemaphore{ m_device, vkDestroySemaphore };
+	uint32_t m_imageAvailableSemaphore;
+	uint32_t m_geomAndLightingCompleteSemaphore;
+	uint32_t m_postEffectSemaphore;
+	uint32_t m_finalOutputFinishedSemaphore;
+	uint32_t m_renderFinishedSemaphore;
 
-	VDeleter<VkFence> m_brdfLutFence{ m_device, vkDestroyFence };
-	VDeleter<VkFence> m_envPrefilterFence{ m_device, vkDestroyFence };
+	uint32_t m_brdfLutFence;
+	uint32_t m_envPrefilterFence;
 
-	VkCommandBuffer m_brdfLutCommandBuffer;
-	VkCommandBuffer m_envPrefilterCommandBuffer;
-	VkCommandBuffer m_geomAndLightingCommandBuffer;
-	VkCommandBuffer m_postEffectCommandBuffer;
+	uint32_t m_brdfLutCommandBuffer;
+	uint32_t m_envPrefilterCommandBuffer;
+	uint32_t m_geomAndLightingCommandBuffer;
+	uint32_t m_postEffectCommandBuffer;
 
 
 	virtual const std::string &getWindowTitle();

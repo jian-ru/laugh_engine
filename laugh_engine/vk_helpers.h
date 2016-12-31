@@ -22,6 +22,69 @@ namespace rj
 			{ VK_FORMAT_BC3_UNORM_BLOCK, { 16, { 4, 4, 1 } } }
 		};
 
+		// A chunck of memory storing many uniforms
+		template<size_t maxSizeInBytes>
+		class UniformBlob
+		{
+		public:
+			UniformBlob(VkDeviceSize alignmentInBytes = std::numeric_limits<VkDeviceSize>::max()) :
+				memory(new char[maxSizeInBytes]),
+				minAlignment(alignmentInBytes)
+			{}
+
+			virtual ~UniformBlob()
+			{
+				delete[] memory;
+			}
+
+			void setAlignment(VkDeviceSize alignmentInBytes)
+			{
+				minAlignment = alignmentInBytes;
+			}
+
+			void *alloc(size_t size)
+			{
+				assert(minAlignment != std::numeric_limits<VkDeviceSize>::max());
+
+				if (size == 0) throw std::runtime_error("UniformBlob::alloc - size can't be zero.");
+
+				size_t actualSize = (size / minAlignment) * minAlignment;
+				actualSize = actualSize < size ? (actualSize + minAlignment) : actualSize;
+
+				if (nextStartingByte + actualSize > maxSizeInBytes) throw std::runtime_error("UniformBlob::alloc - out of memory.");
+
+				char *ret = &memory[nextStartingByte];
+				nextStartingByte += actualSize;
+				return ret;
+			}
+
+			size_t size() const
+			{
+				return currentSizeInBytes;
+			}
+
+			const char *operator&() const
+			{
+				return memory;
+			}
+
+			// @ptr should be a pointer to somewhere in @memory
+			size_t offsetOf(const char *ptr) const
+			{
+				return ptr - memory;
+			}
+
+		private:
+			char* memory;
+
+			VkDeviceSize minAlignment;
+			union
+			{
+				size_t nextStartingByte = 0;
+				size_t currentSizeInBytes;
+			};
+		};
+
 		template <class T>
 		inline void hash_combine(std::size_t& seed, const T& v)
 		{
