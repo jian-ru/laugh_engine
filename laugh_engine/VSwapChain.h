@@ -51,6 +51,11 @@ namespace rj
 		VSwapChain(const VDevice &device, const VWindow &window)
 			: m_device(device), m_window(window)
 		{
+			recreateSwapChain();
+		}
+
+		void recreateSwapChain()
+		{
 			createSwapChain();
 			createSwapChainImageViews();
 		}

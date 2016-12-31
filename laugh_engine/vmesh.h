@@ -4,6 +4,7 @@
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #include "glm/glm.hpp"
 #include "glm/gtx/hash.hpp"
+#include "glm/gtc/matrix_transform.hpp"
 
 #include "gli/gli.hpp"
 #include "gli/convert.hpp"
@@ -73,7 +74,15 @@ struct ImageWrapper
 
 	VkFormat format;
 	uint32_t width, height, depth = 1;
-	uint32_t mipLevelCount;
+	uint32_t mipLevelCount = 1;
+	uint32_t layerCount = 1;
+};
+
+struct BufferWrapper
+{
+	uint32_t buffer;
+	VkDeviceSize offset;
+	VkDeviceSize size;
 };
 
 namespace std
@@ -96,6 +105,14 @@ namespace rj
 {
 	namespace helper_functions
 	{
+		std::unordered_map<gli::format, VkFormat> gliFormat2VkFormatTable =
+		{
+			{ gli::FORMAT_RGBA8_UNORM_PACK8, VK_FORMAT_R8G8B8A8_UNORM },
+			{ gli::FORMAT_RGBA32_SFLOAT_PACK32, VK_FORMAT_R32G32B32A32_SFLOAT },
+			{ gli::FORMAT_RGBA_DXT5_UNORM_BLOCK16, VK_FORMAT_BC3_UNORM_BLOCK },
+			{ gli::FORMAT_RG32_SFLOAT_PACK32, VK_FORMAT_R32G32_SFLOAT }
+		};
+
 		void loadMeshIntoHostBuffers(const std::string &modelFileName,
 			std::vector<Vertex> &hostVerts, std::vector<uint32_t> &hostIndices)
 		{
@@ -187,24 +204,7 @@ namespace rj
 				textureMipmapped = textureSrc;
 			}
 
-			VkFormat format;
-			switch (textureMipmapped.format())
-			{
-			case gli::FORMAT_RGBA8_UNORM_PACK8:
-				format = VK_FORMAT_R8G8B8A8_UNORM;
-				break;
-			case gli::FORMAT_RGBA32_SFLOAT_PACK32:
-				format = VK_FORMAT_R32G32B32A32_SFLOAT;
-				break;
-			case gli::FORMAT_RGBA_DXT5_UNORM_BLOCK16:
-				format = VK_FORMAT_BC3_UNORM_BLOCK;
-				break;
-			case gli::FORMAT_RG32_SFLOAT_PACK32:
-				format = VK_FORMAT_R32G32_SFLOAT;
-				break;
-			default:
-				throw std::runtime_error("texture format is not supported.");
-			}
+			VkFormat format = gliFormat2VkFormatTable.at(textureMipmapped.format());
 
 			uint32_t width = static_cast<uint32_t>(textureMipmapped.extent().x);
 			uint32_t height = static_cast<uint32_t>(textureMipmapped.extent().y);
@@ -213,8 +213,10 @@ namespace rj
 
 			pTexRet->width = width;
 			pTexRet->height = height;
+			pTexRet->depth = 1;
 			pTexRet->format = format;
 			pTexRet->mipLevelCount = mipLevels;
+			pTexRet->layerCount = 1;
 
 			pTexRet->image = pManager->createImage2D(width, height, format,
 				VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
@@ -225,6 +227,58 @@ namespace rj
 				VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
 			pTexRet->imageViews.push_back(pManager->createImageView2D(pTexRet->image, VK_IMAGE_ASPECT_COLOR_BIT, 0, mipLevels));
+		}
+
+		void loadCubemap(ImageWrapper *pTexRet, VManager *pManager, const std::string &fn)
+		{
+			std::string ext = getFileExtension(fn);
+			if (ext != "ktx" && ext != "dds")
+			{
+				throw std::runtime_error("texture type ." + ext + " is not supported.");
+			}
+
+			gli::texture_cube texCube(gli::load(fn.c_str()));
+
+			if (texCube.empty())
+			{
+				throw std::runtime_error("cannot load texture.");
+			}
+
+			VkFormat format = gliFormat2VkFormatTable.at(texCube.format());
+
+			uint32_t width = static_cast<uint32_t>(texCube.extent().x);
+			uint32_t height = static_cast<uint32_t>(texCube.extent().y);
+			uint32_t mipLevels = static_cast<uint32_t>(texCube.levels());
+			size_t sizeInBytes = texCube.size();
+
+			pTexRet->format = format;
+			pTexRet->width = width;
+			pTexRet->height = height;
+			pTexRet->depth = 1;
+			pTexRet->mipLevelCount = mipLevels;
+			pTexRet->layerCount = 6;
+
+			pTexRet->image = pManager->createImageCube(width, height, format,
+				VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, mipLevels);
+
+			pManager->transitionImageLayout(pTexRet->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+			pManager->transferHostDataToImage(pTexRet->image, sizeInBytes, texCube.data(),
+				VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+			pTexRet->imageViews.push_back(pManager->createImageViewCube(pTexRet->image, VK_IMAGE_ASPECT_COLOR_BIT, 0, mipLevels));
+
+			//VkSamplerCreateInfo samplerInfo = {};
+			//getDefaultSamplerCreateInfo(samplerInfo);
+			//samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+			//samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+			//samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+			//samplerInfo.maxLod = static_cast<float>(texture.mipLevels - 1);
+
+			//if (vkCreateSampler(device, &samplerInfo, nullptr, texture.sampler.replace()) != VK_SUCCESS)
+			//{
+			//	throw std::runtime_error("failed to create texture sampler!");
+			//}
 		}
 	}
 }
@@ -258,8 +312,8 @@ public:
 	glm::quat worldRotation{ glm::vec3(0.f, 0.f, 0.f) }; // Euler angles to quaternion
 	float scale = 1.f;
 
-	uint32_t vertexBuffer;
-	uint32_t indexBuffer;
+	BufferWrapper vertexBuffer;
+	BufferWrapper indexBuffer;
 
 	ImageWrapper albedoMap;
 	ImageWrapper normalMap;
@@ -275,10 +329,10 @@ public:
 
 	void load(
 		const std::string &modelFileName,
-		const std::string &albedoMapName,
-		const std::string &normalMapName,
-		const std::string &roughnessMapName,
-		const std::string &metalnessMapName,
+		const std::string &albedoMapName = "",
+		const std::string &normalMapName = "",
+		const std::string &roughnessMapName = "",
+		const std::string &metalnessMapName = "",
 		const std::string &aoMapName = "")
 	{
 		using namespace rj::helper_functions;
@@ -311,18 +365,20 @@ public:
 		loadMeshIntoHostBuffers(modelFileName, hostVerts, hostIndices);
 
 		// create vertex buffer
-		createBufferFromHostData(
-			physicalDevice, device, commandPool, submitQueue,
-			hostVerts.data(), hostVerts.size(), sizeof(hostVerts[0]) * hostVerts.size(),
-			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-			vertexBuffer);
+		vertexBuffer = {};
+		vertexBuffer.size = sizeof(hostVerts[0]) * hostVerts.size();
+		vertexBuffer.buffer = pVulkanManager->createBuffer(vertexBuffer.size,
+			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+		pVulkanManager->transferHostDataToBuffer(vertexBuffer.buffer, vertexBuffer.size, hostVerts.data());
 
 		// create index buffer
-		createBufferFromHostData(
-			physicalDevice, device, commandPool, submitQueue,
-			hostIndices.data(), hostIndices.size(), sizeof(hostIndices[0]) * hostIndices.size(),
-			VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-			indexBuffer);
+		indexBuffer = {};
+		indexBuffer.size = sizeof(hostIndices[0]) * hostIndices.size();
+		indexBuffer.buffer = pVulkanManager->createBuffer(indexBuffer.size,
+			VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+		pVulkanManager->transferHostDataToBuffer(indexBuffer.buffer, indexBuffer.size, hostIndices.data());
 	}
 
 	virtual void updateHostUniformBuffer()
@@ -347,28 +403,23 @@ public:
 	bool shouldSaveSpecMap = false;
 	bool shouldSaveDiffMap = false;
 
-	Skybox(const VDeleter<VkDevice> &device) :
-		VMesh{ device },
-		radianceMap{ device, VK_FORMAT_R32G32_SFLOAT },
-		specularIrradianceMap{ device, VK_FORMAT_R32G32B32A32_SFLOAT },
-		diffuseIrradianceMap{ device, VK_FORMAT_R32G32B32A32_SFLOAT }
+	Skybox(rj::VManager *pManager) :
+		VMesh{ pManager }
 	{
 		materialType = MATERIAL_TYPE_HDR_PROBE;
 	}
 
 	void load(
-		VkPhysicalDevice physicalDevice,
-		const VDeleter<VkDevice> &device,
-		VkCommandPool commandPool,
-		VkQueue submitQueue,
 		const std::string &modelFileName,
 		const std::string &radianceMapName,
 		const std::string &specMapName,
 		const std::string &diffuseMapName)
 	{
+		using namespace rj::helper_functions;
+
 		if (radianceMapName != "")
 		{
-			loadCubemap(physicalDevice, device, commandPool, submitQueue, radianceMapName, radianceMap);
+			loadCubemap(&radianceMap, pVulkanManager, radianceMapName);
 		}
 		else
 		{
@@ -377,84 +428,84 @@ public:
 
 		if (specMapName != "")
 		{
-			loadCubemap(physicalDevice, device, commandPool, submitQueue, specMapName, specularIrradianceMap);
+			loadCubemap(&specularIrradianceMap, pVulkanManager, specMapName);
 			specMapReady = true;
 		}
 		else
 		{
 			uint32_t mipLevels = static_cast<uint32_t>(floor(log2f(SPEC_IRRADIANCE_MAP_SIZE) + 0.5f)) + 1;
-			specularIrradianceMap.mipLevels = mipLevels;
+
 			specularIrradianceMap.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+			specularIrradianceMap.width = specularIrradianceMap.height = SPEC_IRRADIANCE_MAP_SIZE;
+			specularIrradianceMap.depth = 1;
+			specularIrradianceMap.mipLevelCount = mipLevels;
+			specularIrradianceMap.layerCount = 6;
 
-			createCubemapImage(physicalDevice, device,
-				SPEC_IRRADIANCE_MAP_SIZE, SPEC_IRRADIANCE_MAP_SIZE,
-				mipLevels,
-				specularIrradianceMap.format, VK_IMAGE_TILING_OPTIMAL,
-				VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-				specularIrradianceMap.image, specularIrradianceMap.imageMemory);
+			specularIrradianceMap.image =
+				pVulkanManager->createImageCube(specularIrradianceMap.width, specularIrradianceMap.height, specularIrradianceMap.format,
+					VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+					VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, mipLevels);
 
-			createImageViewCube(device, specularIrradianceMap.image, specularIrradianceMap.format,
-				VK_IMAGE_ASPECT_COLOR_BIT, specularIrradianceMap.mipLevels, specularIrradianceMap.imageView);
+			// Used for sampling read in shaders
+			specularIrradianceMap.imageViews.resize(mipLevels + 1);
+			specularIrradianceMap.imageViews[0] = pVulkanManager->createImageViewCube(specularIrradianceMap.image, VK_IMAGE_ASPECT_COLOR_BIT, 0, mipLevels);
 
-			specularIrradianceMap.imageViews.resize(mipLevels, { device, vkDestroyImageView });
 			for (uint32_t level = 0; level < mipLevels; ++level)
 			{
-				createImageViewCube(device, specularIrradianceMap.image, specularIrradianceMap.format,
-					VK_IMAGE_ASPECT_COLOR_BIT, level, 1, specularIrradianceMap.imageViews[level]);
-			}
-
-			VkSamplerCreateInfo samplerInfo = {};
-			getDefaultSamplerCreateInfo(samplerInfo);
-			samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-			samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-			samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-			samplerInfo.maxLod = static_cast<float>(specularIrradianceMap.mipLevels - 1);
-
-			if (vkCreateSampler(device, &samplerInfo, nullptr, specularIrradianceMap.sampler.replace()) != VK_SUCCESS)
-			{
-				throw std::runtime_error("failed to create specular irradiance map sampler!");
+				specularIrradianceMap.imageViews[level + 1] =
+					pVulkanManager->createImageViewCube(specularIrradianceMap.image, VK_IMAGE_ASPECT_COLOR_BIT, level);
 			}
 
 			shouldSaveSpecMap = true;
+
+			//VkSamplerCreateInfo samplerInfo = {};
+			//getDefaultSamplerCreateInfo(samplerInfo);
+			//samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+			//samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+			//samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+			//samplerInfo.maxLod = static_cast<float>(specularIrradianceMap.mipLevels - 1);
+
+			//if (vkCreateSampler(device, &samplerInfo, nullptr, specularIrradianceMap.sampler.replace()) != VK_SUCCESS)
+			//{
+			//	throw std::runtime_error("failed to create specular irradiance map sampler!");
+			//}
 		}
 
 		if (diffuseMapName != "")
 		{
-			loadCubemap(physicalDevice, device, commandPool, submitQueue, diffuseMapName, diffuseIrradianceMap);
+			loadCubemap(&diffuseIrradianceMap, pVulkanManager, diffuseMapName);
 			diffMapReady = true;
 		}
 		else
 		{
-			diffuseIrradianceMap.mipLevels = 1;
 			diffuseIrradianceMap.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+			diffuseIrradianceMap.width = diffuseIrradianceMap.height = DIFF_IRRADIANCE_MAP_SIZE;
+			diffuseIrradianceMap.depth = 1;
+			diffuseIrradianceMap.mipLevelCount = 1;
+			diffuseIrradianceMap.layerCount = 6;
 
-			createCubemapImage(physicalDevice, device,
-				DIFF_IRRADIANCE_MAP_SIZE, DIFF_IRRADIANCE_MAP_SIZE,
-				diffuseIrradianceMap.mipLevels,
-				diffuseIrradianceMap.format, VK_IMAGE_TILING_OPTIMAL,
-				VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-				diffuseIrradianceMap.image, diffuseIrradianceMap.imageMemory);
+			diffuseIrradianceMap.image =
+				pVulkanManager->createImageCube(diffuseIrradianceMap.width, diffuseIrradianceMap.height, diffuseIrradianceMap.format,
+					VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+					VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-			createImageViewCube(device, diffuseIrradianceMap.image, diffuseIrradianceMap.format,
-				VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, diffuseIrradianceMap.imageView);
-
-			VkSamplerCreateInfo samplerInfo = {};
-			getDefaultSamplerCreateInfo(samplerInfo);
-			samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-			samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-			samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-			samplerInfo.maxLod = static_cast<float>(diffuseIrradianceMap.mipLevels - 1);
-
-			if (vkCreateSampler(device, &samplerInfo, nullptr, diffuseIrradianceMap.sampler.replace()) != VK_SUCCESS)
-			{
-				throw std::runtime_error("failed to create diffuse irradiance map sampler!");
-			}
+			diffuseIrradianceMap.imageViews.push_back(pVulkanManager->createImageViewCube(diffuseIrradianceMap.image, VK_IMAGE_ASPECT_COLOR_BIT));
 
 			shouldSaveDiffMap = true;
+
+			//VkSamplerCreateInfo samplerInfo = {};
+			//getDefaultSamplerCreateInfo(samplerInfo);
+			//samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+			//samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+			//samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+			//samplerInfo.maxLod = static_cast<float>(diffuseIrradianceMap.mipLevels - 1);
+
+			//if (vkCreateSampler(device, &samplerInfo, nullptr, diffuseIrradianceMap.sampler.replace()) != VK_SUCCESS)
+			//{
+			//	throw std::runtime_error("failed to create diffuse irradiance map sampler!");
+			//}
 		}
 
-		VMesh::load(physicalDevice, device, commandPool, submitQueue, modelFileName, "", "", "", "");
+		VMesh::load(modelFileName);
 	}
 };

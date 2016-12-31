@@ -110,7 +110,6 @@ class DeferredRenderer : public VBaseGraphics
 public:
 	DeferredRenderer()
 	{
-		m_windowTitle = "Laugh Engine";
 		m_verNumMajor = 0;
 		m_verNumMinor = 1;
 	}
@@ -118,10 +117,10 @@ public:
 	virtual void run();
 
 protected:
-	VDeleter<VkRenderPass> m_specEnvPrefilterRenderPass{ m_device, vkDestroyRenderPass };
-	VDeleter<VkRenderPass> m_geomAndLightRenderPass{ m_device, vkDestroyRenderPass };
-	std::vector<VDeleter<VkRenderPass>> m_bloomRenderPasses;
-	VDeleter<VkRenderPass> m_finalOutputRenderPass{ m_device, vkDestroyRenderPass };
+	uint32_t m_specEnvPrefilterRenderPass;
+	uint32_t m_geomAndLightRenderPass;
+	std::vector<uint32_t> m_bloomRenderPasses;
+	uint32_t m_finalOutputRenderPass;
 
 	VDeleter<VkDescriptorSetLayout> m_brdfLutDescriptorSetLayout{ m_device, vkDestroyDescriptorSetLayout };
 	VDeleter<VkDescriptorSetLayout> m_specEnvPrefilterDescriptorSetLayout{ m_device, vkDestroyDescriptorSetLayout };
@@ -187,6 +186,8 @@ protected:
 	VkCommandBuffer m_geomAndLightingCommandBuffer;
 	VkCommandBuffer m_postEffectCommandBuffer;
 
+
+	virtual const std::string &getWindowTitle();
 
 	virtual void createRenderPasses();
 	virtual void createDescriptorSetLayouts();
@@ -258,6 +259,12 @@ protected:
 
 
 #ifdef DEFERED_RENDERER_IMPLEMENTATION
+
+const std::string &DeferredRenderer::getWindowTitle()
+{
+	m_windowTitle = "Laugh Engine";
+	return m_windowTitle;
+}
 
 void DeferredRenderer::run()
 {

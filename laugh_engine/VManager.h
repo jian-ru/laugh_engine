@@ -1975,6 +1975,16 @@ namespace rj
 		// --- Synchronization objects ---
 
 		// --- Window system ---
+		void recreateSwapChain()
+		{
+			m_swapChain.recreateSwapChain();
+		}
+
+		VkExtent2D getSwapChainExtent() const
+		{
+			return m_swapChain.extent();
+		}
+
 		void swapChainNextImageIndex(uint32_t *pIdx, uint32_t signalSemaphoreName, uint32_t waitFenceName,
 			uint64_t timeout = std::numeric_limits<uint64_t>::max())
 		{
@@ -2011,7 +2021,7 @@ namespace rj
 			}
 		}
 
-		int widnowShouldClose() const
+		int windowShouldClose() const
 		{
 			return glfwWindowShouldClose(m_window.getWindow());
 		}

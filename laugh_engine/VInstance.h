@@ -86,6 +86,11 @@ namespace rj
 			m_layerNames(layerNames),
 			m_requiredExtensions(extensionNames)
 		{
+			if (m_enableValidationLayers)
+			{
+				m_requiredExtensions.push_back(VK_EXT_DEBUG_REPORT_EXTENSION_NAME);
+			}
+
 			createInstance();
 			setupDebugCallback();
 		}
