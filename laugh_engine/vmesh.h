@@ -71,6 +71,7 @@ struct ImageWrapper
 {
 	uint32_t image;
 	std::vector<uint32_t> imageViews;
+	std::vector<uint32_t> samplers;
 
 	VkFormat format;
 	uint32_t width, height, depth = 1;
@@ -179,7 +180,7 @@ namespace rj
 			}
 		}
 
-		void loadTexture2D(ImageWrapper *pTexRet, VManager *pManager, const std::string &fn, bool generateMipLevels = true)
+		void loadTexture2D(ImageWrapper *pTexRet, VManager *pManager, const std::string &fn, bool createSampler = true, bool generateMipLevels = true)
 		{
 			std::string ext = getFileExtension(fn);
 			if (ext != "ktx" && ext != "dds")
@@ -227,9 +228,17 @@ namespace rj
 				VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
 			pTexRet->imageViews.push_back(pManager->createImageView2D(pTexRet->image, VK_IMAGE_ASPECT_COLOR_BIT, 0, mipLevels));
+
+			if (createSampler)
+			{
+				pTexRet->samplers.resize(1);
+				pTexRet->samplers[0] = pManager->createSampler(VK_FILTER_LINEAR, VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_LINEAR,
+					VK_SAMPLER_ADDRESS_MODE_REPEAT, VK_SAMPLER_ADDRESS_MODE_REPEAT, VK_SAMPLER_ADDRESS_MODE_REPEAT,
+					0.f, float(mipLevels - 1), 0.f, VK_TRUE, 16.f);
+			}
 		}
 
-		void loadCubemap(ImageWrapper *pTexRet, VManager *pManager, const std::string &fn)
+		void loadCubemap(ImageWrapper *pTexRet, VManager *pManager, const std::string &fn, bool createSampler = true)
 		{
 			std::string ext = getFileExtension(fn);
 			if (ext != "ktx" && ext != "dds")
@@ -268,17 +277,13 @@ namespace rj
 
 			pTexRet->imageViews.push_back(pManager->createImageViewCube(pTexRet->image, VK_IMAGE_ASPECT_COLOR_BIT, 0, mipLevels));
 
-			//VkSamplerCreateInfo samplerInfo = {};
-			//getDefaultSamplerCreateInfo(samplerInfo);
-			//samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-			//samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-			//samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-			//samplerInfo.maxLod = static_cast<float>(texture.mipLevels - 1);
-
-			//if (vkCreateSampler(device, &samplerInfo, nullptr, texture.sampler.replace()) != VK_SUCCESS)
-			//{
-			//	throw std::runtime_error("failed to create texture sampler!");
-			//}
+			if (createSampler)
+			{
+				pTexRet->samplers.resize(1);
+				pTexRet->samplers[0] = pManager->createSampler(VK_FILTER_LINEAR, VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_LINEAR,
+					VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+					0.f, float(mipLevels - 1), 0.f, VK_TRUE, 16.f);
+			}
 		}
 	}
 }
@@ -450,25 +455,19 @@ public:
 			specularIrradianceMap.imageViews.resize(mipLevels + 1);
 			specularIrradianceMap.imageViews[0] = pVulkanManager->createImageViewCube(specularIrradianceMap.image, VK_IMAGE_ASPECT_COLOR_BIT, 0, mipLevels);
 
+			// Used for rendering
 			for (uint32_t level = 0; level < mipLevels; ++level)
 			{
 				specularIrradianceMap.imageViews[level + 1] =
 					pVulkanManager->createImageViewCube(specularIrradianceMap.image, VK_IMAGE_ASPECT_COLOR_BIT, level);
 			}
 
+			specularIrradianceMap.samplers.resize(1);
+			specularIrradianceMap.samplers[0] = pVulkanManager->createSampler(VK_FILTER_LINEAR, VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_LINEAR,
+				VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+				0.f, static_cast<float>(mipLevels - 1), 0.f, VK_TRUE, 16.f);
+
 			shouldSaveSpecMap = true;
-
-			//VkSamplerCreateInfo samplerInfo = {};
-			//getDefaultSamplerCreateInfo(samplerInfo);
-			//samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-			//samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-			//samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-			//samplerInfo.maxLod = static_cast<float>(specularIrradianceMap.mipLevels - 1);
-
-			//if (vkCreateSampler(device, &samplerInfo, nullptr, specularIrradianceMap.sampler.replace()) != VK_SUCCESS)
-			//{
-			//	throw std::runtime_error("failed to create specular irradiance map sampler!");
-			//}
 		}
 
 		if (diffuseMapName != "")
@@ -491,19 +490,14 @@ public:
 
 			diffuseIrradianceMap.imageViews.push_back(pVulkanManager->createImageViewCube(diffuseIrradianceMap.image, VK_IMAGE_ASPECT_COLOR_BIT));
 
+			// maxLod == 0.f will cause magFilter to always be used. This is fine if minFilter == maxFilter but
+			// need to be careful
+			diffuseIrradianceMap.samplers.resize(1);
+			diffuseIrradianceMap.samplers[0] = pVulkanManager->createSampler(VK_FILTER_LINEAR, VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_LINEAR,
+				VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+				0.f, 0.f, 0.f, VK_TRUE, 16.f);
+
 			shouldSaveDiffMap = true;
-
-			//VkSamplerCreateInfo samplerInfo = {};
-			//getDefaultSamplerCreateInfo(samplerInfo);
-			//samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-			//samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-			//samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-			//samplerInfo.maxLod = static_cast<float>(diffuseIrradianceMap.mipLevels - 1);
-
-			//if (vkCreateSampler(device, &samplerInfo, nullptr, diffuseIrradianceMap.sampler.replace()) != VK_SUCCESS)
-			//{
-			//	throw std::runtime_error("failed to create diffuse irradiance map sampler!");
-			//}
 		}
 
 		VMesh::load(modelFileName);

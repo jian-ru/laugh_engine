@@ -154,7 +154,20 @@ protected:
 
 	ImageWrapper m_depthImage;
 	ImageWrapper m_lightingResultImage; // VK_FORMAT_R16G16B16A16_SFLOAT
+	const uint32_t m_numGBuffers = 3;
+	const std::vector<VkFormat> m_gbufferFormats =
+	{
+		VK_FORMAT_R32G32B32A32_SFLOAT,
+		VK_FORMAT_R32G32B32A32_SFLOAT,
+		VK_FORMAT_R8G8B8A8_UNORM
+	};
 	std::vector<ImageWrapper> m_gbufferImages; // GB1: VK_FORMAT_R32G32B32A32_SFLOAT, GB2: VK_FORMAT_R32G32B32A32_SFLOAT, GB3: VK_FORMAT_R8G8B8A8_UNORM
+	const uint32_t m_numPostEffectImages = 2;
+	const std::vector<VkFormat> m_postEffectImageFormats =
+	{
+		VK_FORMAT_R16G16B16A16_SFLOAT,
+		VK_FORMAT_R16G16B16A16_SFLOAT
+	};
 	std::vector<ImageWrapper> m_postEffectImages; // Image1: VK_FORMAT_R16G16B16A16_SFLOAT, Image2: VK_FORMAT_R16G16B16A16_SFLOAT
 
 	rj::helper_functions::UniformBlob<ALL_UNIFORM_BLOB_SIZE> m_allUniformHostData;
@@ -274,7 +287,6 @@ const std::string &DeferredRenderer::getWindowTitle()
 void DeferredRenderer::run()
 {
 	//system("pause");
-	initWindow();
 	initVulkan();
 	prefilterEnvironmentAndComputeBrdfLut();
 	mainLoop();
@@ -325,10 +337,9 @@ void DeferredRenderer::updateUniformBuffers()
 		model.updateHostUniformBuffer();
 	}
 
-	void* data;
-	vkMapMemory(m_device, m_allUniformBuffer.bufferMemory, 0, m_allUniformBuffer.sizeInBytes, 0, &data);
-	memcpy(data, &m_allUniformHostData, m_allUniformBuffer.sizeInBytes);
-	vkUnmapMemory(m_device, m_allUniformBuffer.bufferMemory);
+	void* data = m_vulkanManager.mapBuffer(m_allUniformBuffer.buffer);
+	memcpy(data, &m_allUniformHostData, m_allUniformBuffer.size);
+	m_vulkanManager.unmapBuffer(m_allUniformBuffer.buffer);
 }
 
 void DeferredRenderer::drawFrame()
@@ -337,7 +348,7 @@ void DeferredRenderer::drawFrame()
 
 	// acquired image may not be renderable because the presentation engine is still using it
 	// when @m_imageAvailableSemaphore is signaled, presentation is complete and the image can be used for rendering
-	VkResult result = vkAcquireNextImageKHR(m_device, m_swapChain.swapChain, std::numeric_limits<uint64_t>::max(), m_imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+	VkResult result = m_vulkanManager.swapChainNextImageIndex(&imageIndex, m_imageAvailableSemaphore, std::numeric_limits<uint32_t>::max());
 
 	if (result == VK_ERROR_OUT_OF_DATE_KHR)
 	{
@@ -349,70 +360,20 @@ void DeferredRenderer::drawFrame()
 		throw std::runtime_error("failed to acquire swap chain image!");
 	}
 
-	updateText(imageIndex, &m_perfTimer);
-	m_perfTimer.start();
+	m_vulkanManager.beginQueueSubmit(VK_QUEUE_GRAPHICS_BIT);
 
-	VkSubmitInfo submitInfos[3] = {};
+	m_vulkanManager.queueSubmitNewSubmit({ m_geomAndLightingCommandBuffer }, { m_imageAvailableSemaphore },
+		{ VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT }, { m_geomAndLightingCompleteSemaphore });
 
-	VkSemaphore waitSemaphores0[] = { m_imageAvailableSemaphore };
-	VkSemaphore signalSemaphores0[] = { m_geomAndLightingCompleteSemaphore };
-	VkPipelineStageFlags waitStages0[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
-	submitInfos[0].sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-	submitInfos[0].waitSemaphoreCount = 1;
-	submitInfos[0].pWaitSemaphores = waitSemaphores0;
-	submitInfos[0].pWaitDstStageMask = waitStages0;
-	submitInfos[0].commandBufferCount = 1;
-	submitInfos[0].signalSemaphoreCount = 1;
-	submitInfos[0].pSignalSemaphores = signalSemaphores0;
-	submitInfos[0].pCommandBuffers = &m_geomAndLightingCommandBuffer;
+	m_vulkanManager.queueSubmitNewSubmit({ m_postEffectCommandBuffer }, { m_geomAndLightingCompleteSemaphore },
+		{ VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT }, { m_postEffectSemaphore });
 
-	VkSemaphore waitSemaphores1[] = { m_geomAndLightingCompleteSemaphore };
-	VkSemaphore signalSemaphores1[] = { m_postEffectSemaphore };
-	VkPipelineStageFlags waitStages1[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
-	submitInfos[1].sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-	submitInfos[1].waitSemaphoreCount = 1;
-	submitInfos[1].pWaitSemaphores = waitSemaphores1;
-	submitInfos[1].pWaitDstStageMask = waitStages1;
-	submitInfos[1].commandBufferCount = 1;
-	submitInfos[1].signalSemaphoreCount = 1;
-	submitInfos[1].pSignalSemaphores = signalSemaphores1;
-	submitInfos[1].pCommandBuffers = &m_postEffectCommandBuffer;
+	m_vulkanManager.queueSubmitNewSubmit({ m_presentCommandBuffers[imageIndex] }, { m_postEffectSemaphore },
+		{ VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT }, { m_finalOutputFinishedSemaphore });
 
-	VkSemaphore waitSemaphores2[] = { m_postEffectSemaphore };
-	VkSemaphore signalSemaphores2[] = { m_finalOutputFinishedSemaphore };
-	VkPipelineStageFlags waitStages2[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
-	submitInfos[2].sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-	submitInfos[2].waitSemaphoreCount = 1;
-	submitInfos[2].pWaitSemaphores = waitSemaphores2;
-	submitInfos[2].pWaitDstStageMask = waitStages2;
-	submitInfos[2].commandBufferCount = 1;
-	submitInfos[2].signalSemaphoreCount = 1;
-	submitInfos[2].pSignalSemaphores = signalSemaphores2;
-	submitInfos[2].pCommandBuffers = &m_presentCommandBuffers[imageIndex];
+	m_vulkanManager.endQueueSubmit();
 
-	if (vkQueueSubmit(m_graphicsQueue, 3, submitInfos, VK_NULL_HANDLE) != VK_SUCCESS)
-	{
-		throw std::runtime_error("failed to submit draw command buffer!");
-	}
-
-	std::vector<VkSemaphore> waitSemaphores3 = { m_finalOutputFinishedSemaphore };
-	std::vector<VkSemaphore> signalSemaphores3 = { m_renderFinishedSemaphore };
-	std::vector<VkPipelineStageFlags> waitStages3 = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
-	m_textOverlay.submit(imageIndex, waitStages3, waitSemaphores3, signalSemaphores3);
-
-	VkPresentInfoKHR presentInfo = {};
-	presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-
-	presentInfo.waitSemaphoreCount = 1;
-	presentInfo.pWaitSemaphores = signalSemaphores3.data();
-
-	VkSwapchainKHR swapChains[] = { m_swapChain.swapChain };
-	presentInfo.swapchainCount = 1;
-	presentInfo.pSwapchains = swapChains;
-	presentInfo.pImageIndices = &imageIndex;
-	presentInfo.pResults = nullptr; // Optional
-
-	result = vkQueuePresentKHR(m_presentQueue, &presentInfo);
+	result = m_vulkanManager.queuePresent({ m_finalOutputFinishedSemaphore }, imageIndex);
 
 	if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR)
 	{
@@ -459,12 +420,14 @@ void DeferredRenderer::createGraphicsPipelines()
 
 void DeferredRenderer::createCommandPools()
 {
-	createCommandPool(m_device, m_queueFamilyIndices.graphicsFamily, m_graphicsCommandPool);
-	createCommandPool(m_device, m_queueFamilyIndices.computeFamily, m_computeCommandPool);
+	m_graphicsCommandPool = m_vulkanManager.createCommandPool(VK_QUEUE_GRAPHICS_BIT);
+	m_computeCommandPool = m_vulkanManager.createCommandPool(VK_QUEUE_COMPUTE_BIT);
 }
 
 void DeferredRenderer::createComputeResources()
 {
+	using namespace rj::helper_functions;
+
 	// BRDF LUT
 	std::string brdfFileName = "";
 	if (fileExist(BRDF_BASE_DIR BRDF_NAME))
@@ -472,45 +435,38 @@ void DeferredRenderer::createComputeResources()
 		brdfFileName = BRDF_BASE_DIR BRDF_NAME;
 	}
 
-	m_bakedBRDFs.resize(1, { m_device });
-
-	VkSamplerCreateInfo clampedSampler = {};
-	getDefaultSamplerCreateInfo(clampedSampler);
-	clampedSampler.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-	clampedSampler.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-	clampedSampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-	clampedSampler.anisotropyEnable = VK_FALSE;
-	clampedSampler.maxAnisotropy = 0.f;
+	m_bakedBRDFs.resize(1, {});
 
 	if (brdfFileName != "")
 	{
 		// Do not generate mip levels for BRDF LUTs
-		loadTextureWithSampler(m_physicalDevice, m_device, m_graphicsCommandPool, m_graphicsQueue, false, clampedSampler, brdfFileName, m_bakedBRDFs[0]);
+		loadTexture2D(&m_bakedBRDFs[0], &m_vulkanManager, brdfFileName, false, false);
+		m_bakedBRDFs[0].samplers.resize(1);
+		m_bakedBRDFs[0].samplers[0] = m_vulkanManager.createSampler(VK_FILTER_LINEAR, VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_NEAREST,
+			VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 		m_bakedBrdfReady = true;
 	}
 	else
 	{
-		m_bakedBRDFs[0].mipLevels = 1;
 		m_bakedBRDFs[0].format = VK_FORMAT_R32G32_SFLOAT;
+		m_bakedBRDFs[0].width = BRDF_LUT_SIZE;
+		m_bakedBRDFs[0].height = BRDF_LUT_SIZE;
+		m_bakedBRDFs[0].depth = 1;
+		m_bakedBRDFs[0].mipLevelCount = 1;
+		m_bakedBRDFs[0].layerCount = 1;
 
-		createImage(
-			m_physicalDevice, m_device,
-			BRDF_LUT_SIZE, BRDF_LUT_SIZE, m_bakedBRDFs[0].format,
-			VK_IMAGE_TILING_OPTIMAL,
-			VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, // want to read back and store to disk
-			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-			m_bakedBRDFs[0].image, m_bakedBRDFs[0].imageMemory);
+		m_bakedBRDFs[0].image = m_vulkanManager.createImage2D(m_bakedBRDFs[0].width, m_bakedBRDFs[0].height, m_bakedBRDFs[0].format,
+			VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-		transitionImageLayout(m_device, m_graphicsCommandPool, m_graphicsQueue,
-			m_bakedBRDFs[0].image, m_bakedBRDFs[0].format, 1, VK_IMAGE_LAYOUT_PREINITIALIZED, VK_IMAGE_LAYOUT_GENERAL);
+		m_vulkanManager.transitionImageLayout(m_bakedBRDFs[0].image, VK_IMAGE_LAYOUT_GENERAL);
 
-		createImageView2D(m_device, m_bakedBRDFs[0].image, m_bakedBRDFs[0].format, VK_IMAGE_ASPECT_COLOR_BIT, 1, m_bakedBRDFs[0].imageView);
+		m_bakedBRDFs[0].imageViews.resize(1);
+		m_bakedBRDFs[0].imageViews[0] = m_vulkanManager.createImageView2D(m_bakedBRDFs[0].image, VK_IMAGE_ASPECT_COLOR_BIT);
 
-		clampedSampler.maxLod = static_cast<float>(m_bakedBRDFs[0].mipLevels - 1);
-		if (vkCreateSampler(m_device, &clampedSampler, nullptr, m_bakedBRDFs[0].sampler.replace()) != VK_SUCCESS)
-		{
-			throw std::runtime_error("failed to create brdf lut sampler!");
-		}
+		m_bakedBRDFs[0].samplers.resize(1);
+		m_bakedBRDFs[0].samplers[0] = m_vulkanManager.createSampler(VK_FILTER_LINEAR, VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_NEAREST,
+			VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 
 		m_shouldSaveBakedBrdf = true;
 	}
@@ -518,104 +474,104 @@ void DeferredRenderer::createComputeResources()
 
 void DeferredRenderer::createDepthResources()
 {
+	VkExtent2D swapChainExtent = m_vulkanManager.getSwapChainExtent();
 	VkFormat depthFormat = findDepthFormat();
 
 	m_depthImage.format = depthFormat;
+	m_depthImage.width = swapChainExtent.width;
+	m_depthImage.height = swapChainExtent.height;
+	m_depthImage.depth = 1;
+	m_depthImage.mipLevelCount = 1;
+	m_depthImage.layerCount = 1;
 
-	createImage(m_physicalDevice, m_device,
-		m_swapChain.swapChainExtent.width, m_swapChain.swapChainExtent.height, depthFormat,
-		VK_IMAGE_TILING_OPTIMAL,
+	m_depthImage.image = m_vulkanManager.createImage2D(m_depthImage.width, m_depthImage.height, m_depthImage.format,
 		VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-		m_depthImage.image, m_depthImage.imageMemory);
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-	createImageView2D(m_device, m_depthImage.image, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT, 1, m_depthImage.imageView);
+	m_depthImage.imageViews.resize(1);
+	m_depthImage.imageViews[0] = m_vulkanManager.createImageView2D(m_depthImage.image, VK_IMAGE_ASPECT_COLOR_BIT);
 
-	transitionImageLayout(m_device, m_graphicsCommandPool, m_graphicsQueue,
-		m_depthImage.image, depthFormat, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+	m_vulkanManager.transitionImageLayout(m_depthImage.image, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
 
-	VkSamplerCreateInfo samplerInfo = {};
-	getDefaultSamplerCreateInfo(samplerInfo);
-
-	if (vkCreateSampler(m_device, &samplerInfo, nullptr, m_depthImage.sampler.replace()) != VK_SUCCESS)
-	{
-		throw std::runtime_error("failed to create lighting result image sampler.");
-	}
+	m_depthImage.samplers.resize(1);
+	m_depthImage.samplers[0] = m_vulkanManager.createSampler(VK_FILTER_NEAREST, VK_FILTER_NEAREST, VK_SAMPLER_MIPMAP_MODE_NEAREST,
+		VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 }
 
 void DeferredRenderer::createColorAttachmentResources()
 {
+	VkExtent2D swapChainExtent = m_vulkanManager.getSwapChainExtent();
+
 	// Gbuffer images
-	for (auto &image : m_gbufferImages)
+	m_gbufferImages.resize(m_numGBuffers);
+	for (uint32_t i = 0; i < m_numGBuffers; ++i)
 	{
-		createImage(m_physicalDevice, m_device,
-			m_swapChain.swapChainExtent.width, m_swapChain.swapChainExtent.height, image.format,
-			VK_IMAGE_TILING_OPTIMAL,
+		auto &image = m_gbufferImages[i];
+		image.format = m_gbufferFormats[i];
+		image.width = swapChainExtent.width;
+		image.height = swapChainExtent.height;
+		image.depth = 1;
+		image.mipLevelCount = 1;
+		image.layerCount = 1;
+
+		image.image = m_vulkanManager.createImage2D(image.width, image.height, image.format,
 			VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-			image.image, image.imageMemory);
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-		createImageView2D(m_device, image.image, image.format, VK_IMAGE_ASPECT_COLOR_BIT, 1, image.imageView);
+		image.imageViews.resize(1);
+		image.imageViews[0] = m_vulkanManager.createImageView2D(image.image, VK_IMAGE_ASPECT_COLOR_BIT);
 
-		VkSamplerCreateInfo samplerInfo = {};
-		getDefaultSamplerCreateInfo(samplerInfo);
-
-		if (vkCreateSampler(m_device, &samplerInfo, nullptr, image.sampler.replace()) != VK_SUCCESS)
-		{
-			throw std::runtime_error("failed to create lighting result image sampler.");
-		}
+		image.samplers.resize(1);
+		image.samplers[0] = m_vulkanManager.createSampler(VK_FILTER_NEAREST, VK_FILTER_NEAREST, VK_SAMPLER_MIPMAP_MODE_NEAREST,
+			VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 	}
 
 	// Lighting result image
-	createImage(m_physicalDevice, m_device,
-		m_swapChain.swapChainExtent.width, m_swapChain.swapChainExtent.height, m_lightingResultImage.format,
-		VK_IMAGE_TILING_OPTIMAL,
-		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-		m_lightingResultImage.image, m_lightingResultImage.imageMemory);
+	m_lightingResultImage.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+	m_lightingResultImage.width = swapChainExtent.width;
+	m_lightingResultImage.height = swapChainExtent.height;
+	m_lightingResultImage.depth = 1;
+	m_lightingResultImage.mipLevelCount = 1;
+	m_lightingResultImage.layerCount = 1;
 
-	createImageView2D(m_device, m_lightingResultImage.image, m_lightingResultImage.format, VK_IMAGE_ASPECT_COLOR_BIT, 1, m_lightingResultImage.imageView);
+	m_lightingResultImage.image = m_vulkanManager.createImage2D(m_lightingResultImage.width, m_lightingResultImage.height, m_lightingResultImage.format,
+		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-	VkSamplerCreateInfo lightingSamplerInfo = {};
-	getDefaultSamplerCreateInfo(lightingSamplerInfo);
-	lightingSamplerInfo.magFilter = VK_FILTER_NEAREST;
-	lightingSamplerInfo.minFilter = VK_FILTER_NEAREST;
-	lightingSamplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-	lightingSamplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-	lightingSamplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+	m_lightingResultImage.imageViews.resize(1);
+	m_lightingResultImage.imageViews[0] = m_vulkanManager.createImageView2D(m_lightingResultImage.image, VK_IMAGE_ASPECT_COLOR_BIT);
 
-	if (vkCreateSampler(m_device, &lightingSamplerInfo, nullptr, m_lightingResultImage.sampler.replace()) != VK_SUCCESS)
-	{
-		throw std::runtime_error("failed to create lighting result image sampler.");
-	}
+	m_lightingResultImage.samplers.resize(1);
+	m_lightingResultImage.samplers[0] = m_vulkanManager.createSampler(VK_FILTER_NEAREST, VK_FILTER_NEAREST, VK_SAMPLER_MIPMAP_MODE_NEAREST,
+		VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 
 	// post effects
-	for (auto &image : m_postEffectImages)
+	m_postEffectImages.resize(m_numPostEffectImages);
+	for (uint32_t i = 0; i < m_numPostEffectImages; ++i)
 	{
-		createImage(m_physicalDevice, m_device,
-			m_swapChain.swapChainExtent.width, m_swapChain.swapChainExtent.height, image.format,
-			VK_IMAGE_TILING_OPTIMAL,
-			VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-			image.image, image.imageMemory);
+		auto &image = m_postEffectImages[i];
+		image.format = m_postEffectImageFormats[i];
+		image.width = swapChainExtent.width;
+		image.height = swapChainExtent.height;
+		image.depth = 1;
+		image.mipLevelCount = 1;
+		image.layerCount = 1;
 
-		createImageView2D(m_device, image.image, image.format, VK_IMAGE_ASPECT_COLOR_BIT, 1, image.imageView);
+		image.image = m_vulkanManager.createImage2D(image.width, image.height, image.format,
+			VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
-		VkSamplerCreateInfo samplerInfo = {};
-		getDefaultSamplerCreateInfo(samplerInfo);
-		samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-		samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-		samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+		image.imageViews.resize(1);
+		image.imageViews[0] = m_vulkanManager.createImageView2D(image.image, VK_IMAGE_ASPECT_COLOR_BIT);
 
-		if (vkCreateSampler(m_device, &samplerInfo, nullptr, image.sampler.replace()) != VK_SUCCESS)
-		{
-			throw std::runtime_error("failed to create post effect image sampler.");
-		}
+		image.samplers.resize(1);
+		image.samplers[0] = m_vulkanManager.createSampler(VK_FILTER_LINEAR, VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_NEAREST,
+			VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 	}
 }
 
 void DeferredRenderer::loadAndPrepareAssets()
 {
+	using namespace rj::helper_functions;
+
 	// TODO: implement scene file to allow flexible model loading
 	std::string skyboxFileName = "../models/sky_sphere.obj";
 	std::string unfilteredProbeFileName = PROBE_BASE_DIR "Unfiltered_HDR.dds";

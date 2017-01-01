@@ -204,6 +204,14 @@ namespace rj
 			std::unordered_map<uint32_t, std::vector<VkDescriptorImageInfo>> imageInfos;
 			std::vector<VkWriteDescriptorSet> writeInfos;
 		};
+
+		struct QueueSubmitInfo
+		{
+			std::vector<VkCommandBuffer> cmdBuffers;
+			std::vector<VkPipelineStageFlags> waitStages;
+			std::vector<VkSemaphore> waitSemaphores;
+			std::vector<VkSemaphore> signalSemaphores;
+		};
 	}
 
 	using namespace helper_functions;
@@ -1193,7 +1201,7 @@ namespace rj
 		// --- Buffer related ---
 
 		// --- Sampler creation ---
-		uint32_t creationSampler(VkFilter magFilter, VkFilter minFilter, VkSamplerMipmapMode mipmapMode,
+		uint32_t createSampler(VkFilter magFilter, VkFilter minFilter, VkSamplerMipmapMode mipmapMode,
 			VkSamplerAddressMode addressModeU, VkSamplerAddressMode addressModeV, VkSamplerAddressMode addressModeW,
 			float minLod = 0.f, float maxLod = 0.f, float mipLodBias = 0.f, VkBool32 anisotropyEnable = VK_FALSE,
 			float maxAnisotropy = 0.f, VkBool32 compareEnable = VK_FALSE, VkCompareOp compareOp = VK_COMPARE_OP_NEVER,
@@ -1836,54 +1844,91 @@ namespace rj
 			}
 		}
 
-		void queueSubmit(VkQueueFlags queueType, const std::vector<uint32_t> &cmdBufferNames,
-			const std::vector<uint32_t> &waitSemaphoreNames = {},
-			const std::vector<VkPipelineStageFlags> &waitStageMasks = {},
-			const std::vector<uint32_t> &signalSemaphoreNames = {}) const
+		void beginQueueSubmit(VkQueueFlags queueType)
 		{
-			assert(!cmdBufferNames.empty());
+			m_curQueueSubmitInfos.clear();
 
-			VkQueue queue = VK_NULL_HANDLE;
 			switch (queueType)
 			{
 			case VK_QUEUE_COMPUTE_BIT:
-				queue = m_device.getComputeQueue();
+				m_curSubmitQueue = m_device.getComputeQueue();
 				break;
 			default:
-				queue = m_device.getGraphicsQueue();
+				m_curSubmitQueue = m_device.getGraphicsQueue();
 				break;
 			}
+		}
 
-			std::vector<VkCommandBuffer> cmdBuffers;
+		void queueSubmitNewSubmit(const std::vector<uint32_t> &cmdBufferNames,
+			const std::vector<uint32_t> &waitSemaphoreNames = {},
+			const std::vector<VkPipelineStageFlags> &waitStageMasks = {},
+			const std::vector<uint32_t> &signalSemaphoreNames = {})
+		{
+			assert(!cmdBufferNames.empty());
+			assert(waitSemaphoreNames.size() == waitStageMasks.size());
+
+			m_curQueueSubmitInfos.push_back({});
+			auto &info = m_curQueueSubmitInfos.back();
+
+			auto &cmdBuffers = info.cmdBuffers;
 			cmdBuffers.reserve(cmdBufferNames.size());
 			for (auto name : cmdBufferNames)
 			{
 				cmdBuffers.push_back(m_commandBuffers.at(name));
 			}
 
-			std::vector<VkSemaphore> waitSemaphores;
+			info.waitStages.assign(waitStageMasks.begin(), waitStageMasks.end());
+
+			auto &waitSemaphores = info.waitSemaphores;
 			waitSemaphores.reserve(waitSemaphoreNames.size());
 			for (auto name : waitSemaphoreNames)
 			{
 				waitSemaphores.push_back(m_semaphores[name]);
 			}
 
-			std::vector<VkSemaphore> signalSemaphores;
+			auto &signalSemaphores = info.signalSemaphores;
 			signalSemaphores.reserve(signalSemaphoreNames.size());
 			for (auto name : signalSemaphoreNames)
 			{
 				signalSemaphores.push_back(m_semaphores[name]);
 			}
+		}
 
-			VkSubmitInfo info = {};
-			info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-			info.commandBufferCount = static_cast<uint32_t>(cmdBuffers.size());
-			info.pCommandBuffers = cmdBuffers.data();
-			info.pWaitDstStageMask = waitStageMasks.data();
-			info.waitSemaphoreCount = static_cast<uint32_t>(waitSemaphores.size());
-			info.pWaitSemaphores = waitSemaphores.data();
-			info.signalSemaphoreCount = static_cast<uint32_t>(signalSemaphores.size());
-			info.pSignalSemaphores = signalSemaphores.data();
+		void endQueueSubmit(uint32_t fenceName = std::numeric_limits<uint32_t>::max(), bool waitForFence = true)
+		{
+			uint32_t numSubmits = m_curQueueSubmitInfos.size();
+			assert(numSubmits > 0);
+			std::vector<VkSubmitInfo> infos(numSubmits, {});
+
+			for (uint32_t i = 0; i < numSubmits; ++i)
+			{
+				const auto &src = m_curQueueSubmitInfos[i];
+				auto &info = infos[i];
+
+				info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+				info.commandBufferCount = static_cast<uint32_t>(src.cmdBuffers.size());
+				info.pCommandBuffers = src.cmdBuffers.data();
+				info.waitSemaphoreCount = static_cast<uint32_t>(src.waitSemaphores.size());
+				info.pWaitSemaphores = src.waitSemaphores.data();
+				info.pWaitDstStageMask = src.waitStages.data();
+				info.signalSemaphoreCount = static_cast<uint32_t>(src.signalSemaphores.size());
+				info.pSignalSemaphores = src.signalSemaphores.data();
+			}
+
+			assert(m_curSubmitQueue);
+			VkFence fence = fenceName == std::numeric_limits<uint32_t>::max() ? VK_NULL_HANDLE : m_fences[fenceName];
+			if (vkQueueSubmit(m_curSubmitQueue, numSubmits, infos.data(), fence) != VK_SUCCESS)
+			{
+				throw std::runtime_error("failed to submit");
+			}
+
+			if (fence && waitForFence)
+			{
+				vkWaitForFences(m_device, 1, &fence, VK_TRUE, std::numeric_limits<uint64_t>::max());
+			}
+
+			m_curQueueSubmitInfos.clear();
+			m_curSubmitQueue = VK_NULL_HANDLE;
 		}
 		// --- Command buffer related ---
 
@@ -1985,19 +2030,16 @@ namespace rj
 			return m_swapChain.extent();
 		}
 
-		void swapChainNextImageIndex(uint32_t *pIdx, uint32_t signalSemaphoreName, uint32_t waitFenceName,
+		VkResult swapChainNextImageIndex(uint32_t *pIdx, uint32_t signalSemaphoreName, uint32_t waitFenceName,
 			uint64_t timeout = std::numeric_limits<uint64_t>::max())
 		{
 			VkSemaphore semaphore = signalSemaphoreName == std::numeric_limits<uint32_t>::max() ? VK_NULL_HANDLE : m_semaphores[signalSemaphoreName];
 			VkFence fence = waitFenceName == std::numeric_limits<uint32_t>::max() ? VK_NULL_HANDLE : m_fences[waitFenceName];
 
-			if (vkAcquireNextImageKHR(m_device, m_swapChain, timeout, semaphore, fence, pIdx) != VK_SUCCESS)
-			{
-				throw std::runtime_error("failed to acquire next image index");
-			}
+			return vkAcquireNextImageKHR(m_device, m_swapChain, timeout, semaphore, fence, pIdx);
 		}
 
-		void queuePresent(const std::vector<uint32_t> &waitSemaphoreNames, uint32_t imageIdx)
+		VkResult queuePresent(const std::vector<uint32_t> &waitSemaphoreNames, uint32_t imageIdx)
 		{
 			VkSwapchainKHR swapChain = m_swapChain;
 			std::vector<VkSemaphore> waitSemaphores;
@@ -2015,10 +2057,7 @@ namespace rj
 			info.pSwapchains = &swapChain;
 			info.pImageIndices = &imageIdx;
 
-			if (vkQueuePresentKHR(m_device.getPresentQueue(), &info) != VK_SUCCESS)
-			{
-				throw std::runtime_error("failed to present swap chain image");
-			}
+			return vkQueuePresentKHR(m_device.getPresentQueue(), &info);
 		}
 
 		int windowShouldClose() const
@@ -2123,5 +2162,8 @@ namespace rj
 
 		std::vector<uint32_t> m_availableFenceNames;
 		std::vector<VDeleter<VkFence>> m_fences;
+
+		std::vector<QueueSubmitInfo> m_curQueueSubmitInfos;
+		VkQueue m_curSubmitQueue;
 	};
 }

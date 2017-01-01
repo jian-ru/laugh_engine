@@ -157,6 +157,7 @@ protected:
 	virtual const std::string &getWindowTitle();
 	virtual const VkPhysicalDeviceFeatures &getEnabledPhysicalDeviceFeatures();
 
+	virtual void createSamplers() = 0;
 	virtual void createRenderPasses() = 0;
 	virtual void createDescriptorSetLayouts() = 0;
 	virtual void createComputePipelines() {}

@@ -118,6 +118,12 @@ namespace rj
 			return buffer;
 		}
 
+		inline bool fileExist(const std::string &fn)
+		{
+			std::ifstream ifs(fn);
+			return ifs.good();
+		}
+
 		uint32_t findMemoryType(VkPhysicalDevice physicalDevice, uint32_t typeFilter, VkMemoryPropertyFlags properties)
 		{
 			VkPhysicalDeviceMemoryProperties memProperties;
