@@ -586,10 +586,10 @@ void DeferredRenderer::loadAndPrepareAssets()
 		diffuseProbeFileName = PROBE_BASE_DIR "Diffuse_HDR.dds";
 	}
 
-	m_skybox.load(m_physicalDevice, m_device, m_graphicsCommandPool, m_graphicsQueue, skyboxFileName, unfilteredProbeFileName, specProbeFileName, diffuseProbeFileName);
+	m_skybox.load(skyboxFileName, unfilteredProbeFileName, specProbeFileName, diffuseProbeFileName);
 
 	std::vector<std::string> modelNames = MODEL_NAMES;
-	m_models.resize(modelNames.size(), { m_device });
+	m_models.resize(modelNames.size(), { &m_vulkanManager });
 
 	for (size_t i = 0; i < m_models.size(); ++i)
 	{
@@ -606,10 +606,7 @@ void DeferredRenderer::loadAndPrepareAssets()
 			aoMapName = "../textures/" + name + "/AO.dds";
 		}
 
-		m_models[i].load(
-			m_physicalDevice, m_device,
-			m_graphicsCommandPool, m_graphicsQueue,
-			modelFileName, albedoMapName, normalMapName, roughnessMapName, metalnessMapName, aoMapName);
+		m_models[i].load(modelFileName, albedoMapName, normalMapName, roughnessMapName, metalnessMapName, aoMapName);
 		m_models[i].worldRotation = glm::quat(glm::vec3(0.f, glm::pi<float>(), 0.f));
 	}
 }
@@ -628,18 +625,17 @@ void DeferredRenderer::createUniformBuffers()
 	}
 
 	// device
-	m_allUniformBuffer.sizeInBytes = m_allUniformHostData.size();
-	m_allUniformBuffer.numElements = 1;
+	m_allUniformBuffer.size = m_allUniformHostData.size();
+	m_allUniformBuffer.offset = 0;
 
-	createBuffer(
-		m_physicalDevice, m_device,
-		m_allUniformBuffer.sizeInBytes, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-		m_allUniformBuffer.buffer, m_allUniformBuffer.bufferMemory);
+	m_allUniformBuffer.buffer = m_vulkanManager.createBuffer(m_allUniformBuffer.size, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 }
 
 void DeferredRenderer::createDescriptorPools()
 {
+	m_vulkanManager.beginCreateDescriptorPool(8 + static_cast<uint32_t>(m_models.size()));
+
 	// create descriptor pool
 	std::array<VkDescriptorPoolSize, 4> poolSizes = {};
 	poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
