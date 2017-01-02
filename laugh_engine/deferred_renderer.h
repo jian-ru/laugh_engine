@@ -634,44 +634,22 @@ void DeferredRenderer::createUniformBuffers()
 
 void DeferredRenderer::createDescriptorPools()
 {
-	m_vulkanManager.beginCreateDescriptorPool(8 + static_cast<uint32_t>(m_models.size()));
+	m_vulkanManager.beginCreateDescriptorPool(8 + m_models.size());
 
-	// create descriptor pool
-	std::array<VkDescriptorPoolSize, 4> poolSizes = {};
-	poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	poolSizes[0].descriptorCount = 6 + 2 * m_models.size();
+	m_vulkanManager.descriptorPoolAddDescriptors(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 6 + 2 * m_models.size());
+	m_vulkanManager.descriptorPoolAddDescriptors(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 14 + m_models.size() * VMesh::numMapsPerMesh + m_bakedBRDFs.size());
+	m_vulkanManager.descriptorPoolAddDescriptors(VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 4);
+	m_vulkanManager.descriptorPoolAddDescriptors(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1);
 
-	poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	// BRDF LUTs + radiance map + diffuse irradiance map + specular irradiance map + lighting result + g-buffers + depth image + model textures
-	poolSizes[1].descriptorCount = 14 + m_models.size() * VMesh::numMapsPerMesh + m_bakedBRDFs.size();
-
-	poolSizes[2].type = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
-	poolSizes[2].descriptorCount = 4;
-
-	poolSizes[3].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-	poolSizes[3].descriptorCount = 1;
-
-	VkDescriptorPoolCreateInfo poolInfo = {};
-	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-	poolInfo.poolSizeCount = poolSizes.size();
-	poolInfo.pPoolSizes = poolSizes.data();
-	poolInfo.maxSets = 8 + m_models.size();
-
-	if (vkCreateDescriptorPool(m_device, &poolInfo, nullptr, m_descriptorPool.replace()) != VK_SUCCESS)
-	{
-		throw std::runtime_error("failed to create descriptor pool!");
-	}
+	m_descriptorPool = m_vulkanManager.endCreateDescriptorPool();
 }
 
 void DeferredRenderer::createDescriptorSets()
 {
-	if (vkResetDescriptorPool(m_device, m_descriptorPool, 0) != VK_SUCCESS)
-	{
-		throw std::runtime_error("Cannot reset m_descriptorPool");
-	}
+	m_vulkanManager.resetDescriptorPool(m_descriptorPool);
 
 	// create descriptor sets
-	std::vector<VkDescriptorSetLayout> layouts;
+	std::vector<uint32_t> layouts;
 	layouts.push_back(m_brdfLutDescriptorSetLayout);
 	layouts.push_back(m_specEnvPrefilterDescriptorSetLayout);
 	layouts.push_back(m_skyboxDescriptorSetLayout);
@@ -686,18 +664,7 @@ void DeferredRenderer::createDescriptorSets()
 		layouts.push_back(m_bloomDescriptorSetLayout);
 	}
 
-	std::vector<VkDescriptorSet> sets(layouts.size());
-
-	VkDescriptorSetAllocateInfo allocInfo = {};
-	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-	allocInfo.descriptorPool = m_descriptorPool;
-	allocInfo.descriptorSetCount = static_cast<uint32_t>(sets.size());
-	allocInfo.pSetLayouts = layouts.data();
-
-	if (vkAllocateDescriptorSets(m_device, &allocInfo, sets.data()) != VK_SUCCESS)
-	{
-		throw std::runtime_error("failed to allocate descriptor set!");
-	}
+	std::vector<uint32_t> sets = m_vulkanManager.allocateDescriptorSets(m_descriptorPool, layouts);
 
 	uint32_t idx = 0;
 	m_brdfLutDescriptorSet = sets[idx++];
@@ -728,170 +695,59 @@ void DeferredRenderer::createDescriptorSets()
 
 void DeferredRenderer::createFramebuffers()
 {
+	// Used in final output pass
+	m_finalOutputFramebuffers = m_vulkanManager.createSwapChainFramebuffers(m_finalOutputRenderPass);
+
 	// Diffuse irradiance map pass
 	if (!m_skybox.diffMapReady)
 	{
-		std::array<VkImageView, 1> attachments =
-		{
-			m_skybox.diffuseIrradianceMap.imageView
-		};
-
-		VkFramebufferCreateInfo framebufferInfo = {};
-		framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-		framebufferInfo.renderPass = m_specEnvPrefilterRenderPass;
-		framebufferInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
-		framebufferInfo.pAttachments = attachments.data();
-		framebufferInfo.width = DIFF_IRRADIANCE_MAP_SIZE;
-		framebufferInfo.height = DIFF_IRRADIANCE_MAP_SIZE;
-		framebufferInfo.layers = 6;
-
-		if (vkCreateFramebuffer(m_device, &framebufferInfo, nullptr, m_diffEnvPrefilterFramebuffer.replace()) != VK_SUCCESS)
-		{
-			throw std::runtime_error("failed to create framebuffer!");
-		}
+		m_diffEnvPrefilterFramebuffer = m_vulkanManager.createFramebuffer(m_specEnvPrefilterRenderPass, { m_skybox.diffuseIrradianceMap.imageViews[0] });
 	}
 
 	// Specular irradiance map pass
 	if (!m_skybox.specMapReady)
 	{
-		m_specEnvPrefilterFramebuffers.resize(m_skybox.specularIrradianceMap.mipLevels, { m_device, vkDestroyFramebuffer });
-		for (uint32_t level = 0; level < m_skybox.specularIrradianceMap.mipLevels; ++level)
+		m_specEnvPrefilterFramebuffers.resize(m_skybox.specularIrradianceMap.mipLevelCount);
+		for (uint32_t level = 0; level < m_skybox.specularIrradianceMap.mipLevelCount; ++level)
 		{
-			uint32_t faceWidth = SPEC_IRRADIANCE_MAP_SIZE / (1 << level);
-			uint32_t faceHeight = faceWidth;
-
-			std::array<VkImageView, 1> attachments =
-			{
-				m_skybox.specularIrradianceMap.imageViews[level]
-			};
-
-			VkFramebufferCreateInfo framebufferInfo = {};
-			framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-			framebufferInfo.renderPass = m_specEnvPrefilterRenderPass;
-			framebufferInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
-			framebufferInfo.pAttachments = attachments.data();
-			framebufferInfo.width = faceWidth;
-			framebufferInfo.height = faceHeight;
-			framebufferInfo.layers = 6;
-
-			if (vkCreateFramebuffer(m_device, &framebufferInfo, nullptr, m_specEnvPrefilterFramebuffers[level].replace()) != VK_SUCCESS)
-			{
-				throw std::runtime_error("failed to create framebuffer!");
-			}
+			m_specEnvPrefilterFramebuffers[level] =
+				m_vulkanManager.createFramebuffer(m_specEnvPrefilterRenderPass, { m_skybox.specularIrradianceMap.imageViews[level + 1] });
 		}
 	}
 
 	// Used in geometry and lighting pass
 	{
-		std::array<VkImageView, 5> attachments =
+		std::vector<uint32_t> attachmentViews =
 		{
-			m_depthImage.imageView,
-			m_gbufferImages[0].imageView,
-			m_gbufferImages[1].imageView,
-			m_gbufferImages[2].imageView,
-			m_lightingResultImage.imageView
+			m_depthImage.imageViews[0],
+			m_gbufferImages[0].imageViews[0],
+			m_gbufferImages[1].imageViews[0],
+			m_gbufferImages[2].imageViews[0],
+			m_lightingResultImage.imageViews[0]
 		};
 
-		VkFramebufferCreateInfo framebufferInfo = {};
-		framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-		framebufferInfo.renderPass = m_geomAndLightRenderPass;
-		framebufferInfo.attachmentCount = attachments.size();
-		framebufferInfo.pAttachments = attachments.data();
-		framebufferInfo.width = m_swapChain.swapChainExtent.width;
-		framebufferInfo.height = m_swapChain.swapChainExtent.height;
-		framebufferInfo.layers = 1;
-
-		if (vkCreateFramebuffer(m_device, &framebufferInfo, nullptr, m_geomAndLightingFramebuffer.replace()) != VK_SUCCESS)
-		{
-			throw std::runtime_error("failed to create framebuffer!");
-		}
-	}
-
-	// Used in final output pass
-	m_finalOutputFramebuffers.resize(m_swapChain.swapChainImages.size(), VDeleter<VkFramebuffer>{m_device, vkDestroyFramebuffer});
-
-	for (size_t i = 0; i < m_finalOutputFramebuffers.size(); ++i)
-	{
-		std::array<VkImageView, 1> attachments =
-		{
-			m_swapChain.swapChainImageViews[i]
-		};
-
-		VkFramebufferCreateInfo framebufferInfo = {};
-		framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-		framebufferInfo.renderPass = m_finalOutputRenderPass;
-		framebufferInfo.attachmentCount = attachments.size();
-		framebufferInfo.pAttachments = attachments.data();
-		framebufferInfo.width = m_swapChain.swapChainExtent.width;
-		framebufferInfo.height = m_swapChain.swapChainExtent.height;
-		framebufferInfo.layers = 1;
-
-		if (vkCreateFramebuffer(m_device, &framebufferInfo, nullptr, m_finalOutputFramebuffers[i].replace()) != VK_SUCCESS)
-		{
-			throw std::runtime_error("failed to create framebuffer!");
-		}
+		m_geomAndLightingFramebuffer = m_vulkanManager.createFramebuffer(m_geomAndLightRenderPass, attachmentViews);
 	}
 
 	// Bloom
-	m_postEffectFramebuffers.resize(3, { m_device, vkDestroyFramebuffer });
 	{
-		std::array<VkImageView, 1> attachments =
-		{
-			m_postEffectImages[0].imageView
-		};
+		m_postEffectFramebuffers.resize(3);
 
-		VkFramebufferCreateInfo framebufferInfo = {};
-		framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-		framebufferInfo.renderPass = m_bloomRenderPasses[0];
-		framebufferInfo.attachmentCount = attachments.size();
-		framebufferInfo.pAttachments = attachments.data();
-		framebufferInfo.width = m_swapChain.swapChainExtent.width;
-		framebufferInfo.height = m_swapChain.swapChainExtent.height;
-		framebufferInfo.layers = 1;
-
-		if (vkCreateFramebuffer(m_device, &framebufferInfo, nullptr, m_postEffectFramebuffers[0].replace()) != VK_SUCCESS)
-		{
-			throw std::runtime_error("failed to create framebuffer!");
-		}
-
-		attachments[0] = m_postEffectImages[1].imageView;
-
-		if (vkCreateFramebuffer(m_device, &framebufferInfo, nullptr, m_postEffectFramebuffers[1].replace()) != VK_SUCCESS)
-		{
-			throw std::runtime_error("failed to create framebuffer!");
-		}
-
-		attachments[0] = m_lightingResultImage.imageView;
-		framebufferInfo.renderPass = m_bloomRenderPasses[1]; // no clear
-
-		if (vkCreateFramebuffer(m_device, &framebufferInfo, nullptr, m_postEffectFramebuffers[2].replace()) != VK_SUCCESS)
-		{
-			throw std::runtime_error("failed to create framebuffer!");
-		}
+		m_postEffectFramebuffers[0] = m_vulkanManager.createFramebuffer(m_bloomRenderPasses[0], { m_postEffectImages[0].imageViews[0] });
+		m_postEffectFramebuffers[1] = m_vulkanManager.createFramebuffer(m_bloomRenderPasses[0], { m_postEffectImages[1].imageViews[0] });
+		m_postEffectFramebuffers[2] = m_vulkanManager.createFramebuffer(m_bloomRenderPasses[1], { m_lightingResultImage.imageViews[0] });
 	}
 }
 
 void DeferredRenderer::createCommandBuffers()
 {
 	// Allocate graphics command buffers
-	if (vkResetCommandPool(m_device, m_graphicsCommandPool, VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT) != VK_SUCCESS)
-	{
-		throw std::runtime_error("Cannot reset m_graphicsCommandPool");
-	}
+	m_vulkanManager.resetCommandPool(m_graphicsCommandPool, VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT);
 
-	m_presentCommandBuffers.resize(m_swapChain.swapChainImages.size());
+	m_presentCommandBuffers.resize(m_finalOutputFramebuffers.size());
 
-	VkCommandBufferAllocateInfo allocInfo = {};
-	allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-	allocInfo.commandPool = m_graphicsCommandPool;
-	allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-	allocInfo.commandBufferCount = (uint32_t)m_presentCommandBuffers.size() + 3;
-
-	std::vector<VkCommandBuffer> commandBuffers(allocInfo.commandBufferCount);
-	if (vkAllocateCommandBuffers(m_device, &allocInfo, commandBuffers.data()) != VK_SUCCESS)
-	{
-		throw std::runtime_error("failed to allocate command buffers!");
-	}
+	std::vector<uint32_t> commandBuffers = m_vulkanManager.allocateCommandBuffers(m_graphicsCommandPool,
+		static_cast<uint32_t>(m_presentCommandBuffers.size()) + 3);
 
 	int idx;
 	for (idx = 0; idx < m_presentCommandBuffers.size(); ++idx)
@@ -909,22 +765,9 @@ void DeferredRenderer::createCommandBuffers()
 	createPresentCommandBuffers();
 
 	// compute command buffers
-	if (vkResetCommandPool(m_device, m_computeCommandPool, VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT) != VK_SUCCESS)
-	{
-		throw std::runtime_error("Cannot reset m_computeCommandPool");
-	}
+	m_vulkanManager.resetCommandPool(m_computeCommandPool, VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT);
 
-	allocInfo.commandPool = m_computeCommandPool;
-	allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-	allocInfo.commandBufferCount = 1;
-
-	commandBuffers.clear();
-	commandBuffers.resize(allocInfo.commandBufferCount);
-	if (vkAllocateCommandBuffers(m_device, &allocInfo, commandBuffers.data()) != VK_SUCCESS)
-	{
-		throw std::runtime_error("failed to allocate command buffers!");
-	}
-
+	commandBuffers = m_vulkanManager.allocateCommandBuffers(m_computeCommandPool, 1);
 	m_brdfLutCommandBuffer = commandBuffers[0];
 
 	createBrdfLutCommandBuffer();
@@ -932,409 +775,184 @@ void DeferredRenderer::createCommandBuffers()
 
 void DeferredRenderer::createSynchronizationObjects()
 {
-	VkSemaphoreCreateInfo semaphoreInfo = {};
-	semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+	m_imageAvailableSemaphore = m_vulkanManager.createSemaphore();
+	m_geomAndLightingCompleteSemaphore = m_vulkanManager.createSemaphore();
+	m_postEffectSemaphore = m_vulkanManager.createSemaphore();
+	m_finalOutputFinishedSemaphore = m_vulkanManager.createSemaphore();
+	m_renderFinishedSemaphore = m_vulkanManager.createSemaphore();
 
-	if (vkCreateSemaphore(m_device, &semaphoreInfo, nullptr, m_imageAvailableSemaphore.replace()) != VK_SUCCESS ||
-		vkCreateSemaphore(m_device, &semaphoreInfo, nullptr, m_geomAndLightingCompleteSemaphore.replace()) != VK_SUCCESS ||
-		vkCreateSemaphore(m_device, &semaphoreInfo, nullptr, m_postEffectSemaphore.replace()) != VK_SUCCESS ||
-		vkCreateSemaphore(m_device, &semaphoreInfo, nullptr, m_finalOutputFinishedSemaphore.replace()) != VK_SUCCESS ||
-		vkCreateSemaphore(m_device, &semaphoreInfo, nullptr, m_renderFinishedSemaphore.replace()) != VK_SUCCESS)
-	{
-		throw std::runtime_error("failed to create semaphores!");
-	}
-
-	VkFenceCreateInfo fenceInfo = {};
-	fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-
-	if (vkCreateFence(m_device, &fenceInfo, nullptr, m_brdfLutFence.replace()) != VK_SUCCESS ||
-		vkCreateFence(m_device, &fenceInfo, nullptr, m_envPrefilterFence.replace()) != VK_SUCCESS)
-	{
-		throw std::runtime_error("failed to create fences!");
-	}
+	m_brdfLutFence = m_vulkanManager.createFence();
+	m_envPrefilterFence = m_vulkanManager.createFence();
 }
 
 void DeferredRenderer::createSpecEnvPrefilterRenderPass()
 {
-	std::array<VkAttachmentDescription, 1> attachments = {};
+	m_vulkanManager.beginCreateRenderPass();
 
-	// Cube map faces of one mip level
-	attachments[0].format = m_skybox.specularIrradianceMap.format;
-	attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
-	attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-	attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-	attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-	attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-	attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-	attachments[0].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+	m_vulkanManager.renderPassAddAttachment(m_skybox.specularIrradianceMap.format,
+		VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
-	std::array<VkAttachmentReference, 1> colorAttachmentRefs = {};
-	colorAttachmentRefs[0].attachment = 0;
-	colorAttachmentRefs[0].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+	m_vulkanManager.beginDescribeSubpass();
+	m_vulkanManager.subpassAddColorAttachmentReference(0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+	m_vulkanManager.endDescribeSubpass();
 
-	std::array<VkSubpassDescription, 1> subPasses = {};
-	subPasses[0].pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-	subPasses[0].colorAttachmentCount = static_cast<uint32_t>(colorAttachmentRefs.size());
-	subPasses[0].pColorAttachments = colorAttachmentRefs.data();
+	m_vulkanManager.renderPassAddSubpassDependency(VK_SUBPASS_EXTERNAL, 0,
+		VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+		0, VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
 
-	std::array<VkSubpassDependency, 2> dependencies = {};
+	m_vulkanManager.renderPassAddSubpassDependency(0, VK_SUBPASS_EXTERNAL,
+		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+		VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, 0);
 
-	dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
-	dependencies[0].dstSubpass = 0;
-	dependencies[0].srcStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
-	dependencies[0].srcAccessMask = 0;
-	dependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-	dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-
-	dependencies[1].srcSubpass = 0;
-	dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
-	dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-	dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-	dependencies[1].dstStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-	dependencies[1].dstAccessMask = 0;
-
-	VkRenderPassCreateInfo renderPassInfo = {};
-	renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-	renderPassInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
-	renderPassInfo.pAttachments = attachments.data();
-	renderPassInfo.subpassCount = static_cast<uint32_t>(subPasses.size());
-	renderPassInfo.pSubpasses = subPasses.data();
-	renderPassInfo.dependencyCount = static_cast<uint32_t>(dependencies.size());
-	renderPassInfo.pDependencies = dependencies.data();
-
-	if (vkCreateRenderPass(m_device, &renderPassInfo, nullptr, m_specEnvPrefilterRenderPass.replace()) != VK_SUCCESS)
-	{
-		throw std::runtime_error("failed to create render pass!");
-	}
+	m_specEnvPrefilterRenderPass = m_vulkanManager.endCreateRenderPass();
 }
 
 void DeferredRenderer::createGeometryAndLightingRenderPass()
 {
-	// --- Attachments used in this render pass
-	std::array<VkAttachmentDescription, 5> attachments = {};
+	m_vulkanManager.beginCreateRenderPass();
 
+	// --- Attachments used in this render pass
 	// Depth
-	attachments[0].format = findDepthFormat();
-	attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
-	attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-	attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-	attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-	attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-	attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-	attachments[0].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	// Clear only happens in the FIRST subpass that uses this attachment
+	// VK_IMAGE_LAYOUT_UNDEFINED as initial layout means that we don't care about the initial layout of this attachment image (content may not be preserved)
+	m_vulkanManager.renderPassAddAttachment(m_depthImage.format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
 	// World space normal + albedo
 	// Normal has been perturbed by normal mapping
-	attachments[1].format = m_gbufferImages[0].format;
-	attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
-	attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; // only happen in the FIRST subpass that uses this attachment
-	attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-	attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-	attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-	attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED; // we don't care about the initial layout of this attachment image (content may not be preserved)
-	attachments[1].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	m_vulkanManager.renderPassAddAttachment(m_gbufferImages[0].format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
 	// World postion
-	attachments[2].format = m_gbufferImages[1].format;
-	attachments[2].samples = VK_SAMPLE_COUNT_1_BIT;
-	attachments[2].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-	attachments[2].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-	attachments[2].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-	attachments[2].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-	attachments[2].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-	attachments[2].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	m_vulkanManager.renderPassAddAttachment(m_gbufferImages[1].format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
 	// RMAI
-	attachments[3].format = m_gbufferImages[2].format;
-	attachments[3].samples = VK_SAMPLE_COUNT_1_BIT;
-	attachments[3].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-	attachments[3].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-	attachments[3].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-	attachments[3].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-	attachments[3].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-	attachments[3].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	m_vulkanManager.renderPassAddAttachment(m_gbufferImages[2].format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
 	// Lighting result
-	attachments[4].format = m_lightingResultImage.format;
-	attachments[4].samples = VK_SAMPLE_COUNT_1_BIT;
-	attachments[4].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-	attachments[4].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-	attachments[4].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-	attachments[4].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-	attachments[4].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-	attachments[4].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	m_vulkanManager.renderPassAddAttachment(m_lightingResultImage.format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
 	// --- Reference to render pass attachments used in each subpass
-	std::array<VkAttachmentReference, 3> geomColorAttachmentRefs = {};
-	geomColorAttachmentRefs[0].attachment = 1; // corresponds to the index of the corresponding element in the pAttachments array of the VkRenderPassCreateInfo structure
-	geomColorAttachmentRefs[0].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-	geomColorAttachmentRefs[1].attachment = 2;
-	geomColorAttachmentRefs[1].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-	geomColorAttachmentRefs[2].attachment = 3;
-	geomColorAttachmentRefs[2].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
-	std::array<VkAttachmentReference, 1> lightingColorAttachmentRefs = {};
-	lightingColorAttachmentRefs[0].attachment = 4;
-	lightingColorAttachmentRefs[0].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
-	std::array<VkAttachmentReference, 4> lightingInputAttachmentRefs = {};
-	lightingInputAttachmentRefs[0].attachment = 1;
-	lightingInputAttachmentRefs[0].layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-	lightingInputAttachmentRefs[1].attachment = 2;
-	lightingInputAttachmentRefs[1].layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-	lightingInputAttachmentRefs[2].attachment = 3;
-	lightingInputAttachmentRefs[2].layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-	lightingInputAttachmentRefs[3].attachment = 0;
-	lightingInputAttachmentRefs[3].layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-
-	VkAttachmentReference geomDepthAttachmentRef = {};
-	geomDepthAttachmentRef.attachment = 0;
-	geomDepthAttachmentRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-	VkAttachmentReference lightingDepthAttachmentRef = {};
-	lightingDepthAttachmentRef.attachment = 0;
-	lightingDepthAttachmentRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-
 	// --- Subpasses
-	std::array<VkSubpassDescription, 2> subPasses = {};
-
 	// Geometry subpass
-	subPasses[0].pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-	subPasses[0].colorAttachmentCount = static_cast<uint32_t>(geomColorAttachmentRefs.size());
-	subPasses[0].pColorAttachments = geomColorAttachmentRefs.data();
-	subPasses[0].pDepthStencilAttachment = &geomDepthAttachmentRef; // at most one depth-stencil attachment
+	m_vulkanManager.beginDescribeSubpass();
+	m_vulkanManager.subpassAddColorAttachmentReference(1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+	m_vulkanManager.subpassAddColorAttachmentReference(2, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+	m_vulkanManager.subpassAddColorAttachmentReference(3, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+	m_vulkanManager.subpassAddDepthAttachmentReference(0, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+	m_vulkanManager.endDescribeSubpass();
 
 	// Lighting subpass
-	subPasses[1].pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-	subPasses[1].colorAttachmentCount = static_cast<uint32_t>(lightingColorAttachmentRefs.size());
-	subPasses[1].pColorAttachments = lightingColorAttachmentRefs.data();
-	subPasses[1].inputAttachmentCount = static_cast<uint32_t>(lightingInputAttachmentRefs.size());
-	subPasses[1].pInputAttachments = lightingInputAttachmentRefs.data();
-	subPasses[1].pDepthStencilAttachment = &lightingDepthAttachmentRef;
+	m_vulkanManager.beginDescribeSubpass();
+	m_vulkanManager.subpassAddColorAttachmentReference(4, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+	m_vulkanManager.subpassAddInputAttachmentReference(1, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	m_vulkanManager.subpassAddInputAttachmentReference(2, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	m_vulkanManager.subpassAddInputAttachmentReference(3, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	m_vulkanManager.subpassAddInputAttachmentReference(0, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+	m_vulkanManager.subpassAddDepthAttachmentReference(0, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+	m_vulkanManager.endDescribeSubpass();
 
 	// --- Subpass dependencies
-	std::array<VkSubpassDependency, 3> dependencies = {};
+	m_vulkanManager.renderPassAddSubpassDependency(VK_SUBPASS_EXTERNAL, 0,
+		VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+		0,
+		VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+		VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
 
-	dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
-	dependencies[0].dstSubpass = 0;
-	dependencies[0].srcStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
-	dependencies[0].srcAccessMask = 0;
-	dependencies[0].dstStageMask = 
-		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-		VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
-		VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-	dependencies[0].dstAccessMask = 
-		VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
-		VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
-		VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-		VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+	m_vulkanManager.renderPassAddSubpassDependency(0, 1,
+		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+		VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+		VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+		VK_ACCESS_INPUT_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+		VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT);
 
-	dependencies[1].srcSubpass = 0;
-	dependencies[1].dstSubpass = 1;
-	dependencies[1].srcStageMask = 
-		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-		VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-	dependencies[1].srcAccessMask = 
-		VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
-		VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-	dependencies[1].dstStageMask = 
-		VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
-		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-		VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-	dependencies[1].dstAccessMask =
-		VK_ACCESS_INPUT_ATTACHMENT_READ_BIT |
-		VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
-		VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
-		VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
-
-	dependencies[2].srcSubpass = 1;
-	dependencies[2].dstSubpass = VK_SUBPASS_EXTERNAL;
-	dependencies[2].srcStageMask =
-		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-	dependencies[2].srcAccessMask =
-		VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-	dependencies[2].dstStageMask =
-		VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
-		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-	dependencies[2].dstAccessMask = 
-		VK_ACCESS_SHADER_READ_BIT |
-		VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
-		VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+	m_vulkanManager.renderPassAddSubpassDependency(1, VK_SUBPASS_EXTERNAL,
+		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+		VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+		VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+		VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
 
 	// --- Create render pass
-	VkRenderPassCreateInfo renderPassInfo = {};
-	renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-	renderPassInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
-	renderPassInfo.pAttachments = attachments.data();
-	renderPassInfo.subpassCount = static_cast<uint32_t>(subPasses.size());
-	renderPassInfo.pSubpasses = subPasses.data();
-	renderPassInfo.dependencyCount = static_cast<uint32_t>(dependencies.size());
-	renderPassInfo.pDependencies = dependencies.data();
-
-	if (vkCreateRenderPass(m_device, &renderPassInfo, nullptr, m_geomAndLightRenderPass.replace()) != VK_SUCCESS)
-	{
-		throw std::runtime_error("failed to create render pass!");
-	}
+	m_geomAndLightRenderPass = m_vulkanManager.endCreateRenderPass();
 }
 
 void DeferredRenderer::createBloomRenderPasses()
 {
-	m_bloomRenderPasses.resize(2, { m_device, vkDestroyRenderPass });
+	m_bloomRenderPasses.resize(2);
 
-	std::array<VkAttachmentDescription, 1> attachments = {};
+	// --- Bloom render pass 1 (brightness and blur passes): will clear framebuffer
+	m_vulkanManager.beginCreateRenderPass();
 
-	attachments[0].format = m_postEffectImages[0].format;
-	attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
-	attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-	attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-	attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-	attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-	attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-	attachments[0].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	m_vulkanManager.renderPassAddAttachment(m_postEffectImages[0].format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
-	std::array<VkAttachmentReference, 1> colorAttachmentRefs = {};
-	colorAttachmentRefs[0].attachment = 0;
-	colorAttachmentRefs[0].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+	m_vulkanManager.beginDescribeSubpass();
+	m_vulkanManager.subpassAddColorAttachmentReference(0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+	m_vulkanManager.endDescribeSubpass();
 
-	std::array<VkSubpassDescription, 1> subPasses = {};
+	m_vulkanManager.renderPassAddSubpassDependency(VK_SUBPASS_EXTERNAL, 0,
+		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+		VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+		VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
 
-	subPasses[0].pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-	subPasses[0].colorAttachmentCount = static_cast<uint32_t>(colorAttachmentRefs.size());
-	subPasses[0].pColorAttachments = colorAttachmentRefs.data();
+	m_bloomRenderPasses[0] = m_vulkanManager.endCreateRenderPass();
 
-	std::array<VkSubpassDependency, 1> dependencies = {};
+	// --- Bloom render pass 2 (Merge pass): will not clear framebuffer
+	m_vulkanManager.beginCreateRenderPass();
 
-	dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
-	dependencies[0].dstSubpass = 0;
-	dependencies[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-	dependencies[0].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-	dependencies[0].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-	dependencies[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+	m_vulkanManager.renderPassAddAttachment(m_lightingResultImage.format, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_LOAD);
 
-	VkRenderPassCreateInfo renderPassInfo = {};
-	renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-	renderPassInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
-	renderPassInfo.pAttachments = attachments.data();
-	renderPassInfo.subpassCount = static_cast<uint32_t>(subPasses.size());
-	renderPassInfo.pSubpasses = subPasses.data();
-	renderPassInfo.dependencyCount = static_cast<uint32_t>(dependencies.size());
-	renderPassInfo.pDependencies = dependencies.data();
+	m_vulkanManager.beginDescribeSubpass();
+	m_vulkanManager.subpassAddColorAttachmentReference(0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+	m_vulkanManager.endDescribeSubpass();
 
-	// Brightnesss and Gaussian blur passes
-	if (vkCreateRenderPass(m_device, &renderPassInfo, nullptr, m_bloomRenderPasses[0].replace()) != VK_SUCCESS)
-	{
-		throw std::runtime_error("failed to create render pass!");
-	}
+	m_vulkanManager.renderPassAddSubpassDependency(VK_SUBPASS_EXTERNAL, 0,
+		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+		VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+		VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
 
-	attachments[0].format = m_lightingResultImage.format;
-	attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-
-	// Merge pass
-	if (vkCreateRenderPass(m_device, &renderPassInfo, nullptr, m_bloomRenderPasses[1].replace()) != VK_SUCCESS)
-	{
-		throw std::runtime_error("failed to create render pass!");
-	}
+	m_bloomRenderPasses[1] = m_vulkanManager.endCreateRenderPass();
 }
 
 void DeferredRenderer::createFinalOutputRenderPass()
 {
-	VkAttachmentDescription colorAttachment = {};
-	colorAttachment.format = m_swapChain.swapChainImageFormat;
-	colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
-	colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-	colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-	colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-	colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-	colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-	colorAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+	m_vulkanManager.beginCreateRenderPass();
 
-	VkAttachmentReference colorAttachmentRef = {};
-	colorAttachmentRef.attachment = 0;
-	colorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+	m_vulkanManager.renderPassAddAttachment(m_vulkanManager.getSwapChainImageFormat(),
+		VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 
-	VkSubpassDescription subPass = {};
-	subPass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-	subPass.colorAttachmentCount = 1;
-	subPass.pColorAttachments = &colorAttachmentRef;
+	m_vulkanManager.beginDescribeSubpass();
+	m_vulkanManager.subpassAddColorAttachmentReference(0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+	m_vulkanManager.endDescribeSubpass();
 
-	VkSubpassDependency dependency = {};
-	dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
-	dependency.dstSubpass = 0;
-	dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-	dependency.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-	dependency.dstStageMask = 
-		VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
-		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-	dependency.dstAccessMask = 
-		VK_ACCESS_SHADER_READ_BIT |
-		VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
-		VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+	m_vulkanManager.renderPassAddSubpassDependency(VK_SUBPASS_EXTERNAL, 0,
+		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+		VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+		VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+		VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
 
-	std::array<VkAttachmentDescription, 1> attachments = { colorAttachment };
-	VkRenderPassCreateInfo renderPassInfo = {};
-	renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-	renderPassInfo.attachmentCount = attachments.size();
-	renderPassInfo.pAttachments = attachments.data();
-	renderPassInfo.subpassCount = 1;
-	renderPassInfo.pSubpasses = &subPass;
-	renderPassInfo.dependencyCount = 1;
-	renderPassInfo.pDependencies = &dependency;
-
-	if (vkCreateRenderPass(m_device, &renderPassInfo, nullptr, m_finalOutputRenderPass.replace()) != VK_SUCCESS)
-	{
-		throw std::runtime_error("failed to create render pass!");
-	}
+	m_finalOutputRenderPass = m_vulkanManager.endCreateRenderPass();
 }
 
 void DeferredRenderer::createBrdfLutDescriptorSetLayout()
 {
-	std::array<VkDescriptorSetLayoutBinding, 1> bindings = {};
+	m_vulkanManager.beginCreateDescriptorSetLayout();
 
-	// output buffer
-	bindings[0].binding = 0;
-	bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-	bindings[0].descriptorCount = 1;
-	bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-	bindings[0].pImmutableSamplers = nullptr;
+	m_vulkanManager.setLayoutAddBinding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT);
 
-	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
-	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = bindings.size();
-	layoutInfo.pBindings = bindings.data();
-
-	if (vkCreateDescriptorSetLayout(m_device, &layoutInfo, nullptr, m_brdfLutDescriptorSetLayout.replace()) != VK_SUCCESS)
-	{
-		throw std::runtime_error("failed to create descriptor set layout!");
-	}
+	m_brdfLutDescriptorSetLayout = m_vulkanManager.endCreateDescriptorSetLayout();
 }
 
 void DeferredRenderer::createSpecEnvPrefilterDescriptorSetLayout()
 {
-	std::array<VkDescriptorSetLayoutBinding, 2> bindings = {};
+	m_vulkanManager.beginCreateDescriptorSetLayout();
 
 	// 6 View matrices + projection matrix
-	bindings[0].binding = 0;
-	bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	bindings[0].descriptorCount = 1;
-	bindings[0].stageFlags = VK_SHADER_STAGE_GEOMETRY_BIT;
-	bindings[0].pImmutableSamplers = nullptr;
+	m_vulkanManager.setLayoutAddBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_GEOMETRY_BIT);
 
 	// HDR probe a.k.a. radiance environment map with mips
-	bindings[1].binding = 1;
-	bindings[1].descriptorCount = 1;
-	bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-	bindings[1].pImmutableSamplers = nullptr;
+	m_vulkanManager.setLayoutAddBinding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT);
 
-	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
-	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = bindings.size();
-	layoutInfo.pBindings = bindings.data();
-
-	if (vkCreateDescriptorSetLayout(m_device, &layoutInfo, nullptr, m_specEnvPrefilterDescriptorSetLayout.replace()) != VK_SUCCESS)
-	{
-		throw std::runtime_error("failed to create descriptor set layout!");
-	}
+	m_specEnvPrefilterDescriptorSetLayout = m_vulkanManager.endCreateDescriptorSetLayout();
 }
 
 void DeferredRenderer::createGeomPassDescriptorSetLayout()
@@ -1345,375 +963,187 @@ void DeferredRenderer::createGeomPassDescriptorSetLayout()
 
 void DeferredRenderer::createSkyboxDescriptorSetLayout()
 {
-	std::array<VkDescriptorSetLayoutBinding, 2> bindings = {};
+	m_vulkanManager.beginCreateDescriptorSetLayout();
 
 	// Transformation matrices
-	bindings[0].binding = 0;
-	bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	bindings[0].descriptorCount = 1;
-	bindings[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-	bindings[0].pImmutableSamplers = nullptr; // Optional
+	m_vulkanManager.setLayoutAddBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_VERTEX_BIT);
 
 	// Albedo map
-	bindings[1].binding = 1;
-	bindings[1].descriptorCount = 1;
-	bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	bindings[1].pImmutableSamplers = nullptr;
-	bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	m_vulkanManager.setLayoutAddBinding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT);
 
-	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
-	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = bindings.size();
-	layoutInfo.pBindings = bindings.data();
-
-	if (vkCreateDescriptorSetLayout(m_device, &layoutInfo, nullptr, m_skyboxDescriptorSetLayout.replace()) != VK_SUCCESS)
-	{
-		throw std::runtime_error("failed to create descriptor set layout!");
-	}
+	m_skyboxDescriptorSetLayout = m_vulkanManager.endCreateDescriptorSetLayout();
 }
 
 void DeferredRenderer::createStaticMeshDescriptorSetLayout()
 {
-	std::array<VkDescriptorSetLayoutBinding, 7> bindings = {};
+	m_vulkanManager.beginCreateDescriptorSetLayout();
 
 	// Transformation matrices
-	bindings[0].binding = 0;
-	bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	bindings[0].descriptorCount = 1;
-	bindings[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-	bindings[0].pImmutableSamplers = nullptr; // Optional
+	m_vulkanManager.setLayoutAddBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_VERTEX_BIT);
 
 	// Per model information
-	bindings[1].binding = 1;
-	bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	bindings[1].descriptorCount = 1;
-	bindings[1].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-	bindings[1].pImmutableSamplers = nullptr;
+	m_vulkanManager.setLayoutAddBinding(1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_VERTEX_BIT);
 
 	// Albedo map
-	bindings[2].binding = 2;
-	bindings[2].descriptorCount = 1;
-	bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	bindings[2].pImmutableSamplers = nullptr;
-	bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	m_vulkanManager.setLayoutAddBinding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT);
 
 	// Normal map
-	bindings[3].binding = 3;
-	bindings[3].descriptorCount = 1;
-	bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	bindings[3].pImmutableSamplers = nullptr;
-	bindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	m_vulkanManager.setLayoutAddBinding(3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT);
 
 	// Roughness map
-	bindings[4].binding = 4;
-	bindings[4].descriptorCount = 1;
-	bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	bindings[4].pImmutableSamplers = nullptr;
-	bindings[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	m_vulkanManager.setLayoutAddBinding(4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT);
 
 	// Metalness map
-	bindings[5].binding = 5;
-	bindings[5].descriptorCount = 1;
-	bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	bindings[5].pImmutableSamplers = nullptr;
-	bindings[5].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	m_vulkanManager.setLayoutAddBinding(5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT);
 
 	// AO map
-	bindings[6].binding = 6;
-	bindings[6].descriptorCount = 1;
-	bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	bindings[6].pImmutableSamplers = nullptr;
-	bindings[6].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	m_vulkanManager.setLayoutAddBinding(6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT);
 
-	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
-	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
-	layoutInfo.pBindings = bindings.data();
-
-	if (vkCreateDescriptorSetLayout(m_device, &layoutInfo, nullptr, m_geomDescriptorSetLayout.replace()) != VK_SUCCESS)
-	{
-		throw std::runtime_error("failed to create descriptor set layout!");
-	}
+	m_geomDescriptorSetLayout = m_vulkanManager.endCreateDescriptorSetLayout();
 }
 
 void DeferredRenderer::createLightingPassDescriptorSetLayout()
 {
-	std::array<VkDescriptorSetLayoutBinding, 8> bindings = {};
+	m_vulkanManager.beginCreateDescriptorSetLayout();
 
 	// Light information
-	bindings[0].binding = 0;
-	bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	bindings[0].descriptorCount = 1;
-	bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-	bindings[0].pImmutableSamplers = nullptr; // Optional
+	m_vulkanManager.setLayoutAddBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_FRAGMENT_BIT);
 
 	// gbuffer 1
-	bindings[1].binding = 1;
-	bindings[1].descriptorCount = 1;
-	bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
-	bindings[1].pImmutableSamplers = nullptr;
-	bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	m_vulkanManager.setLayoutAddBinding(1, VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, VK_SHADER_STAGE_FRAGMENT_BIT);
 
 	// gbuffer 2
-	bindings[2].binding = 2;
-	bindings[2].descriptorCount = 1;
-	bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
-	bindings[2].pImmutableSamplers = nullptr;
-	bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	m_vulkanManager.setLayoutAddBinding(2, VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, VK_SHADER_STAGE_FRAGMENT_BIT);
 
 	// gbuffer 3
-	bindings[3].binding = 3;
-	bindings[3].descriptorCount = 1;
-	bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
-	bindings[3].pImmutableSamplers = nullptr;
-	bindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	m_vulkanManager.setLayoutAddBinding(3, VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, VK_SHADER_STAGE_FRAGMENT_BIT);
 
 	// depth image
-	bindings[4].binding = 4;
-	bindings[4].descriptorCount = 1;
-	bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
-	bindings[4].pImmutableSamplers = nullptr;
-	bindings[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	m_vulkanManager.setLayoutAddBinding(4, VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, VK_SHADER_STAGE_FRAGMENT_BIT);
 
 	// diffuse irradiance map
-	bindings[5].binding = 5;
-	bindings[5].descriptorCount = 1;
-	bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	bindings[5].pImmutableSamplers = nullptr;
-	bindings[5].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	m_vulkanManager.setLayoutAddBinding(5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT);
 
 	// specular irradiance map (prefiltered environment map)
-	bindings[6].binding = 6;
-	bindings[6].descriptorCount = 1;
-	bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	bindings[6].pImmutableSamplers = nullptr;
-	bindings[6].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	m_vulkanManager.setLayoutAddBinding(6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT);
 
 	// BRDF LUT
-	bindings[7].binding = 7;
-	bindings[7].descriptorCount = 1;
-	bindings[7].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	bindings[7].pImmutableSamplers = nullptr;
-	bindings[7].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	m_vulkanManager.setLayoutAddBinding(7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT);
 
-	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
-	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
-	layoutInfo.pBindings = bindings.data();
-
-	if (vkCreateDescriptorSetLayout(m_device, &layoutInfo, nullptr, m_lightingDescriptorSetLayout.replace()) != VK_SUCCESS)
-	{
-		throw std::runtime_error("failed to create descriptor set layout!");
-	}
+	m_lightingDescriptorSetLayout = m_vulkanManager.endCreateDescriptorSetLayout();
 }
 
 void DeferredRenderer::createBloomDescriptorSetLayout()
 {
-	std::array<VkDescriptorSetLayoutBinding, 1> bindings = {};
+	m_vulkanManager.beginCreateDescriptorSetLayout();
 
 	// input image
-	bindings[0].binding = 0;
-	bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	bindings[0].descriptorCount = 1;
-	bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	m_vulkanManager.setLayoutAddBinding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT);
 
-	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
-	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
-	layoutInfo.pBindings = bindings.data();
-
-	if (vkCreateDescriptorSetLayout(m_device, &layoutInfo, nullptr, m_bloomDescriptorSetLayout.replace()) != VK_SUCCESS)
-	{
-		throw std::runtime_error("failed to create descriptor set layout!");
-	}
+	m_bloomDescriptorSetLayout = m_vulkanManager.endCreateDescriptorSetLayout();
 }
 
 void DeferredRenderer::createFinalOutputDescriptorSetLayout()
 {
-	std::array<VkDescriptorSetLayoutBinding, 6> bindings = {};
+	m_vulkanManager.beginCreateDescriptorSetLayout();
 
 	// Final image, gbuffer, depth image
-	bindings[0].binding = 0;
-	bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	bindings[0].descriptorCount = 1;
-	bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-	bindings[0].pImmutableSamplers = nullptr;
-
-	bindings[1].binding = 1;
-	bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	bindings[1].descriptorCount = 1;
-	bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-	bindings[1].pImmutableSamplers = nullptr;
-
-	bindings[2].binding = 2;
-	bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	bindings[2].descriptorCount = 1;
-	bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-	bindings[2].pImmutableSamplers = nullptr;
-
-	bindings[3].binding = 3;
-	bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	bindings[3].descriptorCount = 1;
-	bindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-	bindings[3].pImmutableSamplers = nullptr;
-
-	bindings[4].binding = 4;
-	bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	bindings[4].descriptorCount = 1;
-	bindings[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-	bindings[4].pImmutableSamplers = nullptr;
+	m_vulkanManager.setLayoutAddBinding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT);
+	m_vulkanManager.setLayoutAddBinding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT);
+	m_vulkanManager.setLayoutAddBinding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT);
+	m_vulkanManager.setLayoutAddBinding(3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT);
+	m_vulkanManager.setLayoutAddBinding(4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT);
 
 	// Uniform buffer
-	bindings[5].binding = 5;
-	bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	bindings[5].descriptorCount = 1;
-	bindings[5].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-	bindings[5].pImmutableSamplers = nullptr;
+	m_vulkanManager.setLayoutAddBinding(5, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_FRAGMENT_BIT);
 
-	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
-	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
-	layoutInfo.pBindings = bindings.data();
-
-	if (vkCreateDescriptorSetLayout(m_device, &layoutInfo, nullptr, m_finalOutputDescriptorSetLayout.replace()) != VK_SUCCESS)
-	{
-		throw std::runtime_error("failed to create descriptor set layout!");
-	}
+	m_finalOutputDescriptorSetLayout = m_vulkanManager.endCreateDescriptorSetLayout();
 }
 
 void DeferredRenderer::createBrdfLutPipeline()
 {
-	ShaderFileNames shaderFiles;
-	shaderFiles.cs = "../shaders/brdf_lut_pass/brdf_lut.comp.spv";
+	const std::string csFileName = "../shaders/brdf_lut_pass/brdf_lut.comp.spv";
 
-	DefaultComputePipelineCreateInfo infos{ m_device, shaderFiles };
+	m_vulkanManager.beginCreatePipelineLayout();
+	m_vulkanManager.pipelineLayoutAddDescriptorSetLayouts({ m_brdfLutDescriptorSetLayout });
+	m_brdfLutPipelineLayout = m_vulkanManager.endCreatePipelineLayout();
 
-	infos.pipelineLayoutInfo.setLayoutCount = 1;
-	infos.pipelineLayoutInfo.pSetLayouts = &m_brdfLutDescriptorSetLayout;
-
-	if (vkCreatePipelineLayout(m_device, &infos.pipelineLayoutInfo, nullptr, m_brdfLutPipelineLayout.replace()) != VK_SUCCESS)
-	{
-		throw std::runtime_error("failed to create brdf lut pass pipeline layout!");
-	}
-
-	infos.pipelineInfo.layout = m_brdfLutPipelineLayout;
-
-	if (vkCreateComputePipelines(m_device, m_pipelineCache, 1, &infos.pipelineInfo, nullptr, m_brdfLutPipeline.replace()) != VK_SUCCESS)
-	{
-		throw std::runtime_error("failed to create brdf lut pass pipeline!");
-	}
+	m_vulkanManager.beginCreateComputePipeline(m_brdfLutPipelineLayout);
+	m_vulkanManager.computePipelineAddShaderStage(csFileName);
+	m_brdfLutPipeline = m_vulkanManager.endCreateComputePipeline();
 }
 
 void DeferredRenderer::createDiffEnvPrefilterPipeline()
 {
-	ShaderFileNames shaderFiles;
-	shaderFiles.vs = "../shaders/env_prefilter_pass/env_prefilter.vert.spv";
-	shaderFiles.gs = "../shaders/env_prefilter_pass/env_prefilter.geom.spv";
-	shaderFiles.fs = "../shaders/env_prefilter_pass/diff_env_prefilter.frag.spv";
+	const std::string vsFileName = "../shaders/env_prefilter_pass/env_prefilter.vert.spv";
+	const std::string gsFileName = "../shaders/env_prefilter_pass/env_prefilter.geom.spv";
+	const std::string fsFileName = "../shaders/env_prefilter_pass/diff_env_prefilter.frag.spv";
 
-	DefaultGraphicsPipelineCreateInfo infos{ m_device, shaderFiles };
+	m_vulkanManager.beginCreatePipelineLayout();
+	m_vulkanManager.pipelineLayoutAddDescriptorSetLayouts({ m_specEnvPrefilterDescriptorSetLayout });
+	m_diffEnvPrefilterPipelineLayout = m_vulkanManager.endCreatePipelineLayout();
 
-	auto bindingDescription = Vertex::getBindingDescription();
-	auto attributeDescriptions = Vertex::getAttributeDescriptions();
+	m_vulkanManager.beginCreateGraphicsPipeline(m_diffEnvPrefilterPipelineLayout, m_specEnvPrefilterRenderPass, 0);
 
-	infos.vertexInputInfo.vertexBindingDescriptionCount = 1;
-	infos.vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
-	infos.vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
-	infos.vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
+	m_vulkanManager.graphicsPipelineAddShaderStage(VK_SHADER_STAGE_VERTEX_BIT, vsFileName);
+	m_vulkanManager.graphicsPipelineAddShaderStage(VK_SHADER_STAGE_GEOMETRY_BIT, gsFileName);
+	m_vulkanManager.graphicsPipelineAddShaderStage(VK_SHADER_STAGE_FRAGMENT_BIT, fsFileName);
 
-	infos.rasterizerInfo.cullMode = VK_CULL_MODE_NONE;
-
-	infos.depthStencilInfo.depthTestEnable = VK_FALSE;
-	infos.depthStencilInfo.depthWriteEnable = VK_FALSE;
-	infos.depthStencilInfo.depthCompareOp = VK_COMPARE_OP_ALWAYS;
-
-	std::vector<VkDynamicState> dynamicStateEnables =
+	auto bindingDesc = Vertex::getBindingDescription();
+	m_vulkanManager.graphicsPipelineAddBindingDescription(bindingDesc.binding, bindingDesc.stride, bindingDesc.inputRate);
+	auto attrDescs = Vertex::getAttributeDescriptions();
+	for (const auto &attrDesc : attrDescs)
 	{
-		VK_DYNAMIC_STATE_VIEWPORT,
-		VK_DYNAMIC_STATE_SCISSOR
-	};
-	infos.dynamicStateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-	infos.dynamicStateInfo.dynamicStateCount = static_cast<uint32_t>(dynamicStateEnables.size());
-	infos.dynamicStateInfo.pDynamicStates = dynamicStateEnables.data();
-
-	VkDescriptorSetLayout setLayouts[] = { m_specEnvPrefilterDescriptorSetLayout };
-	infos.pipelineLayoutInfo.setLayoutCount = 1;
-	infos.pipelineLayoutInfo.pSetLayouts = setLayouts;
-
-	if (vkCreatePipelineLayout(m_device, &infos.pipelineLayoutInfo, nullptr, m_diffEnvPrefilterPipelineLayout.replace()) != VK_SUCCESS)
-	{
-		throw std::runtime_error("failed to create diffuse environment pipeline layout!");
+		m_vulkanManager.graphicsPipelineAddAttributeDescription(attrDesc.location, attrDesc.binding, attrDesc.format, attrDesc.offset);
 	}
 
-	infos.pipelineInfo.layout = m_diffEnvPrefilterPipelineLayout;
-	infos.pipelineInfo.renderPass = m_specEnvPrefilterRenderPass;
-	infos.pipelineInfo.subpass = 0;
-	infos.pipelineInfo.pDynamicState = &infos.dynamicStateInfo;
+	m_vulkanManager.graphicsPipelineConfigureRasterizer(VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE);
 
-	if (vkCreateGraphicsPipelines(m_device, m_pipelineCache, 1, &infos.pipelineInfo, nullptr, m_diffEnvPrefilterPipeline.replace()) != VK_SUCCESS)
-	{
-		throw std::runtime_error("failed to create diffuse environment pipeline!");
-	}
+	m_vulkanManager.graphicsPipelineConfigureDepthState(VK_FALSE, VK_FALSE, VK_COMPARE_OP_ALWAYS);
+
+	m_vulkanManager.graphicsPipeLineAddColorBlendAttachment(VK_FALSE);
+
+	m_vulkanManager.graphicsPipelineAddDynamicState(VK_DYNAMIC_STATE_VIEWPORT);
+	m_vulkanManager.graphicsPipelineAddDynamicState(VK_DYNAMIC_STATE_SCISSOR);
+
+	m_diffEnvPrefilterPipeline = m_vulkanManager.endCreateGraphicsPipeline();
 }
 
 void DeferredRenderer::createSpecEnvPrefilterPipeline()
 {
-	ShaderFileNames shaderFiles;
-	shaderFiles.vs = "../shaders/env_prefilter_pass/env_prefilter.vert.spv";
-	shaderFiles.gs = "../shaders/env_prefilter_pass/env_prefilter.geom.spv";
-	shaderFiles.fs = "../shaders/env_prefilter_pass/spec_env_prefilter.frag.spv";
+	const std::string vsFileName = "../shaders/env_prefilter_pass/env_prefilter.vert.spv";
+	const std::string gsFileName = "../shaders/env_prefilter_pass/env_prefilter.geom.spv";
+	const std::string fsFileName = "../shaders/env_prefilter_pass/spec_env_prefilter.frag.spv";
 
-	DefaultGraphicsPipelineCreateInfo infos{ m_device, shaderFiles };
+	m_vulkanManager.beginCreatePipelineLayout();
+	m_vulkanManager.pipelineLayoutAddDescriptorSetLayouts({ m_specEnvPrefilterDescriptorSetLayout });
+	m_vulkanManager.pipelineLayoutAddPushConstantRange(0, sizeof(float), VK_SHADER_STAGE_FRAGMENT_BIT);
+	m_specEnvPrefilterPipelineLayout = m_vulkanManager.endCreatePipelineLayout();
 
-	auto bindingDescription = Vertex::getBindingDescription();
-	auto attributeDescriptions = Vertex::getAttributeDescriptions();
+	m_vulkanManager.beginCreateGraphicsPipeline(m_specEnvPrefilterPipelineLayout, m_specEnvPrefilterRenderPass, 0);
 
-	infos.vertexInputInfo.vertexBindingDescriptionCount = 1;
-	infos.vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
-	infos.vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
-	infos.vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
+	m_vulkanManager.graphicsPipelineAddShaderStage(VK_SHADER_STAGE_VERTEX_BIT, vsFileName);
+	m_vulkanManager.graphicsPipelineAddShaderStage(VK_SHADER_STAGE_GEOMETRY_BIT, gsFileName);
+	m_vulkanManager.graphicsPipelineAddShaderStage(VK_SHADER_STAGE_FRAGMENT_BIT, fsFileName);
 
-	infos.rasterizerInfo.cullMode = VK_CULL_MODE_NONE;
-
-	infos.depthStencilInfo.depthTestEnable = VK_FALSE;
-	infos.depthStencilInfo.depthWriteEnable = VK_FALSE;
-	infos.depthStencilInfo.depthCompareOp = VK_COMPARE_OP_ALWAYS;
-
-	std::vector<VkDynamicState> dynamicStateEnables =
+	auto bindingDesc = Vertex::getBindingDescription();
+	m_vulkanManager.graphicsPipelineAddBindingDescription(bindingDesc.binding, bindingDesc.stride, bindingDesc.inputRate);
+	auto attrDescs = Vertex::getAttributeDescriptions();
+	for (const auto &attrDesc : attrDescs)
 	{
-		VK_DYNAMIC_STATE_VIEWPORT,
-		VK_DYNAMIC_STATE_SCISSOR
-	};
-	infos.dynamicStateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-	infos.dynamicStateInfo.dynamicStateCount = static_cast<uint32_t>(dynamicStateEnables.size());
-	infos.dynamicStateInfo.pDynamicStates = dynamicStateEnables.data();
-
-	VkDescriptorSetLayout setLayouts[] = { m_specEnvPrefilterDescriptorSetLayout };
-	infos.pipelineLayoutInfo.setLayoutCount = 1;
-	infos.pipelineLayoutInfo.pSetLayouts = setLayouts;
-
-	infos.pushConstantRanges.resize(1);
-	infos.pushConstantRanges[0].offset = 0;
-	infos.pushConstantRanges[0].size = sizeof(float);
-	infos.pushConstantRanges[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-	infos.pipelineLayoutInfo.pushConstantRangeCount = static_cast<uint32_t>(infos.pushConstantRanges.size());
-	infos.pipelineLayoutInfo.pPushConstantRanges = infos.pushConstantRanges.data();
-
-	if (vkCreatePipelineLayout(m_device, &infos.pipelineLayoutInfo, nullptr, m_specEnvPrefilterPipelineLayout.replace()) != VK_SUCCESS)
-	{
-		throw std::runtime_error("failed to create specular environment pipeline layout!");
+		m_vulkanManager.graphicsPipelineAddAttributeDescription(attrDesc.location, attrDesc.binding, attrDesc.format, attrDesc.offset);
 	}
 
-	infos.pipelineInfo.layout = m_specEnvPrefilterPipelineLayout;
-	infos.pipelineInfo.renderPass = m_specEnvPrefilterRenderPass;
-	infos.pipelineInfo.subpass = 0;
-	infos.pipelineInfo.pDynamicState = &infos.dynamicStateInfo;
+	m_vulkanManager.graphicsPipelineConfigureRasterizer(VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE);
 
-	if (vkCreateGraphicsPipelines(m_device, m_pipelineCache, 1, &infos.pipelineInfo, nullptr, m_specEnvPrefilterPipeline.replace()) != VK_SUCCESS)
-	{
-		throw std::runtime_error("failed to create specular environment pipeline!");
-	}
+	m_vulkanManager.graphicsPipelineConfigureDepthState(VK_FALSE, VK_FALSE, VK_COMPARE_OP_ALWAYS);
+
+	m_vulkanManager.graphicsPipeLineAddColorBlendAttachment(VK_FALSE);
+
+	m_vulkanManager.graphicsPipelineAddDynamicState(VK_DYNAMIC_STATE_VIEWPORT);
+	m_vulkanManager.graphicsPipelineAddDynamicState(VK_DYNAMIC_STATE_SCISSOR);
+
+	m_specEnvPrefilterPipeline = m_vulkanManager.endCreateGraphicsPipeline();
 }
 
 void DeferredRenderer::createGeomPassPipeline()
@@ -1724,379 +1154,234 @@ void DeferredRenderer::createGeomPassPipeline()
 
 void DeferredRenderer::createSkyboxPipeline()
 {
-	ShaderFileNames shaderFiles;
-	shaderFiles.vs = "../shaders/geom_pass/skybox.vert.spv";
-	shaderFiles.fs = "../shaders/geom_pass/skybox.frag.spv";
+	const std::string vsFileName = "../shaders/geom_pass/skybox.vert.spv";
+	const std::string fsFileName = "../shaders/geom_pass/skybox.frag.spv";
 
-	DefaultGraphicsPipelineCreateInfo infos{ m_device, shaderFiles };
+	m_vulkanManager.beginCreatePipelineLayout();
+	m_vulkanManager.pipelineLayoutAddDescriptorSetLayouts({ m_skyboxDescriptorSetLayout });
+	m_vulkanManager.pipelineLayoutAddPushConstantRange(0, sizeof(uint32_t), VK_SHADER_STAGE_FRAGMENT_BIT);
+	m_skyboxPipelineLayout = m_vulkanManager.endCreatePipelineLayout();
 
-	auto bindingDescription = Vertex::getBindingDescription();
-	auto attributeDescriptions = Vertex::getAttributeDescriptions();
+	m_vulkanManager.beginCreateGraphicsPipeline(m_skyboxPipelineLayout, m_geomAndLightRenderPass, 0);
 
-	infos.vertexInputInfo.vertexBindingDescriptionCount = 1;
-	infos.vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
-	infos.vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
-	infos.vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
+	m_vulkanManager.graphicsPipelineAddShaderStage(VK_SHADER_STAGE_VERTEX_BIT, vsFileName);
+	m_vulkanManager.graphicsPipelineAddShaderStage(VK_SHADER_STAGE_FRAGMENT_BIT, fsFileName);
 
-	VkViewport viewport;
-	VkRect2D scissor;
-	defaultViewportAndScissor(m_swapChain.swapChainExtent, viewport, scissor);
-
-	infos.viewportStateInfo.viewportCount = 1;
-	infos.viewportStateInfo.pViewports = &viewport;
-	infos.viewportStateInfo.scissorCount = 1;
-	infos.viewportStateInfo.pScissors = &scissor;
-
-	infos.rasterizerInfo.cullMode = VK_CULL_MODE_NONE;
-
-	infos.colorBlendAttachmentStates.resize(3);
-	infos.colorBlendAttachmentStates[1].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-	infos.colorBlendAttachmentStates[1].blendEnable = VK_FALSE;
-	infos.colorBlendAttachmentStates[2].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-	infos.colorBlendAttachmentStates[2].blendEnable = VK_FALSE;
-
-	infos.colorBlendInfo.attachmentCount = static_cast<uint32_t>(infos.colorBlendAttachmentStates.size());
-	infos.colorBlendInfo.pAttachments = infos.colorBlendAttachmentStates.data();
-
-	VkDescriptorSetLayout setLayouts[] = { m_skyboxDescriptorSetLayout };
-	infos.pipelineLayoutInfo.setLayoutCount = 1;
-	infos.pipelineLayoutInfo.pSetLayouts = setLayouts;
-
-	infos.pushConstantRanges.resize(1);
-	infos.pushConstantRanges[0].offset = 0;
-	infos.pushConstantRanges[0].size = sizeof(uint32_t);
-	infos.pushConstantRanges[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-	infos.pipelineLayoutInfo.pushConstantRangeCount = static_cast<uint32_t>(infos.pushConstantRanges.size());
-	infos.pipelineLayoutInfo.pPushConstantRanges = infos.pushConstantRanges.data();
-
-	if (vkCreatePipelineLayout(m_device, &infos.pipelineLayoutInfo, nullptr, m_skyboxPipelineLayout.replace()) != VK_SUCCESS)
+	auto bindingDesc = Vertex::getBindingDescription();
+	m_vulkanManager.graphicsPipelineAddBindingDescription(bindingDesc.binding, bindingDesc.stride, bindingDesc.inputRate);
+	auto attrDescs = Vertex::getAttributeDescriptions();
+	for (const auto &attrDesc : attrDescs)
 	{
-		throw std::runtime_error("failed to create geom pipeline layout!");
+		m_vulkanManager.graphicsPipelineAddAttributeDescription(attrDesc.location, attrDesc.binding, attrDesc.format, attrDesc.offset);
 	}
 
-	infos.pipelineInfo.layout = m_skyboxPipelineLayout;
-	infos.pipelineInfo.renderPass = m_geomAndLightRenderPass;
-	infos.pipelineInfo.subpass = 0;
+	VkExtent2D swapChainExtent = m_vulkanManager.getSwapChainExtent();
+	m_vulkanManager.graphicsPipelineAddViewportAndScissor(0.f, 0.f,
+		static_cast<float>(swapChainExtent.width), static_cast<float>(swapChainExtent.height));
 
-	if (vkCreateGraphicsPipelines(m_device, m_pipelineCache, 1, &infos.pipelineInfo, nullptr, m_skyboxPipeline.replace()) != VK_SUCCESS)
-	{
-		throw std::runtime_error("failed to create geom pipeline!");
-	}
+	m_vulkanManager.graphicsPipelineConfigureRasterizer(VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE);
+
+	m_vulkanManager.graphicsPipeLineAddColorBlendAttachment(VK_FALSE);
+	m_vulkanManager.graphicsPipeLineAddColorBlendAttachment(VK_FALSE);
+	m_vulkanManager.graphicsPipeLineAddColorBlendAttachment(VK_FALSE);
+
+	m_skyboxPipeline = m_vulkanManager.endCreateGraphicsPipeline();
 }
 
 void DeferredRenderer::createStaticMeshPipeline()
 {
-	ShaderFileNames shaderFiles;
-	shaderFiles.vs = "../shaders/geom_pass/geom.vert.spv";
-	shaderFiles.fs = "../shaders/geom_pass/geom.frag.spv";
+	const std::string vsFileName = "../shaders/geom_pass/geom.vert.spv";
+	const std::string fsFileName = "../shaders/geom_pass/geom.frag.spv";
 
-	DefaultGraphicsPipelineCreateInfo infos{ m_device, shaderFiles };
+	m_vulkanManager.beginCreatePipelineLayout();
+	m_vulkanManager.pipelineLayoutAddDescriptorSetLayouts({ m_geomDescriptorSetLayout });
+	m_vulkanManager.pipelineLayoutAddPushConstantRange(0, 2 * sizeof(uint32_t), VK_SHADER_STAGE_FRAGMENT_BIT);
+	m_geomPipelineLayout = m_vulkanManager.endCreatePipelineLayout();
 
-	auto bindingDescription = Vertex::getBindingDescription();
-	auto attributeDescriptions = Vertex::getAttributeDescriptions();
+	m_vulkanManager.beginCreateGraphicsPipeline(m_geomPipelineLayout, m_geomAndLightRenderPass, 0);
 
-	infos.vertexInputInfo.vertexBindingDescriptionCount = 1;
-	infos.vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
-	infos.vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
-	infos.vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
+	m_vulkanManager.graphicsPipelineAddShaderStage(VK_SHADER_STAGE_VERTEX_BIT, vsFileName);
+	m_vulkanManager.graphicsPipelineAddShaderStage(VK_SHADER_STAGE_FRAGMENT_BIT, fsFileName);
 
-	VkViewport viewport;
-	VkRect2D scissor;
-	defaultViewportAndScissor(m_swapChain.swapChainExtent, viewport, scissor);
-
-	infos.viewportStateInfo.viewportCount = 1;
-	infos.viewportStateInfo.pViewports = &viewport;
-	infos.viewportStateInfo.scissorCount = 1;
-	infos.viewportStateInfo.pScissors = &scissor;
-
-	infos.colorBlendAttachmentStates.resize(3);
-	infos.colorBlendAttachmentStates[1].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-	infos.colorBlendAttachmentStates[1].blendEnable = VK_FALSE;
-	infos.colorBlendAttachmentStates[2].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-	infos.colorBlendAttachmentStates[2].blendEnable = VK_FALSE;
-
-	infos.colorBlendInfo.attachmentCount = static_cast<uint32_t>(infos.colorBlendAttachmentStates.size());
-	infos.colorBlendInfo.pAttachments = infos.colorBlendAttachmentStates.data();
-
-	VkDescriptorSetLayout setLayouts[] = { m_geomDescriptorSetLayout };
-	infos.pipelineLayoutInfo.setLayoutCount = 1;
-	infos.pipelineLayoutInfo.pSetLayouts = setLayouts;
-
-	infos.pushConstantRanges.resize(1);
-	infos.pushConstantRanges[0].offset = 0;
-	infos.pushConstantRanges[0].size = 2 * sizeof(uint32_t);
-	infos.pushConstantRanges[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-	infos.pipelineLayoutInfo.pushConstantRangeCount = static_cast<uint32_t>(infos.pushConstantRanges.size());
-	infos.pipelineLayoutInfo.pPushConstantRanges = infos.pushConstantRanges.data();
-
-	if (vkCreatePipelineLayout(m_device, &infos.pipelineLayoutInfo, nullptr, m_geomPipelineLayout.replace()) != VK_SUCCESS)
+	auto bindingDesc = Vertex::getBindingDescription();
+	m_vulkanManager.graphicsPipelineAddBindingDescription(bindingDesc.binding, bindingDesc.stride, bindingDesc.inputRate);
+	auto attrDescs = Vertex::getAttributeDescriptions();
+	for (const auto &attrDesc : attrDescs)
 	{
-		throw std::runtime_error("failed to create geom pipeline layout!");
+		m_vulkanManager.graphicsPipelineAddAttributeDescription(attrDesc.location, attrDesc.binding, attrDesc.format, attrDesc.offset);
 	}
 
-	infos.pipelineInfo.layout = m_geomPipelineLayout;
-	infos.pipelineInfo.renderPass = m_geomAndLightRenderPass;
-	infos.pipelineInfo.subpass = 0;
+	VkExtent2D swapChainExtent = m_vulkanManager.getSwapChainExtent();
+	m_vulkanManager.graphicsPipelineAddViewportAndScissor(0.f, 0.f,
+		static_cast<float>(swapChainExtent.width), static_cast<float>(swapChainExtent.height));
 
-	if (vkCreateGraphicsPipelines(m_device, m_pipelineCache, 1, &infos.pipelineInfo, nullptr, m_geomPipeline.replace()) != VK_SUCCESS)
-	{
-		throw std::runtime_error("failed to create geom pipeline!");
-	}
+	m_vulkanManager.graphicsPipeLineAddColorBlendAttachment(VK_FALSE);
+	m_vulkanManager.graphicsPipeLineAddColorBlendAttachment(VK_FALSE);
+	m_vulkanManager.graphicsPipeLineAddColorBlendAttachment(VK_FALSE);
+
+	m_geomPipeline = m_vulkanManager.endCreateGraphicsPipeline();
 }
 
 void DeferredRenderer::createLightingPassPipeline()
 {
-	ShaderFileNames shaderFiles;
-	shaderFiles.vs = "../shaders/fullscreen.vert.spv";
-	shaderFiles.fs = "../shaders/lighting_pass/lighting.frag.spv";
+	const std::string vsFileName = "../shaders/fullscreen.vert.spv";
+	const std::string fsFileName = "../shaders/lighting_pass/lighting.frag.spv";
 
-	DefaultGraphicsPipelineCreateInfo infos{ m_device, shaderFiles };
+	m_vulkanManager.beginCreatePipelineLayout();
+	m_vulkanManager.pipelineLayoutAddDescriptorSetLayouts({ m_lightingDescriptorSetLayout });
+	m_vulkanManager.pipelineLayoutAddPushConstantRange(0, sizeof(uint32_t), VK_SHADER_STAGE_FRAGMENT_BIT);
+	m_lightingPipelineLayout = m_vulkanManager.endCreatePipelineLayout();
+
+	m_vulkanManager.beginCreateGraphicsPipeline(m_lightingPipelineLayout, m_geomAndLightRenderPass, 1);
+
+	m_vulkanManager.graphicsPipelineAddShaderStage(VK_SHADER_STAGE_VERTEX_BIT, vsFileName);
+	m_vulkanManager.graphicsPipelineAddShaderStage(VK_SHADER_STAGE_FRAGMENT_BIT, fsFileName);
 
 	// Use specialization constants to pass number of lights to the shader
-	VkSpecializationMapEntry specializationEntry{};
-	specializationEntry.constantID = 0;
-	specializationEntry.offset = 0;
-	specializationEntry.size = sizeof(uint32_t);
-
 	uint32_t specializationData = NUM_LIGHTS;
+	m_vulkanManager.graphicsPipelineAddSpecializationConstant(VK_SHADER_STAGE_FRAGMENT_BIT, 0, 0, sizeof(uint32_t), &specializationData);
+	
+	VkExtent2D swapChainExtent = m_vulkanManager.getSwapChainExtent();
+	m_vulkanManager.graphicsPipelineAddViewportAndScissor(0.f, 0.f,
+		static_cast<float>(swapChainExtent.width), static_cast<float>(swapChainExtent.height));
 
-	VkSpecializationInfo specializationInfo;
-	specializationInfo.mapEntryCount = 1;
-	specializationInfo.pMapEntries = &specializationEntry;
-	specializationInfo.dataSize = sizeof(specializationData);
-	specializationInfo.pData = &specializationData;
+	m_vulkanManager.graphicsPipelineConfigureDepthState(VK_TRUE, VK_FALSE, VK_COMPARE_OP_ALWAYS); // TODO: reenable it when proxy is implemented
 
-	infos.shaderStages[1].pSpecializationInfo = &specializationInfo;
+	m_vulkanManager.graphicsPipeLineAddColorBlendAttachment(VK_FALSE);
 
-	VkViewport viewport;
-	VkRect2D scissor;
-	defaultViewportAndScissor(m_swapChain.swapChainExtent, viewport, scissor);
-
-	infos.viewportStateInfo.viewportCount = 1;
-	infos.viewportStateInfo.pViewports = &viewport;
-	infos.viewportStateInfo.scissorCount = 1;
-	infos.viewportStateInfo.pScissors = &scissor;
-
-	infos.depthStencilInfo.depthTestEnable = VK_TRUE;
-	infos.depthStencilInfo.depthWriteEnable = VK_FALSE;
-	infos.depthStencilInfo.depthCompareOp = VK_COMPARE_OP_ALWAYS; // TODO: reenable it when proxy is implemented
-
-	VkDescriptorSetLayout setLayouts[] = { m_lightingDescriptorSetLayout };
-	infos.pipelineLayoutInfo.setLayoutCount = 1;
-	infos.pipelineLayoutInfo.pSetLayouts = setLayouts;
-
-	infos.pushConstantRanges.resize(1);
-	infos.pushConstantRanges[0].offset = 0;
-	infos.pushConstantRanges[0].size = sizeof(uint32_t);
-	infos.pushConstantRanges[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-	infos.pipelineLayoutInfo.pushConstantRangeCount = static_cast<uint32_t>(infos.pushConstantRanges.size());
-	infos.pipelineLayoutInfo.pPushConstantRanges = infos.pushConstantRanges.data();
-
-	if (vkCreatePipelineLayout(m_device, &infos.pipelineLayoutInfo, nullptr, m_lightingPipelineLayout.replace()) != VK_SUCCESS)
-	{
-		throw std::runtime_error("failed to create lighting pipeline layout!");
-	}
-
-	infos.pipelineInfo.layout = m_lightingPipelineLayout;
-	infos.pipelineInfo.renderPass = m_geomAndLightRenderPass;
-	infos.pipelineInfo.subpass = 1;
-
-	if (vkCreateGraphicsPipelines(m_device, m_pipelineCache, 1, &infos.pipelineInfo, nullptr, m_lightingPipeline.replace()) != VK_SUCCESS)
-	{
-		throw std::runtime_error("failed to create lighting pipeline!");
-	}
+	m_lightingPipeline = m_vulkanManager.endCreateGraphicsPipeline();
 }
 
 void DeferredRenderer::createBloomPipelines()
 {
-	ShaderFileNames shaderFiles;
-	shaderFiles.vs = "../shaders/fullscreen.vert.spv";
-	shaderFiles.fs = "../shaders/bloom_pass/brightness_mask.frag.spv";
+	const std::string vsFileName = "../shaders/fullscreen.vert.spv";
+	const std::string fsFileName1 = "../shaders/bloom_pass/brightness_mask.frag.spv";
+	const std::string fsFileName2 = "../shaders/bloom_pass/gaussian_blur.frag.spv";
+	const std::string fsFileName3 = "../shaders/bloom_pass/merge.frag.spv";
 
-	DefaultGraphicsPipelineCreateInfo infos{ m_device, shaderFiles };
-
-	VkDescriptorSetLayout setLayouts[] = { m_bloomDescriptorSetLayout };
-	infos.pipelineLayoutInfo.setLayoutCount = 1;
-	infos.pipelineLayoutInfo.pSetLayouts = setLayouts;
+	// --- Pipeline layouts
+	m_bloomPipelineLayouts.resize(2);
 
 	// brightness_mask and merge
-	m_bloomPipelineLayouts.resize(2, { m_device, vkDestroyPipelineLayout });
-	if (vkCreatePipelineLayout(m_device, &infos.pipelineLayoutInfo, nullptr, m_bloomPipelineLayouts[0].replace()) != VK_SUCCESS)
-	{
-		throw std::runtime_error("failed to create bloom pipeline layout!");
-	}
-
-	infos.pushConstantRanges.resize(1);
-	infos.pushConstantRanges[0].offset = 0;
-	infos.pushConstantRanges[0].size = sizeof(uint32_t);
-	infos.pushConstantRanges[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-	infos.pipelineLayoutInfo.pushConstantRangeCount = static_cast<uint32_t>(infos.pushConstantRanges.size());
-	infos.pipelineLayoutInfo.pPushConstantRanges = infos.pushConstantRanges.data();
+	m_vulkanManager.beginCreatePipelineLayout();
+	m_vulkanManager.pipelineLayoutAddDescriptorSetLayouts({ m_bloomDescriptorSetLayout });
+	m_bloomPipelineLayouts[0] = m_vulkanManager.endCreatePipelineLayout();
 
 	// gaussian blur
-	if (vkCreatePipelineLayout(m_device, &infos.pipelineLayoutInfo, nullptr, m_bloomPipelineLayouts[1].replace()) != VK_SUCCESS)
-	{
-		throw std::runtime_error("failed to create bloom pipeline layout!");
-	}
+	m_vulkanManager.beginCreatePipelineLayout();
+	m_vulkanManager.pipelineLayoutAddDescriptorSetLayouts({ m_bloomDescriptorSetLayout });
+	m_vulkanManager.pipelineLayoutAddPushConstantRange(0, sizeof(uint32_t), VK_SHADER_STAGE_FRAGMENT_BIT);
+	m_bloomPipelineLayouts[1] = m_vulkanManager.endCreatePipelineLayout();
 
-	VkViewport viewport;
-	VkRect2D scissor;
-	defaultViewportAndScissor(m_swapChain.swapChainExtent, viewport, scissor);
+	// --- Pipelines
+	m_bloomPipelines.resize(3);
 
-	infos.viewportStateInfo.viewportCount = 1;
-	infos.viewportStateInfo.pViewports = &viewport;
-	infos.viewportStateInfo.scissorCount = 1;
-	infos.viewportStateInfo.pScissors = &scissor;
-
-	infos.depthStencilInfo.depthTestEnable = VK_FALSE;
-	infos.depthStencilInfo.depthWriteEnable = VK_FALSE;
-	infos.depthStencilInfo.depthCompareOp = VK_COMPARE_OP_ALWAYS;
-
-	infos.pipelineInfo.layout = m_bloomPipelineLayouts[0];
-	infos.pipelineInfo.renderPass = m_bloomRenderPasses[0];
-	infos.pipelineInfo.subpass = 0;
-
-	m_bloomPipelines.resize(3, { m_device, vkDestroyPipeline });
 	// brightness mask
-	if (vkCreateGraphicsPipelines(m_device, m_pipelineCache, 1, &infos.pipelineInfo, nullptr, m_bloomPipelines[0].replace()) != VK_SUCCESS)
-	{
-		throw std::runtime_error("failed to create bloom pipeline!");
-	}
+	m_vulkanManager.beginCreateGraphicsPipeline(m_bloomPipelineLayouts[0], m_bloomRenderPasses[0], 0);
 
-	auto shaderCode = readFile("../shaders/bloom_pass/gaussian_blur.frag.spv");
-	createShaderModule(m_device, shaderCode, infos.fragShaderModule);
-	infos.pipelineInfo.layout = m_bloomPipelineLayouts[1];
-	infos.pipelineInfo.renderPass = m_bloomRenderPasses[0];
-	infos.shaderStages[1].module = infos.fragShaderModule;
+	m_vulkanManager.graphicsPipelineAddShaderStage(VK_SHADER_STAGE_VERTEX_BIT, vsFileName);
+	m_vulkanManager.graphicsPipelineAddShaderStage(VK_SHADER_STAGE_FRAGMENT_BIT, fsFileName1);
+
+	VkExtent2D swapChainExtent = m_vulkanManager.getSwapChainExtent();
+	m_vulkanManager.graphicsPipelineAddViewportAndScissor(0.f, 0.f,
+		static_cast<float>(swapChainExtent.width), static_cast<float>(swapChainExtent.height));
+
+	m_vulkanManager.graphicsPipelineConfigureDepthState(VK_FALSE, VK_FALSE, VK_COMPARE_OP_ALWAYS);
+
+	m_vulkanManager.graphicsPipeLineAddColorBlendAttachment(VK_FALSE);
+
+	m_bloomPipelines[0] = m_vulkanManager.endCreateGraphicsPipeline();
 
 	// gaussian blur
-	if (vkCreateGraphicsPipelines(m_device, m_pipelineCache, 1, &infos.pipelineInfo, nullptr, m_bloomPipelines[1].replace()) != VK_SUCCESS)
-	{
-		throw std::runtime_error("failed to create bloom pipeline!");
-	}
+	m_vulkanManager.beginCreateGraphicsPipeline(m_bloomPipelineLayouts[1], m_bloomRenderPasses[0], 0);
 
-	shaderCode = readFile("../shaders/bloom_pass/merge.frag.spv");
-	createShaderModule(m_device, shaderCode, infos.fragShaderModule);
-	infos.pipelineInfo.layout = m_bloomPipelineLayouts[0];
-	infos.pipelineInfo.renderPass = m_bloomRenderPasses[1];
-	infos.shaderStages[1].module = infos.fragShaderModule;
+	m_vulkanManager.graphicsPipelineAddShaderStage(VK_SHADER_STAGE_VERTEX_BIT, vsFileName);
+	m_vulkanManager.graphicsPipelineAddShaderStage(VK_SHADER_STAGE_FRAGMENT_BIT, fsFileName2);
 
-	infos.colorBlendAttachmentStates[0].blendEnable = VK_TRUE;
-	infos.colorBlendAttachmentStates[0].colorBlendOp = VK_BLEND_OP_ADD;
-	infos.colorBlendAttachmentStates[0].srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
-	infos.colorBlendAttachmentStates[0].dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
-	infos.colorBlendAttachmentStates[0].alphaBlendOp = VK_BLEND_OP_ADD;
-	infos.colorBlendAttachmentStates[0].srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-	infos.colorBlendAttachmentStates[0].dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+	VkExtent2D swapChainExtent = m_vulkanManager.getSwapChainExtent();
+	m_vulkanManager.graphicsPipelineAddViewportAndScissor(0.f, 0.f,
+		static_cast<float>(swapChainExtent.width), static_cast<float>(swapChainExtent.height));
+
+	m_vulkanManager.graphicsPipelineConfigureDepthState(VK_FALSE, VK_FALSE, VK_COMPARE_OP_ALWAYS);
+
+	m_vulkanManager.graphicsPipeLineAddColorBlendAttachment(VK_FALSE);
+
+	m_bloomPipelines[1] = m_vulkanManager.endCreateGraphicsPipeline();
 
 	// merge
-	if (vkCreateGraphicsPipelines(m_device, m_pipelineCache, 1, &infos.pipelineInfo, nullptr, m_bloomPipelines[2].replace()) != VK_SUCCESS)
-	{
-		throw std::runtime_error("failed to create bloom pipeline!");
-	}
+	m_vulkanManager.beginCreateGraphicsPipeline(m_bloomPipelineLayouts[0], m_bloomRenderPasses[1], 0);
+
+	m_vulkanManager.graphicsPipelineAddShaderStage(VK_SHADER_STAGE_VERTEX_BIT, vsFileName);
+	m_vulkanManager.graphicsPipelineAddShaderStage(VK_SHADER_STAGE_FRAGMENT_BIT, fsFileName3);
+
+	VkExtent2D swapChainExtent = m_vulkanManager.getSwapChainExtent();
+	m_vulkanManager.graphicsPipelineAddViewportAndScissor(0.f, 0.f,
+		static_cast<float>(swapChainExtent.width), static_cast<float>(swapChainExtent.height));
+
+	m_vulkanManager.graphicsPipelineConfigureDepthState(VK_FALSE, VK_FALSE, VK_COMPARE_OP_ALWAYS);
+
+	m_vulkanManager.graphicsPipeLineAddColorBlendAttachment(VK_TRUE, VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ONE, VK_BLEND_OP_ADD);
+
+	m_bloomPipelines[2] = m_vulkanManager.endCreateGraphicsPipeline();
 }
 
 void DeferredRenderer::createFinalOutputPassPipeline()
 {
-	ShaderFileNames shaderFiles;
-	shaderFiles.vs = "../shaders/fullscreen.vert.spv";
-	shaderFiles.fs = "../shaders/final_output_pass/final_output.frag.spv";
+	const std::string vsFileName = "../shaders/fullscreen.vert.spv";
+	const std::string fsFileName = "../shaders/final_output_pass/final_output.frag.spv";
 
-	DefaultGraphicsPipelineCreateInfo infos{ m_device, shaderFiles };
+	m_vulkanManager.beginCreatePipelineLayout();
+	m_vulkanManager.pipelineLayoutAddDescriptorSetLayouts({ m_finalOutputDescriptorSetLayout });
+	m_finalOutputPipelineLayout = m_vulkanManager.endCreatePipelineLayout();
 
-	VkViewport viewport;
-	VkRect2D scissor;
-	defaultViewportAndScissor(m_swapChain.swapChainExtent, viewport, scissor);
+	m_vulkanManager.beginCreateGraphicsPipeline(m_finalOutputPipelineLayout, m_finalOutputRenderPass, 0);
 
-	infos.viewportStateInfo.viewportCount = 1;
-	infos.viewportStateInfo.pViewports = &viewport;
-	infos.viewportStateInfo.scissorCount = 1;
-	infos.viewportStateInfo.pScissors = &scissor;
+	m_vulkanManager.graphicsPipelineAddShaderStage(VK_SHADER_STAGE_VERTEX_BIT, vsFileName);
+	m_vulkanManager.graphicsPipelineAddShaderStage(VK_SHADER_STAGE_FRAGMENT_BIT, fsFileName);
 
-	infos.depthStencilInfo.depthTestEnable = VK_FALSE;
-	infos.depthStencilInfo.depthWriteEnable = VK_FALSE;
-	infos.depthStencilInfo.depthCompareOp = VK_COMPARE_OP_ALWAYS;
+	VkExtent2D swapChainExtent = m_vulkanManager.getSwapChainExtent();
+	m_vulkanManager.graphicsPipelineAddViewportAndScissor(0.f, 0.f,
+		static_cast<float>(swapChainExtent.width), static_cast<float>(swapChainExtent.height));
 
-	VkDescriptorSetLayout setLayouts[] = { m_finalOutputDescriptorSetLayout };
-	infos.pipelineLayoutInfo.setLayoutCount = 1;
-	infos.pipelineLayoutInfo.pSetLayouts = setLayouts;
+	m_vulkanManager.graphicsPipelineConfigureDepthState(VK_FALSE, VK_FALSE, VK_COMPARE_OP_ALWAYS);
 
-	if (vkCreatePipelineLayout(m_device, &infos.pipelineLayoutInfo, nullptr, m_finalOutputPipelineLayout.replace()) != VK_SUCCESS)
-	{
-		throw std::runtime_error("failed to create final output pipeline layout!");
-	}
+	m_vulkanManager.graphicsPipeLineAddColorBlendAttachment(VK_FALSE);
 
-	infos.pipelineInfo.layout = m_finalOutputPipelineLayout;
-	infos.pipelineInfo.renderPass = m_finalOutputRenderPass;
-	infos.pipelineInfo.subpass = 0;
-
-	if (vkCreateGraphicsPipelines(m_device, m_pipelineCache, 1, &infos.pipelineInfo, nullptr, m_finalOutputPipeline.replace()) != VK_SUCCESS)
-	{
-		throw std::runtime_error("failed to create lighting pipeline!");
-	}
+	m_finalOutputPipeline = m_vulkanManager.endCreateGraphicsPipeline();
 }
 
 void DeferredRenderer::createBrdfLutDescriptorSet()
 {
 	if (m_bakedBrdfReady) return;
 
-	std::vector<VkDescriptorImageInfo> imageInfos =
-	{
-		m_bakedBRDFs[0].getDescriptorInfo(VK_IMAGE_LAYOUT_GENERAL)
-	};
+	std::vector<rj::DescriptorSetUpdateImageInfo> updateInfos(1);
+	updateInfos[0].layout = VK_IMAGE_LAYOUT_GENERAL;
+	updateInfos[0].imageViewName = m_bakedBRDFs[0].imageViews[0];
+	updateInfos[0].samplerName = std::numeric_limits<uint32_t>::max();
 
-	std::array<VkWriteDescriptorSet, 1> descriptorWrites = {};
-
-	descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	descriptorWrites[0].dstSet = m_brdfLutDescriptorSet;
-	descriptorWrites[0].dstBinding = 0;
-	descriptorWrites[0].dstArrayElement = 0;
-	descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-	descriptorWrites[0].descriptorCount = static_cast<uint32_t>(imageInfos.size());
-	descriptorWrites[0].pImageInfo = imageInfos.data();
-
-	vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
+	m_vulkanManager.beginUpdateDescriptorSet(m_brdfLutDescriptorSet);
+	m_vulkanManager.descriptorSetAddImageDescriptor(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, updateInfos);
+	m_vulkanManager.endUpdateDescriptorSet();
 }
 
 void DeferredRenderer::createSpecEnvPrefilterDescriptorSet()
 {
 	if (m_skybox.diffMapReady && m_skybox.specMapReady) return;
 
-	std::vector<VkDescriptorBufferInfo> bufferInfos =
-	{
-		m_allUniformBuffer.getDescriptorInfo(
-			m_allUniformHostData.offsetOf(reinterpret_cast<const char *>(m_uCubeViews)),
-			sizeof(CubeMapCameraUniformBuffer))
-	};
+	std::vector<rj::DescriptorSetUpdateBufferInfo> bufferInfos(1);
+	bufferInfos[0].bufferName = m_allUniformBuffer.buffer;
+	bufferInfos[0].offset = m_allUniformHostData.offsetOf(reinterpret_cast<const char *>(m_uCubeViews));
+	bufferInfos[0].sizeInBytes = sizeof(CubeMapCameraUniformBuffer);
 
-	std::vector<VkDescriptorImageInfo> imageInfos =
-	{
-		m_skybox.radianceMap.getDescriptorInfo()
-	};
+	std::vector<rj::DescriptorSetUpdateImageInfo> imageInfos(1);
+	imageInfos[0].layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	imageInfos[0].imageViewName = m_skybox.radianceMap.imageViews[0];
+	imageInfos[0].samplerName = m_skybox.radianceMap.samplers[0];
 
-	std::array<VkWriteDescriptorSet, 2> descriptorWrites = {};
-
-	descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	descriptorWrites[0].dstSet = m_specEnvPrefilterDescriptorSet;
-	descriptorWrites[0].dstBinding = 0;
-	descriptorWrites[0].dstArrayElement = 0;
-	descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	descriptorWrites[0].descriptorCount = static_cast<uint32_t>(bufferInfos.size());
-	descriptorWrites[0].pBufferInfo = bufferInfos.data();
-
-	descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	descriptorWrites[1].dstSet = m_specEnvPrefilterDescriptorSet;
-	descriptorWrites[1].dstBinding = 1;
-	descriptorWrites[1].dstArrayElement = 0;
-	descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	descriptorWrites[1].descriptorCount = static_cast<uint32_t>(imageInfos.size());
-	descriptorWrites[1].pImageInfo = imageInfos.data();
-
-	vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
+	m_vulkanManager.beginUpdateDescriptorSet(m_specEnvPrefilterDescriptorSet);
+	m_vulkanManager.descriptorSetAddBufferDescriptor(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, bufferInfos);
+	m_vulkanManager.descriptorSetAddImageDescriptor(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, imageInfos);
+	m_vulkanManager.endUpdateDescriptorSet();
 }
 
 void DeferredRenderer::createGeomPassDescriptorSets()
@@ -2107,128 +1392,107 @@ void DeferredRenderer::createGeomPassDescriptorSets()
 
 void DeferredRenderer::createSkyboxDescriptorSet()
 {
-	VkDescriptorBufferInfo bufferInfo = m_allUniformBuffer.getDescriptorInfo(
-		m_allUniformHostData.offsetOf(reinterpret_cast<const char *>(m_uTransMats)),
-		sizeof(DisplayInfoUniformBuffer));
+	std::vector<rj::DescriptorSetUpdateBufferInfo> bufferInfos(1);
+	bufferInfos[0].bufferName = m_allUniformBuffer.buffer;
+	bufferInfos[0].offset = m_allUniformHostData.offsetOf(reinterpret_cast<const char *>(m_uTransMats));
+	bufferInfos[0].sizeInBytes = sizeof(DisplayInfoUniformBuffer);
 
-	std::array<VkDescriptorImageInfo, 1> imageInfos;
-	imageInfos[0] = m_skybox.radianceMap.getDescriptorInfo();
+	std::vector<rj::DescriptorSetUpdateImageInfo> imageInfos(1);
+	imageInfos[0].layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	imageInfos[0].imageViewName = m_skybox.radianceMap.imageViews[0];
+	imageInfos[0].samplerName = m_skybox.radianceMap.samplers[0];
 
-	std::array<VkWriteDescriptorSet, 2> descriptorWrites = {};
-
-	descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	descriptorWrites[0].dstSet = m_skyboxDescriptorSet;
-	descriptorWrites[0].dstBinding = 0;
-	descriptorWrites[0].dstArrayElement = 0;
-	descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	descriptorWrites[0].descriptorCount = 1;
-	descriptorWrites[0].pBufferInfo = &bufferInfo;
-
-	descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	descriptorWrites[1].dstSet = m_skyboxDescriptorSet;
-	descriptorWrites[1].dstBinding = 1;
-	descriptorWrites[1].dstArrayElement = 0;
-	descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	descriptorWrites[1].descriptorCount = static_cast<uint32_t>(imageInfos.size());
-	descriptorWrites[1].pImageInfo = imageInfos.data();
-
-	vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
+	m_vulkanManager.beginUpdateDescriptorSet(m_skyboxDescriptorSet);
+	m_vulkanManager.descriptorSetAddBufferDescriptor(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, bufferInfos);
+	m_vulkanManager.descriptorSetAddImageDescriptor(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, imageInfos);
+	m_vulkanManager.endUpdateDescriptorSet();
 }
 
 void DeferredRenderer::createStaticMeshDescriptorSet()
 {
 	for (uint32_t i = 0; i < m_models.size(); ++i)
 	{
-		std::vector<VkDescriptorImageInfo> imageInfos =
-		{
-			m_models[i].albedoMap.getDescriptorInfo(),
-			m_models[i].normalMap.getDescriptorInfo(),
-			m_models[i].roughnessMap.getDescriptorInfo(),
-			m_models[i].metalnessMap.getDescriptorInfo(),
-			m_models[i].albedoMap.getDescriptorInfo()
-		};
-		if (m_models[i].aoMap.image.isvalid())
-		{
-			imageInfos[4] = m_models[i].aoMap.getDescriptorInfo();
-		}
+		std::vector<rj::DescriptorSetUpdateBufferInfo> bufferInfos(1);
+		std::vector<rj::DescriptorSetUpdateImageInfo> imageInfos(1);
 
-		std::vector<VkDescriptorBufferInfo> bufferInfos =
-		{
-			m_allUniformBuffer.getDescriptorInfo(
-				m_allUniformHostData.offsetOf(reinterpret_cast<const char *>(m_uTransMats)),
-				sizeof(TransMatsUniformBuffer)),
-			m_allUniformBuffer.getDescriptorInfo(
-				m_allUniformHostData.offsetOf(reinterpret_cast<const char *>(m_models[i].uPerModelInfo)),
-				sizeof(PerModelUniformBuffer))
-		};
+		m_vulkanManager.beginUpdateDescriptorSet(m_geomDescriptorSets[i]);
 
-		std::array<VkWriteDescriptorSet, 2> descriptorWrites = {};
+		bufferInfos[0].bufferName = m_allUniformBuffer.buffer;
+		bufferInfos[0].offset = m_allUniformHostData.offsetOf(reinterpret_cast<const char *>(m_uTransMats));
+		bufferInfos[0].sizeInBytes = sizeof(TransMatsUniformBuffer);
+		m_vulkanManager.descriptorSetAddBufferDescriptor(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, bufferInfos);
 
-		descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		descriptorWrites[0].dstSet = m_geomDescriptorSets[i];
-		descriptorWrites[0].dstBinding = 0;
-		descriptorWrites[0].dstArrayElement = 0;
-		descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-		descriptorWrites[0].descriptorCount = static_cast<uint32_t>(bufferInfos.size());
-		descriptorWrites[0].pBufferInfo = bufferInfos.data();
+		bufferInfos[0].offset = m_allUniformHostData.offsetOf(reinterpret_cast<const char *>(m_models[i].uPerModelInfo));
+		bufferInfos[0].sizeInBytes = sizeof(PerModelUniformBuffer);
+		m_vulkanManager.descriptorSetAddBufferDescriptor(1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, bufferInfos);
 
-		descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		descriptorWrites[1].dstSet = m_geomDescriptorSets[i];
-		descriptorWrites[1].dstBinding = 2;
-		descriptorWrites[1].dstArrayElement = 0;
-		descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-		descriptorWrites[1].descriptorCount = static_cast<uint32_t>(imageInfos.size());
-		descriptorWrites[1].pImageInfo = imageInfos.data();
+		imageInfos[0].layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		imageInfos[0].imageViewName = m_models[i].albedoMap.imageViews[0];
+		imageInfos[0].samplerName = m_models[i].albedoMap.samplers[0];
+		m_vulkanManager.descriptorSetAddImageDescriptor(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, imageInfos);
 
-		vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
+		imageInfos[0].imageViewName = m_models[i].normalMap.imageViews[0];
+		imageInfos[0].samplerName = m_models[i].normalMap.samplers[0];
+		m_vulkanManager.descriptorSetAddImageDescriptor(3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, imageInfos);
+
+		imageInfos[0].imageViewName = m_models[i].roughnessMap.imageViews[0];
+		imageInfos[0].samplerName = m_models[i].roughnessMap.samplers[0];
+		m_vulkanManager.descriptorSetAddImageDescriptor(4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, imageInfos);
+
+		imageInfos[0].imageViewName = m_models[i].metalnessMap.imageViews[0];
+		imageInfos[0].samplerName = m_models[i].metalnessMap.samplers[0];
+		m_vulkanManager.descriptorSetAddImageDescriptor(5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, imageInfos);
+
+		imageInfos[0].imageViewName = m_models[i].aoMap.image == std::numeric_limits<uint32_t>::max() ? m_models[i].albedoMap.imageViews[0] : m_models[i].aoMap.imageViews[0];
+		imageInfos[0].samplerName = m_models[i].aoMap.image == std::numeric_limits<uint32_t>::max() ? m_models[i].albedoMap.samplers[0] : m_models[i].aoMap.samplers[0];
+		m_vulkanManager.descriptorSetAddImageDescriptor(6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, imageInfos);
+
+		m_vulkanManager.endUpdateDescriptorSet();
 	}
 }
 
 void DeferredRenderer::createLightingPassDescriptorSets()
 {
-	std::array<VkDescriptorBufferInfo, 1> bufferInfos = {};
-	bufferInfos[0] = m_allUniformBuffer.getDescriptorInfo(
-		m_allUniformHostData.offsetOf(reinterpret_cast<const char *>(m_uLightInfo)),
-		sizeof(LightingPassUniformBuffer));
+	std::vector<rj::DescriptorSetUpdateBufferInfo> bufferInfos(1);
+	std::vector<rj::DescriptorSetUpdateImageInfo> imageInfos(1);
 
-	std::array<VkDescriptorImageInfo, 4> inputAttachmentImageInfos = {};
-	inputAttachmentImageInfos[0] = m_gbufferImages[0].getDescriptorInfo();
-	inputAttachmentImageInfos[1] = m_gbufferImages[1].getDescriptorInfo();
-	inputAttachmentImageInfos[2] = m_gbufferImages[2].getDescriptorInfo();
-	inputAttachmentImageInfos[3] = m_depthImage.getDescriptorInfo();
+	m_vulkanManager.beginUpdateDescriptorSet(m_lightingDescriptorSet);
 
-	std::array<VkDescriptorImageInfo, 3> samplerImageInfos = {};
-	samplerImageInfos[0] = m_skybox.diffuseIrradianceMap.getDescriptorInfo();
-	samplerImageInfos[1] = m_skybox.specularIrradianceMap.getDescriptorInfo();
-	samplerImageInfos[2] = m_bakedBRDFs[0].getDescriptorInfo();
+	bufferInfos[0].bufferName = m_allUniformBuffer.buffer;
+	bufferInfos[0].offset = m_allUniformHostData.offsetOf(reinterpret_cast<const char *>(m_uLightInfo));
+	bufferInfos[0].sizeInBytes = sizeof(LightingPassUniformBuffer);
+	m_vulkanManager.descriptorSetAddBufferDescriptor(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, bufferInfos);
 
-	std::array<VkWriteDescriptorSet, 3> descriptorWrites = {};
+	imageInfos[0].layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	imageInfos[0].imageViewName = m_gbufferImages[0].imageViews[0];
+	imageInfos[0].samplerName = m_gbufferImages[0].samplers[0];
+	m_vulkanManager.descriptorSetAddImageDescriptor(1, VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, imageInfos);
 
-	descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	descriptorWrites[0].dstSet = m_lightingDescriptorSet;
-	descriptorWrites[0].dstBinding = 0;
-	descriptorWrites[0].dstArrayElement = 0;
-	descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	descriptorWrites[0].descriptorCount = static_cast<uint32_t>(bufferInfos.size());
-	descriptorWrites[0].pBufferInfo = bufferInfos.data();
+	imageInfos[0].imageViewName = m_gbufferImages[1].imageViews[0];
+	imageInfos[0].samplerName = m_gbufferImages[1].samplers[0];
+	m_vulkanManager.descriptorSetAddImageDescriptor(2, VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, imageInfos);
 
-	descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	descriptorWrites[1].dstSet = m_lightingDescriptorSet;
-	descriptorWrites[1].dstBinding = 1;
-	descriptorWrites[1].dstArrayElement = 0;
-	descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
-	descriptorWrites[1].descriptorCount = static_cast<uint32_t>(inputAttachmentImageInfos.size());
-	descriptorWrites[1].pImageInfo = inputAttachmentImageInfos.data();
+	imageInfos[0].imageViewName = m_gbufferImages[2].imageViews[0];
+	imageInfos[0].samplerName = m_gbufferImages[2].samplers[0];
+	m_vulkanManager.descriptorSetAddImageDescriptor(3, VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, imageInfos);
 
-	descriptorWrites[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	descriptorWrites[2].dstSet = m_lightingDescriptorSet;
-	descriptorWrites[2].dstBinding = 5;
-	descriptorWrites[2].dstArrayElement = 0;
-	descriptorWrites[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	descriptorWrites[2].descriptorCount = static_cast<uint32_t>(samplerImageInfos.size());
-	descriptorWrites[2].pImageInfo = samplerImageInfos.data();
+	imageInfos[0].imageViewName = m_depthImage.imageViews[0];
+	imageInfos[0].samplerName = m_depthImage.samplers[0];
+	m_vulkanManager.descriptorSetAddImageDescriptor(4, VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, imageInfos);
 
-	vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
+	imageInfos[0].imageViewName = m_skybox.diffuseIrradianceMap.imageViews[0];
+	imageInfos[0].samplerName = m_skybox.diffuseIrradianceMap.samplers[0];
+	m_vulkanManager.descriptorSetAddImageDescriptor(5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, imageInfos);
+
+	imageInfos[0].imageViewName = m_skybox.specularIrradianceMap.imageViews[0];
+	imageInfos[0].samplerName = m_skybox.specularIrradianceMap.samplers[0];
+	m_vulkanManager.descriptorSetAddImageDescriptor(6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, imageInfos);
+
+	imageInfos[0].imageViewName = m_bakedBRDFs[0].imageViews[0];
+	imageInfos[0].samplerName = m_bakedBRDFs[0].samplers[0];
+	m_vulkanManager.descriptorSetAddImageDescriptor(7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, imageInfos);
+
+	m_vulkanManager.endUpdateDescriptorSet();
 }
 
 void DeferredRenderer::createBloomDescriptorSets()
@@ -2839,11 +2103,9 @@ void DeferredRenderer::savePrecomputationResults()
 
 VkFormat DeferredRenderer::findDepthFormat()
 {
-	return findSupportedFormat(
-		m_physicalDevice,
+	return m_vulkanManager.chooseSupportedFormatFromCandidates(
 		{ VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT },
-		VK_IMAGE_TILING_OPTIMAL,
-		VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
+		VK_IMAGE_TILING_OPTIMAL, VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
 }
 
 #endif

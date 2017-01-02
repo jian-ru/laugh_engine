@@ -72,6 +72,11 @@ namespace rj
 			return m_swapChainExtent;
 		}
 
+		VkFormat format() const
+		{
+			return m_swapChainImageFormat;
+		}
+
 	protected:
 		void createSwapChain()
 		{

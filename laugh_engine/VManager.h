@@ -170,13 +170,7 @@ namespace rj
 				depthStencilInfo.depthWriteEnable = VK_TRUE;
 				depthStencilInfo.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
 
-				colorBlendAttachmentStates.resize(1);
-				colorBlendAttachmentStates[0].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-				colorBlendAttachmentStates[0].blendEnable = VK_FALSE;
-
 				colorBlendInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-				colorBlendInfo.attachmentCount = 1;
-				colorBlendInfo.pAttachments = colorBlendAttachmentStates.data();
 
 				dynamicStateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
 
@@ -225,9 +219,9 @@ namespace rj
 
 	struct DescriptorSetUpdateImageInfo
 	{
-		uint32_t samplerName;
-		uint32_t imageViewName;
 		VkImageLayout layout;
+		uint32_t imageViewName;
+		uint32_t samplerName;
 	};
 
 	class VManager
@@ -469,7 +463,7 @@ namespace rj
 		{
 			m_curPipelineLayoutInfo = {};
 			m_curPipelineLayoutName = static_cast<uint32_t>(m_pipelineLayouts.size());
-			m_pipelineLayouts[m_curPipelineLayoutName] = VDeleter<VkPipelineLayout>{ m_device, vkDestroyPipelineLayout };
+			m_pipelineLayouts.emplace(std::piecewise_construct, m_curPipelineLayoutName, m_device, vkDestroyPipelineLayout);
 		}
 
 		void pipelineLayoutAddDescriptorSetLayouts(const std::vector<uint32_t> &setLayoutNames)
@@ -773,8 +767,8 @@ namespace rj
 			{
 				scissor.offset.x = static_cast<int32_t>(viewportX);
 				scissor.offset.y = static_cast<int32_t>(viewportY);
-				scissor.extent.width = static_cast<int32_t>(viewportWidth);
-				scissor.extent.height = static_cast<int32_t>(viewportHeight);
+				scissor.extent.width = static_cast<uint32_t>(viewportWidth);
+				scissor.extent.height = static_cast<uint32_t>(viewportHeight);
 			}
 			else
 			{
@@ -871,7 +865,8 @@ namespace rj
 		}
 
 		void graphicsPipeLineAddColorBlendAttachment(VkBool32 blendEnable,
-			VkBlendFactor srcColorBlendFactor, VkBlendFactor dstColorBlendFactor, VkBlendOp colorBlendOp, bool alphaSameAsColor = true,
+			VkBlendFactor srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA, VkBlendFactor dstColorBlendFactor = VK_BLEND_FACTOR_ZERO, VkBlendOp colorBlendOp = VK_BLEND_OP_ADD,
+			bool alphaSameAsColor = true,
 			VkBlendFactor srcAlphaBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA, VkBlendFactor dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO, VkBlendOp alphaBlendOp = VK_BLEND_OP_ADD,
 			VkColorComponentFlags colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT)
 		{
@@ -948,7 +943,7 @@ namespace rj
 		{
 			m_curComputePipelineInfo = std::make_shared<ComputePipelineCreateInfo>(m_device);
 			m_curPipelineName = static_cast<uint32_t>(m_pipelines.size());
-			m_pipelines[m_curPipelineName] = VDeleter<VkPipeline>{ m_device, vkDestroyPipeline };
+			m_pipelines.emplace(std::piecewise_construct, m_curPipelineName, m_device, vkDestroyPipeline);
 
 			auto &pipelineInfo = m_curComputePipelineInfo->pipelineInfo;
 			pipelineInfo.flags = flags;
@@ -1304,7 +1299,7 @@ namespace rj
 		}
 		// --- Framebuffer related ---
 
-		// --- Descriptor pool creation ---
+		// --- Descriptor pool related ---
 		void beginCreateDescriptorPool(uint32_t maxNumSets)
 		{
 			m_curDescriptorPoolInfo = {};
@@ -1332,7 +1327,21 @@ namespace rj
 			
 			return m_curDescriptorPoolName;
 		}
-		// --- Descriptor pool creation ---
+
+		void resetDescriptorPool(uint32_t poolName, VkDescriptorPoolResetFlags flags = 0)
+		{
+			const auto &pool = m_descriptorPools.at(poolName);
+
+			if (vkResetDescriptorPool(m_device, pool, flags) != VK_SUCCESS)
+			{
+				throw std::runtime_error("failed to reset descriptor pool");
+			}
+
+			auto &poolSets = m_poolSetTable.at(poolName);
+			m_availableDescriptorSetNames.insert(m_availableDescriptorSetNames.end(), poolSets.begin(), poolSets.end());
+			poolSets.clear();
+		}
+		// --- Descriptor pool related ---
 
 		// --- Descriptor sets ---
 		std::vector<uint32_t> allocateDescriptorSets(uint32_t descriptorPoolName, const std::vector<uint32_t> &setLayoutNames)
@@ -1360,19 +1369,32 @@ namespace rj
 
 			std::vector<uint32_t> setNames;
 			setNames.reserve(sets.size());
-			uint32_t setName = static_cast<uint32_t>(m_descriptorSets.size());
 			for (auto set : sets)
 			{
+				uint32_t setName;
+				if (!m_availableDescriptorSetNames.empty())
+				{
+					setName = m_availableDescriptorSetNames.back();
+					m_availableDescriptorSetNames.pop_back();
+				}
+				else
+				{
+					setName = static_cast<uint32_t>(m_descriptorSets.size());
+					m_descriptorSets.push_back(VK_NULL_HANDLE);
+				}
+
 				setNames.push_back(setName);
-				m_descriptorSets.emplace(setName++, set);
+				m_descriptorSets[setName] = set;
 			}
+
+			auto &entry = m_poolSetTable[descriptorPoolName];
+			entry.insert(entry.end(), setNames.begin(), setNames.end());
 
 			return setNames;
 		}
 
 		void beginUpdateDescriptorSet(uint32_t setName)
 		{
-			assert(m_descriptorSets.find(setName) != m_descriptorSets.end());
 			m_curDescriptorSetInfo = {};
 			m_curDescriptorSetName = setName;
 		}
@@ -1510,11 +1532,7 @@ namespace rj
 			if (flags & VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT)
 			{
 				auto &cbNames = m_commandBufferTable[commandPoolName];
-				for (auto cbName : cbNames)
-				{
-					m_commandBuffers.erase(cbName);
-					m_commandBufferAvaiableNames.push_back(cbName);
-				}
+				m_commandBufferAvaiableNames.insert(m_commandBufferAvaiableNames.end(), cbNames.begin(), cbNames.end());
 				cbNames.clear();
 			}
 		}
@@ -1592,9 +1610,10 @@ namespace rj
 					else
 					{
 						cbName = static_cast<uint32_t>(m_commandBuffers.size());
+						m_commandBuffers.push_back(VK_NULL_HANDLE);
 					}
 
-					m_commandBuffers.emplace(cbName, cb);
+					m_commandBuffers[cbName] = cb;
 					commandBufferNames.push_back(cbName);
 					poolCbs.push_back(cbName);
 				}
@@ -2030,6 +2049,11 @@ namespace rj
 			return m_swapChain.extent();
 		}
 
+		VkFormat getSwapChainImageFormat() const
+		{
+			return m_swapChain.
+		}
+
 		VkResult swapChainNextImageIndex(uint32_t *pIdx, uint32_t signalSemaphoreName, uint32_t waitFenceName,
 			uint64_t timeout = std::numeric_limits<uint64_t>::max())
 		{
@@ -2075,6 +2099,11 @@ namespace rj
 		void getPhysicalDeviceProperties(VkPhysicalDeviceProperties *pProps) const
 		{
 			vkGetPhysicalDeviceProperties(m_device, pProps);
+		}
+
+		VkFormat chooseSupportedFormatFromCandidates(const std::vector<VkFormat> &candidates, VkImageTiling tiling, VkFormatFeatureFlags features)
+		{
+			return findSupportedFormat(m_device, candidates, tiling, features);
 		}
 		// --- Device properties ---
 
@@ -2136,7 +2165,7 @@ namespace rj
 		static std::shared_mutex g_commandBufferMutex;
 		std::vector<uint32_t> m_commandBufferAvaiableNames;
 		std::unordered_map<uint32_t, std::vector<uint32_t>> m_commandBufferTable; // command buffers of each pool
-		std::unordered_map<uint32_t, VkCommandBuffer> m_commandBuffers;
+		std::vector<VkCommandBuffer> m_commandBuffers;
 
 		std::vector<uint32_t> m_availableBufferNames;
 		std::vector<VBuffer> m_buffers;
@@ -2155,7 +2184,9 @@ namespace rj
 
 		DescriptorSetUpdateInfo m_curDescriptorSetInfo;
 		uint32_t m_curDescriptorSetName;
-		std::unordered_map<uint32_t, VkDescriptorSet> m_descriptorSets;
+		std::vector<uint32_t> m_availableDescriptorSetNames;
+		std::unordered_map<uint32_t, std::vector<uint32_t>> m_poolSetTable; // sets from each pool
+		std::vector<VkDescriptorSet> m_descriptorSets;
 
 		std::vector<uint32_t> m_availableSemaphoreNames;
 		std::vector<VDeleter<VkSemaphore>> m_semaphores;

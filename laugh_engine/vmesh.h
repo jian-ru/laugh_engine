@@ -330,7 +330,13 @@ public:
 
 
 	VMesh(rj::VManager *pManager) : pVulkanManager(pManager)
-	{}
+	{
+		albedoMap.image = std::numeric_limits<uint32_t>::max();
+		normalMap.image = std::numeric_limits<uint32_t>::max();
+		roughnessMap.image = std::numeric_limits<uint32_t>::max();
+		metalnessMap.image = std::numeric_limits<uint32_t>::max();
+		aoMap.image = std::numeric_limits<uint32_t>::max();
+	}
 
 	void load(
 		const std::string &modelFileName,
