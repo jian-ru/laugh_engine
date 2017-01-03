@@ -32,6 +32,40 @@ namespace rj
 			this->deleter = [&device, deletef](T obj) { deletef(device, obj, nullptr); };
 		}
 
+		// TODO: make copy ctor deleted
+		VDeleter(const VDeleter<T> &other)
+		{
+			VDeleter<T> &_other = const_cast<VDeleter<T> &>(other);
+			object = _other.object;
+			deleter = _other.deleter;
+			_other.object = VK_NULL_HANDLE;
+		}
+
+		// TODO: make copy assignment operator deleted
+		VDeleter<T> &operator=(const VDeleter<T> &other)
+		{
+			VDeleter<T> &_other = const_cast<VDeleter<T> &>(other);
+			object = _other.object;
+			deleter = _other.deleter;
+			_other.object = VK_NULL_HANDLE;
+			return *this;
+		}
+
+		VDeleter(VDeleter<T> &&other)
+		{
+			object = other.object;
+			deleter = other.deleter;
+			other.object = VK_NULL_HANDLE;
+		}
+
+		VDeleter<T> &operator=(VDeleter<T> &&other)
+		{
+			object = other.object;
+			deleter = other.deleter;
+			other.object = VK_NULL_HANDLE;
+			return *this;
+		}
+
 		virtual ~VDeleter()
 		{
 			cleanup();

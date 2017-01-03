@@ -153,6 +153,7 @@ protected:
 	uint32_t m_finalOutputPipeline;
 
 	ImageWrapper m_depthImage;
+	const VkFormat m_lightingResultImageFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
 	ImageWrapper m_lightingResultImage; // VK_FORMAT_R16G16B16A16_SFLOAT
 	const uint32_t m_numGBuffers = 3;
 	const std::vector<VkFormat> m_gbufferFormats =
@@ -489,9 +490,11 @@ void DeferredRenderer::createDepthResources()
 		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
 	m_depthImage.imageViews.resize(1);
-	m_depthImage.imageViews[0] = m_vulkanManager.createImageView2D(m_depthImage.image, VK_IMAGE_ASPECT_COLOR_BIT);
+	VkImageAspectFlags aspectMask =
+		rj::helper_functions::hasStencilComponent(depthFormat) ? (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT) : VK_IMAGE_ASPECT_DEPTH_BIT;
+	m_depthImage.imageViews[0] = m_vulkanManager.createImageView2D(m_depthImage.image, aspectMask);
 
-	m_vulkanManager.transitionImageLayout(m_depthImage.image, VK_IMAGE_LAYOUT_PREINITIALIZED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+	m_vulkanManager.transitionImageLayout(m_depthImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
 
 	m_depthImage.samplers.resize(1);
 	m_depthImage.samplers[0] = m_vulkanManager.createSampler(VK_FILTER_NEAREST, VK_FILTER_NEAREST, VK_SAMPLER_MIPMAP_MODE_NEAREST,
@@ -815,20 +818,20 @@ void DeferredRenderer::createGeometryAndLightingRenderPass()
 	// Depth
 	// Clear only happens in the FIRST subpass that uses this attachment
 	// VK_IMAGE_LAYOUT_UNDEFINED as initial layout means that we don't care about the initial layout of this attachment image (content may not be preserved)
-	m_vulkanManager.renderPassAddAttachment(m_depthImage.format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	m_vulkanManager.renderPassAddAttachment(findDepthFormat(), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
 	// World space normal + albedo
 	// Normal has been perturbed by normal mapping
-	m_vulkanManager.renderPassAddAttachment(m_gbufferImages[0].format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	m_vulkanManager.renderPassAddAttachment(m_gbufferFormats[0], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
 	// World postion
-	m_vulkanManager.renderPassAddAttachment(m_gbufferImages[1].format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	m_vulkanManager.renderPassAddAttachment(m_gbufferFormats[1], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
 	// RMAI
-	m_vulkanManager.renderPassAddAttachment(m_gbufferImages[2].format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	m_vulkanManager.renderPassAddAttachment(m_gbufferFormats[2], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
 	// Lighting result
-	m_vulkanManager.renderPassAddAttachment(m_lightingResultImage.format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	m_vulkanManager.renderPassAddAttachment(m_lightingResultImageFormat, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
 	// --- Reference to render pass attachments used in each subpass
 	// --- Subpasses
@@ -882,7 +885,7 @@ void DeferredRenderer::createBloomRenderPasses()
 	// --- Bloom render pass 1 (brightness and blur passes): will clear framebuffer
 	m_vulkanManager.beginCreateRenderPass();
 
-	m_vulkanManager.renderPassAddAttachment(m_postEffectImages[0].format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	m_vulkanManager.renderPassAddAttachment(m_postEffectImageFormats[0], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
 	m_vulkanManager.beginDescribeSubpass();
 	m_vulkanManager.subpassAddColorAttachmentReference(0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
@@ -898,7 +901,7 @@ void DeferredRenderer::createBloomRenderPasses()
 	// --- Bloom render pass 2 (Merge pass): will not clear framebuffer
 	m_vulkanManager.beginCreateRenderPass();
 
-	m_vulkanManager.renderPassAddAttachment(m_lightingResultImage.format, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+	m_vulkanManager.renderPassAddAttachment(m_lightingResultImageFormat, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 		VK_SAMPLE_COUNT_1_BIT, VK_ATTACHMENT_LOAD_OP_LOAD);
 
 	m_vulkanManager.beginDescribeSubpass();
@@ -1298,7 +1301,6 @@ void DeferredRenderer::createBloomPipelines()
 	m_vulkanManager.graphicsPipelineAddShaderStage(VK_SHADER_STAGE_VERTEX_BIT, vsFileName);
 	m_vulkanManager.graphicsPipelineAddShaderStage(VK_SHADER_STAGE_FRAGMENT_BIT, fsFileName2);
 
-	VkExtent2D swapChainExtent = m_vulkanManager.getSwapChainExtent();
 	m_vulkanManager.graphicsPipelineAddViewportAndScissor(0.f, 0.f,
 		static_cast<float>(swapChainExtent.width), static_cast<float>(swapChainExtent.height));
 
@@ -1314,7 +1316,6 @@ void DeferredRenderer::createBloomPipelines()
 	m_vulkanManager.graphicsPipelineAddShaderStage(VK_SHADER_STAGE_VERTEX_BIT, vsFileName);
 	m_vulkanManager.graphicsPipelineAddShaderStage(VK_SHADER_STAGE_FRAGMENT_BIT, fsFileName3);
 
-	VkExtent2D swapChainExtent = m_vulkanManager.getSwapChainExtent();
 	m_vulkanManager.graphicsPipelineAddViewportAndScissor(0.f, 0.f,
 		static_cast<float>(swapChainExtent.width), static_cast<float>(swapChainExtent.height));
 

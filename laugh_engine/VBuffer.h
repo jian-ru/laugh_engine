@@ -18,6 +18,10 @@ namespace rj
 		void init(VkDeviceSize sizeInBytes, VkBufferUsageFlags usage, VkMemoryPropertyFlags memProps)
 		{
 			createBuffer(m_buffer, m_bufferMemory, m_device, m_device, sizeInBytes, usage, memProps);
+
+			m_sizeInBytes = sizeInBytes;
+			m_usage = usage;
+			m_memoryProperties = memProps;
 		}
 
 		void *mapBuffer(VkDeviceSize offset = 0, VkDeviceSize sizeInBytes = 0) const

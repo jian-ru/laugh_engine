@@ -157,7 +157,6 @@ protected:
 	virtual const std::string &getWindowTitle();
 	virtual const VkPhysicalDeviceFeatures &getEnabledPhysicalDeviceFeatures();
 
-	virtual void createSamplers() = 0;
 	virtual void createRenderPasses() = 0;
 	virtual void createDescriptorSetLayouts() = 0;
 	virtual void createComputePipelines() {}
@@ -182,6 +181,8 @@ protected:
 
 #ifdef VBASE_IMPLEMENTATION
 
+std::shared_mutex rj::VManager::g_commandBufferMutex;
+
 bool VBaseGraphics::leftMBDown = false;
 bool VBaseGraphics::middleMBDown = false;
 float VBaseGraphics::lastX;
@@ -196,6 +197,7 @@ void VBaseGraphics::run()
 
 void VBaseGraphics::initVulkan()
 {
+	loadAndPrepareAssets();
 	createRenderPasses();
 	createDescriptorSetLayouts();
 	createComputePipelines();
@@ -204,7 +206,6 @@ void VBaseGraphics::initVulkan()
 	createComputeResources();
 	createDepthResources();
 	createColorAttachmentResources();
-	loadAndPrepareAssets();
 	createFramebuffers();
 	createUniformBuffers();
 	createDescriptorPools();

@@ -1,6 +1,12 @@
 #pragma once
 
 #include <fstream>
+#include <unordered_map>
+
+#include "gli/gli.hpp"
+#include "gli/convert.hpp"
+#include "gli/generate_mipmaps.hpp"
+
 #include "VDeleter.h"
 
 
@@ -84,6 +90,7 @@ namespace rj
 				size_t currentSizeInBytes;
 			};
 		};
+
 
 		template <class T>
 		inline void hash_combine(std::size_t& seed, const T& v)
@@ -180,6 +187,7 @@ namespace rj
 			return size * layerCount;
 		}
 
+		// TODO: support compressed format
 		// Address computation: layerIdx * layerSize + faceIdx * faceSize + levelSize(0) + ... + levelSize(levelIdx - 1)
 		// layerCount is always 1 for 2D image (you need a texture2d_array to use layers)
 		// faceCount is always 1 for 2D image
@@ -227,6 +235,7 @@ namespace rj
 			}
 		}
 
+		// --- Shader module creation ---
 		void createShaderModule(VDeleter<VkShaderModule> &shaderModule, VkDevice device, const std::vector<char>& code)
 		{
 			VkShaderModuleCreateInfo createInfo = {};
@@ -239,6 +248,7 @@ namespace rj
 				throw std::runtime_error("failed to create shader module!");
 			}
 		}
+		// --- Shader module creation ---
 
 		// --- Image view creation ---
 		void createImageView(
@@ -428,7 +438,7 @@ namespace rj
 			bufferInfo.usage = usage;
 			bufferInfo.sharingMode = sharingMode;
 			bufferInfo.queueFamilyIndexCount = static_cast<uint32_t>(queueFamilyIndices.size());
-			bufferInfo.pQueueFamilyIndices = queueFamilyIndices.data();
+			bufferInfo.pQueueFamilyIndices = queueFamilyIndices.size() == 0 ? nullptr : queueFamilyIndices.data();
 			bufferInfo.flags = flags;
 
 			if (vkCreateBuffer(device, &bufferInfo, nullptr, buffer.replace()) != VK_SUCCESS)
@@ -452,6 +462,42 @@ namespace rj
 			vkBindBufferMemory(device, buffer, bufferMemory, 0);
 		}
 		// --- Buffer creation ---
+
+		// --- Swap chain support ---
+		struct SwapChainSupportDetails
+		{
+			VkSurfaceCapabilitiesKHR capabilities;
+			std::vector<VkSurfaceFormatKHR> formats;
+			std::vector<VkPresentModeKHR> presentModes;
+		};
+
+		SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR surface)
+		{
+			SwapChainSupportDetails details;
+
+			vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, surface, &details.capabilities);
+
+			uint32_t formatCount;
+			vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &formatCount, nullptr);
+
+			if (formatCount != 0)
+			{
+				details.formats.resize(formatCount);
+				vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &formatCount, details.formats.data());
+			}
+
+			uint32_t presentModeCount;
+			vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &presentModeCount, nullptr);
+
+			if (presentModeCount != 0)
+			{
+				details.presentModes.resize(presentModeCount);
+				vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &presentModeCount, details.presentModes.data());
+			}
+
+			return details;
+		}
+		// --- Swap chain support ---
 
 		// --- Data transfer ---
 

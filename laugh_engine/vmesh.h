@@ -6,10 +6,6 @@
 #include "glm/gtx/hash.hpp"
 #include "glm/gtc/matrix_transform.hpp"
 
-#include "gli/gli.hpp"
-#include "gli/convert.hpp"
-#include "gli/generate_mipmaps.hpp"
-
 #include "assimp/Importer.hpp"
 #include "assimp/scene.h"    
 #include "assimp/postprocess.h"
@@ -377,7 +373,7 @@ public:
 		vertexBuffer = {};
 		vertexBuffer.size = sizeof(hostVerts[0]) * hostVerts.size();
 		vertexBuffer.buffer = pVulkanManager->createBuffer(vertexBuffer.size,
-			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
 		pVulkanManager->transferHostDataToBuffer(vertexBuffer.buffer, vertexBuffer.size, hostVerts.data());
 
@@ -385,7 +381,7 @@ public:
 		indexBuffer = {};
 		indexBuffer.size = sizeof(hostIndices[0]) * hostIndices.size();
 		indexBuffer.buffer = pVulkanManager->createBuffer(indexBuffer.size,
-			VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+			VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
 		pVulkanManager->transferHostDataToBuffer(indexBuffer.buffer, indexBuffer.size, hostIndices.data());
 	}

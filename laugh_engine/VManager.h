@@ -7,6 +7,7 @@
 #include "VInstance.h"
 #include "VWindow.h"
 #include "VDevice.h"
+#include "VSwapChain.h"
 #include "VQueueFamilyIndices.h"
 #include "VImage.h"
 #include "VBuffer.h"
@@ -57,8 +58,7 @@ namespace rj
 			std::vector<char> computeSpecializationData;
 			std::vector<VkSpecializationMapEntry> computeSpecializationMapEntries;
 
-			ComputePipelineCreateInfo(const VDeleter<VkDevice> &device)
-				: computeShaderModule{ device, vkDestroyShaderModule }
+			ComputePipelineCreateInfo()
 			{
 				pipelineInfo = {};
 				pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
@@ -125,13 +125,7 @@ namespace rj
 
 			VkGraphicsPipelineCreateInfo pipelineInfo;
 
-			GraphicsPipelineCreateInfo(const VDeleter<VkDevice> &device)
-				:
-				vertShaderModule{ device, vkDestroyShaderModule },
-				hullShaderModule{ device, vkDestroyShaderModule },
-				domainShaderModule{ device, vkDestroyShaderModule },
-				geomShaderModule{ device, vkDestroyShaderModule },
-				fragShaderModule{ device, vkDestroyShaderModule }
+			GraphicsPipelineCreateInfo()
 			{
 				vertexInputInfo = {};
 				inputAssemblyInfo = {};
@@ -324,7 +318,6 @@ namespace rj
 
 		void endDescribeSubpass(VkPipelineBindPoint bindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS)
 		{
-			m_pCurSubpassInfo = nullptr;
 			m_curRenderPassInfo.subpassDescs.push_back({});
 			VkSubpassDescription &subpass = m_curRenderPassInfo.subpassDescs.back();
 
@@ -360,6 +353,8 @@ namespace rj
 				subpass.preserveAttachmentCount = static_cast<uint32_t>(m_pCurSubpassInfo->preserveAttachmentRefs.size());
 				subpass.pPreserveAttachments = m_pCurSubpassInfo->preserveAttachmentRefs.data();
 			}
+
+			m_pCurSubpassInfo = nullptr;
 		}
 
 		void renderPassAddSubpassDependency(uint32_t srcSubpass, uint32_t dstSubpass,
@@ -463,7 +458,8 @@ namespace rj
 		{
 			m_curPipelineLayoutInfo = {};
 			m_curPipelineLayoutName = static_cast<uint32_t>(m_pipelineLayouts.size());
-			m_pipelineLayouts.emplace(std::piecewise_construct, m_curPipelineLayoutName, m_device, vkDestroyPipelineLayout);
+			m_pipelineLayouts.emplace(std::piecewise_construct, std::forward_as_tuple(m_curPipelineLayoutName),
+				std::forward_as_tuple(m_device, vkDestroyPipelineLayout));
 		}
 
 		void pipelineLayoutAddDescriptorSetLayouts(const std::vector<uint32_t> &setLayoutNames)
@@ -525,11 +521,12 @@ namespace rj
 		void beginCreateGraphicsPipeline(uint32_t layoutName, uint32_t renderPassName, uint32_t subpassIdx,
 			uint32_t basePipelineName = std::numeric_limits<uint32_t>::max(), VkPipelineCreateFlags flags = 0)
 		{
-			m_curGraphicsPipelineInfo = std::make_shared<GraphicsPipelineCreateInfo>(m_device);
+			m_curGraphicsPipelineInfo = GraphicsPipelineCreateInfo{};
 			m_curPipelineName = static_cast<uint32_t>(m_pipelines.size());
-			m_pipelines[m_curPipelineName] = VDeleter<VkPipeline>{ m_device, vkDestroyPipeline };
+			m_pipelines.emplace(std::piecewise_construct, std::forward_as_tuple(m_curPipelineName),
+				std::forward_as_tuple(m_device, vkDestroyPipeline));
 
-			auto &pipelineInfo = m_curGraphicsPipelineInfo->pipelineInfo;
+			auto &pipelineInfo = m_curGraphicsPipelineInfo.pipelineInfo;
 			pipelineInfo.flags = flags;
 
 			auto layoutFound = m_pipelineLayouts.find(layoutName);
@@ -574,8 +571,8 @@ namespace rj
 		{
 			auto shaderByteCode = readFile(spvFileName);
 
-			m_curGraphicsPipelineInfo->shaderStages.push_back({});
-			VkPipelineShaderStageCreateInfo &shaderStageInfo = m_curGraphicsPipelineInfo->shaderStages.back();
+			m_curGraphicsPipelineInfo.shaderStages.push_back({});
+			VkPipelineShaderStageCreateInfo &shaderStageInfo = m_curGraphicsPipelineInfo.shaderStages.back();
 			shaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 			shaderStageInfo.stage = stage;
 			shaderStageInfo.pName = "main";
@@ -584,31 +581,36 @@ namespace rj
 			switch (stage)
 			{
 			case VK_SHADER_STAGE_VERTEX_BIT:
-				createShaderModule(m_curGraphicsPipelineInfo->vertShaderModule, m_device, shaderByteCode);
-				shaderStageInfo.module = m_curGraphicsPipelineInfo->vertShaderModule;
+				m_curGraphicsPipelineInfo.vertShaderModule = VDeleter<VkShaderModule>{ m_device, vkDestroyShaderModule };
+				createShaderModule(m_curGraphicsPipelineInfo.vertShaderModule, m_device, shaderByteCode);
+				shaderStageInfo.module = m_curGraphicsPipelineInfo.vertShaderModule;
 				break;
 			case VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT:
-				createShaderModule(m_curGraphicsPipelineInfo->hullShaderModule, m_device, shaderByteCode);
-				shaderStageInfo.module = m_curGraphicsPipelineInfo->hullShaderModule;
+				m_curGraphicsPipelineInfo.hullShaderModule = VDeleter<VkShaderModule>{ m_device, vkDestroyShaderModule };
+				createShaderModule(m_curGraphicsPipelineInfo.hullShaderModule, m_device, shaderByteCode);
+				shaderStageInfo.module = m_curGraphicsPipelineInfo.hullShaderModule;
 				break;
 			case VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT:
-				createShaderModule(m_curGraphicsPipelineInfo->domainShaderModule, m_device, shaderByteCode);
-				shaderStageInfo.module = m_curGraphicsPipelineInfo->domainShaderModule;
+				m_curGraphicsPipelineInfo.domainShaderModule = VDeleter<VkShaderModule>{ m_device, vkDestroyShaderModule };
+				createShaderModule(m_curGraphicsPipelineInfo.domainShaderModule, m_device, shaderByteCode);
+				shaderStageInfo.module = m_curGraphicsPipelineInfo.domainShaderModule;
 				break;
 			case VK_SHADER_STAGE_GEOMETRY_BIT:
-				createShaderModule(m_curGraphicsPipelineInfo->geomShaderModule, m_device, shaderByteCode);
-				shaderStageInfo.module = m_curGraphicsPipelineInfo->geomShaderModule;
+				m_curGraphicsPipelineInfo.geomShaderModule = VDeleter<VkShaderModule>{ m_device, vkDestroyShaderModule };
+				createShaderModule(m_curGraphicsPipelineInfo.geomShaderModule, m_device, shaderByteCode);
+				shaderStageInfo.module = m_curGraphicsPipelineInfo.geomShaderModule;
 				break;
 			case VK_SHADER_STAGE_FRAGMENT_BIT:
-				createShaderModule(m_curGraphicsPipelineInfo->fragShaderModule, m_device, shaderByteCode);
-				shaderStageInfo.module = m_curGraphicsPipelineInfo->fragShaderModule;
+				m_curGraphicsPipelineInfo.fragShaderModule = VDeleter<VkShaderModule>{ m_device, vkDestroyShaderModule };
+				createShaderModule(m_curGraphicsPipelineInfo.fragShaderModule, m_device, shaderByteCode);
+				shaderStageInfo.module = m_curGraphicsPipelineInfo.fragShaderModule;
 				break;
 			default:
 				throw std::runtime_error("unknown graphics shader stage");
 			}
 
-			m_curGraphicsPipelineInfo->pipelineInfo.stageCount = static_cast<uint32_t>(m_curGraphicsPipelineInfo->shaderStages.size());
-			m_curGraphicsPipelineInfo->pipelineInfo.pStages = m_curGraphicsPipelineInfo->shaderStages.data();
+			m_curGraphicsPipelineInfo.pipelineInfo.stageCount = static_cast<uint32_t>(m_curGraphicsPipelineInfo.shaderStages.size());
+			m_curGraphicsPipelineInfo.pipelineInfo.pStages = m_curGraphicsPipelineInfo.shaderStages.data();
 		}
 
 		void graphicsPipelineAddSpecializationConstant(VkShaderStageFlagBits stage,
@@ -632,34 +634,34 @@ namespace rj
 			switch (stage)
 			{
 			case VK_SHADER_STAGE_VERTEX_BIT:
-				checkShaderModule(m_curGraphicsPipelineInfo->vertShaderModule);
-				mapEntries = &m_curGraphicsPipelineInfo->vertSpecializationMapEntries;
-				data = &m_curGraphicsPipelineInfo->vertSpecializationData;
-				specializationInfo = &m_curGraphicsPipelineInfo->vertSpecializationInfo;
+				checkShaderModule(m_curGraphicsPipelineInfo.vertShaderModule);
+				mapEntries = &m_curGraphicsPipelineInfo.vertSpecializationMapEntries;
+				data = &m_curGraphicsPipelineInfo.vertSpecializationData;
+				specializationInfo = &m_curGraphicsPipelineInfo.vertSpecializationInfo;
 				break;
 			case VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT:
-				checkShaderModule(m_curGraphicsPipelineInfo->hullShaderModule);
-				mapEntries = &m_curGraphicsPipelineInfo->hullSpecializationMapEntries;
-				data = &m_curGraphicsPipelineInfo->hullSpecializationData;
-				specializationInfo = &m_curGraphicsPipelineInfo->hullSpecializationInfo;
+				checkShaderModule(m_curGraphicsPipelineInfo.hullShaderModule);
+				mapEntries = &m_curGraphicsPipelineInfo.hullSpecializationMapEntries;
+				data = &m_curGraphicsPipelineInfo.hullSpecializationData;
+				specializationInfo = &m_curGraphicsPipelineInfo.hullSpecializationInfo;
 				break;
 			case VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT:
-				checkShaderModule(m_curGraphicsPipelineInfo->domainShaderModule);
-				mapEntries = &m_curGraphicsPipelineInfo->domainSpecializationMapEntries;
-				data = &m_curGraphicsPipelineInfo->domainSpecializationData;
-				specializationInfo = &m_curGraphicsPipelineInfo->domainSpecializationInfo;
+				checkShaderModule(m_curGraphicsPipelineInfo.domainShaderModule);
+				mapEntries = &m_curGraphicsPipelineInfo.domainSpecializationMapEntries;
+				data = &m_curGraphicsPipelineInfo.domainSpecializationData;
+				specializationInfo = &m_curGraphicsPipelineInfo.domainSpecializationInfo;
 				break;
 			case VK_SHADER_STAGE_GEOMETRY_BIT:
-				checkShaderModule(m_curGraphicsPipelineInfo->geomShaderModule);
-				mapEntries = &m_curGraphicsPipelineInfo->geomSpecializationMapEntries;
-				data = &m_curGraphicsPipelineInfo->geomSpecializationData;
-				specializationInfo = &m_curGraphicsPipelineInfo->geomSpecializationInfo;
+				checkShaderModule(m_curGraphicsPipelineInfo.geomShaderModule);
+				mapEntries = &m_curGraphicsPipelineInfo.geomSpecializationMapEntries;
+				data = &m_curGraphicsPipelineInfo.geomSpecializationData;
+				specializationInfo = &m_curGraphicsPipelineInfo.geomSpecializationInfo;
 				break;
 			case VK_SHADER_STAGE_FRAGMENT_BIT:
-				checkShaderModule(m_curGraphicsPipelineInfo->fragShaderModule);
-				mapEntries = &m_curGraphicsPipelineInfo->fragSpecializationMapEntries;
-				data = &m_curGraphicsPipelineInfo->fragSpecializationData;
-				specializationInfo = &m_curGraphicsPipelineInfo->fragSpecializationInfo;
+				checkShaderModule(m_curGraphicsPipelineInfo.fragShaderModule);
+				mapEntries = &m_curGraphicsPipelineInfo.fragSpecializationMapEntries;
+				data = &m_curGraphicsPipelineInfo.fragSpecializationData;
+				specializationInfo = &m_curGraphicsPipelineInfo.fragSpecializationInfo;
 				break;
 			default:
 				throw std::runtime_error("unknown shader stage");
@@ -683,7 +685,7 @@ namespace rj
 			specializationInfo->pData = data->data();
 
 			VkPipelineShaderStageCreateInfo *shaderStageInfo = nullptr;
-			for (auto &ss : m_curGraphicsPipelineInfo->shaderStages)
+			for (auto &ss : m_curGraphicsPipelineInfo.shaderStages)
 			{
 				if (ss.stage == stage)
 				{
@@ -695,38 +697,38 @@ namespace rj
 
 		void graphicsPipelineAddBindingDescription(uint32_t binding, uint32_t stride, VkVertexInputRate inputRate = VK_VERTEX_INPUT_RATE_VERTEX)
 		{
-			m_curGraphicsPipelineInfo->viBindingDescs.push_back({});
-			VkVertexInputBindingDescription &bindingDesc = m_curGraphicsPipelineInfo->viBindingDescs.back();
+			m_curGraphicsPipelineInfo.viBindingDescs.push_back({});
+			VkVertexInputBindingDescription &bindingDesc = m_curGraphicsPipelineInfo.viBindingDescs.back();
 
 			bindingDesc.binding = binding;
 			bindingDesc.stride = stride;
 			bindingDesc.inputRate = inputRate;
 
-			m_curGraphicsPipelineInfo->vertexInputInfo.vertexBindingDescriptionCount =
-				static_cast<uint32_t>(m_curGraphicsPipelineInfo->viBindingDescs.size());
-			m_curGraphicsPipelineInfo->vertexInputInfo.pVertexBindingDescriptions =
-				m_curGraphicsPipelineInfo->viBindingDescs.data();
+			m_curGraphicsPipelineInfo.vertexInputInfo.vertexBindingDescriptionCount =
+				static_cast<uint32_t>(m_curGraphicsPipelineInfo.viBindingDescs.size());
+			m_curGraphicsPipelineInfo.vertexInputInfo.pVertexBindingDescriptions =
+				m_curGraphicsPipelineInfo.viBindingDescs.data();
 		}
 
 		void graphicsPipelineAddAttributeDescription(uint32_t location, uint32_t binding, VkFormat format, uint32_t offset)
 		{
-			m_curGraphicsPipelineInfo->viAttrDescs.push_back({});
-			auto &attrDesc = m_curGraphicsPipelineInfo->viAttrDescs.back();
+			m_curGraphicsPipelineInfo.viAttrDescs.push_back({});
+			auto &attrDesc = m_curGraphicsPipelineInfo.viAttrDescs.back();
 
 			attrDesc.location = location;
 			attrDesc.binding = binding;
 			attrDesc.format = format;
 			attrDesc.offset = offset;
 
-			m_curGraphicsPipelineInfo->vertexInputInfo.vertexAttributeDescriptionCount =
-				static_cast<uint32_t>(m_curGraphicsPipelineInfo->viAttrDescs.size());
-			m_curGraphicsPipelineInfo->vertexInputInfo.pVertexAttributeDescriptions =
-				m_curGraphicsPipelineInfo->viAttrDescs.data();
+			m_curGraphicsPipelineInfo.vertexInputInfo.vertexAttributeDescriptionCount =
+				static_cast<uint32_t>(m_curGraphicsPipelineInfo.viAttrDescs.size());
+			m_curGraphicsPipelineInfo.vertexInputInfo.pVertexAttributeDescriptions =
+				m_curGraphicsPipelineInfo.viAttrDescs.data();
 		}
 
 		void graphicsPipelineConfigureInputAssembly(VkPrimitiveTopology topology, VkBool32 enablePrimitiveRestart = VK_FALSE, VkPipelineInputAssemblyStateCreateFlags flags = 0)
 		{
-			auto &info = m_curGraphicsPipelineInfo->inputAssemblyInfo;
+			auto &info = m_curGraphicsPipelineInfo.inputAssemblyInfo;
 
 			info.topology = topology;
 			info.primitiveRestartEnable = enablePrimitiveRestart;
@@ -735,7 +737,7 @@ namespace rj
 
 		void graphicsPipelineConfigureTessellationState(uint32_t numCPsPerPatch, VkPipelineTessellationStateCreateFlags flags = 0)
 		{
-			auto &info = m_curGraphicsPipelineInfo->tessellationInfo;
+			auto &info = m_curGraphicsPipelineInfo.tessellationInfo;
 
 			info.patchControlPoints = numCPsPerPatch;
 			info.flags = flags;
@@ -750,8 +752,8 @@ namespace rj
 				throw std::invalid_argument("invalid arguments to graphicsPipelineAddViewportAndScissor");
 			}
 
-			m_curGraphicsPipelineInfo->viewports.push_back({});
-			auto &viewport = m_curGraphicsPipelineInfo->viewports.back();
+			m_curGraphicsPipelineInfo.viewports.push_back({});
+			auto &viewport = m_curGraphicsPipelineInfo.viewports.back();
 
 			viewport.x = viewportX;
 			viewport.y = viewportY;
@@ -760,8 +762,8 @@ namespace rj
 			viewport.minDepth = minDepth;
 			viewport.maxDepth = maxDepth;
 
-			m_curGraphicsPipelineInfo->scissors.push_back({});
-			auto &scissor = m_curGraphicsPipelineInfo->scissors.back();
+			m_curGraphicsPipelineInfo.scissors.push_back({});
+			auto &scissor = m_curGraphicsPipelineInfo.scissors.back();
 
 			if (coverEntireViewport)
 			{
@@ -776,11 +778,11 @@ namespace rj
 				scissor.extent = { scissorWidth, scissorHeight };
 			}
 
-			auto &info = m_curGraphicsPipelineInfo->viewportStateInfo;
-			info.viewportCount = static_cast<uint32_t>(m_curGraphicsPipelineInfo->viewports.size());
-			info.pViewports = m_curGraphicsPipelineInfo->viewports.data();
-			info.scissorCount = static_cast<uint32_t>(m_curGraphicsPipelineInfo->scissors.size());
-			info.pScissors = m_curGraphicsPipelineInfo->scissors.data();
+			auto &info = m_curGraphicsPipelineInfo.viewportStateInfo;
+			info.viewportCount = static_cast<uint32_t>(m_curGraphicsPipelineInfo.viewports.size());
+			info.pViewports = m_curGraphicsPipelineInfo.viewports.data();
+			info.scissorCount = static_cast<uint32_t>(m_curGraphicsPipelineInfo.scissors.size());
+			info.pScissors = m_curGraphicsPipelineInfo.scissors.data();
 		}
 
 		void graphicsPipelineConfigureRasterizer(VkPolygonMode polygonMode, VkCullModeFlags cullMode, VkFrontFace frontFace, float lineWidth = 1.f,
@@ -788,7 +790,7 @@ namespace rj
 			VkBool32 depthClampEnable = VK_FALSE, float depthBiasClamp = 1.f,
 			VkBool32 rasterizerDiscardEnable = VK_FALSE, VkPipelineRasterizationStateCreateFlags flags = 0)
 		{
-			auto &info = m_curGraphicsPipelineInfo->rasterizerInfo;
+			auto &info = m_curGraphicsPipelineInfo.rasterizerInfo;
 
 			info.polygonMode = polygonMode;
 			info.cullMode = cullMode;
@@ -807,16 +809,16 @@ namespace rj
 			const std::vector<VkSampleMask> &sampleMask = {}, VkBool32 alphaToCoverageEnable = VK_FALSE, VkBool32 alphaToOneEnable = VK_FALSE,
 			VkPipelineMultisampleStateCreateFlags flags = 0)
 		{
-			auto &info = m_curGraphicsPipelineInfo->multisamplingInfo;
+			auto &info = m_curGraphicsPipelineInfo.multisamplingInfo;
 
 			info.rasterizationSamples = sampleCount;
 			info.sampleShadingEnable = perSampleShading;
 			info.minSampleShading = minSampleShadingFraction;
-			m_curGraphicsPipelineInfo->sampleMask = sampleMask;
+			m_curGraphicsPipelineInfo.sampleMask = sampleMask;
 			info.pSampleMask = nullptr;
 			if (!sampleMask.empty())
 			{
-				info.pSampleMask = m_curGraphicsPipelineInfo->sampleMask.data();
+				info.pSampleMask = m_curGraphicsPipelineInfo.sampleMask.data();
 			}
 			info.alphaToCoverageEnable = alphaToCoverageEnable;
 			info.alphaToOneEnable = alphaToOneEnable;
@@ -825,7 +827,7 @@ namespace rj
 		void graphicsPipelineConfigureDepthState(VkBool32 depthTestEnable, VkBool32 depthWriteEnable, VkCompareOp depthCompareOp,
 			VkBool32 depthBoundsTestEnable = VK_FALSE, float minDepthBounds = 0.f, float maxDepthBounds = 1.f)
 		{
-			auto &info = m_curGraphicsPipelineInfo->depthStencilInfo;
+			auto &info = m_curGraphicsPipelineInfo.depthStencilInfo;
 
 			info.depthTestEnable = depthTestEnable;
 			info.depthWriteEnable = depthWriteEnable;
@@ -840,7 +842,7 @@ namespace rj
 			uint32_t reference, uint32_t compareMask = 0xffffffff, uint32_t writeMask = 0xffffffff,
 			bool frontOp = true)
 		{
-			auto &info = m_curGraphicsPipelineInfo->depthStencilInfo;
+			auto &info = m_curGraphicsPipelineInfo.depthStencilInfo;
 			auto &stencilOpState = frontOp ? info.front : info.back;
 
 			info.stencilTestEnable = stencilTestEnable;
@@ -858,7 +860,7 @@ namespace rj
 		// For floating point attachments, fragment outputs are pass through without modification.
 		void graphicsPipelineConfigureLogicOp(VkBool32 logicOpEnable, VkLogicOp logicOp)
 		{
-			auto &info = m_curGraphicsPipelineInfo->colorBlendInfo;
+			auto &info = m_curGraphicsPipelineInfo.colorBlendInfo;
 
 			info.logicOpEnable = logicOpEnable;
 			info.logicOp = logicOp;
@@ -870,8 +872,8 @@ namespace rj
 			VkBlendFactor srcAlphaBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA, VkBlendFactor dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO, VkBlendOp alphaBlendOp = VK_BLEND_OP_ADD,
 			VkColorComponentFlags colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT)
 		{
-			m_curGraphicsPipelineInfo->colorBlendAttachmentStates.push_back({});
-			VkPipelineColorBlendAttachmentState &info = m_curGraphicsPipelineInfo->colorBlendAttachmentStates.back();
+			m_curGraphicsPipelineInfo.colorBlendAttachmentStates.push_back({});
+			VkPipelineColorBlendAttachmentState &info = m_curGraphicsPipelineInfo.colorBlendAttachmentStates.back();
 
 			info.blendEnable = blendEnable;
 			info.srcColorBlendFactor = srcColorBlendFactor;
@@ -882,15 +884,15 @@ namespace rj
 			info.alphaBlendOp = alphaSameAsColor ? colorBlendOp : alphaBlendOp;
 			info.colorWriteMask = colorWriteMask;
 
-			m_curGraphicsPipelineInfo->colorBlendInfo.attachmentCount =
-				static_cast<uint32_t>(m_curGraphicsPipelineInfo->colorBlendAttachmentStates.size());
-			m_curGraphicsPipelineInfo->colorBlendInfo.pAttachments =
-				m_curGraphicsPipelineInfo->colorBlendAttachmentStates.data();
+			m_curGraphicsPipelineInfo.colorBlendInfo.attachmentCount =
+				static_cast<uint32_t>(m_curGraphicsPipelineInfo.colorBlendAttachmentStates.size());
+			m_curGraphicsPipelineInfo.colorBlendInfo.pAttachments =
+				m_curGraphicsPipelineInfo.colorBlendAttachmentStates.data();
 		}
 
 		void graphicsPipelineSetBlendConstant(float R, float G, float B, float A)
 		{
-			float *bc = m_curGraphicsPipelineInfo->colorBlendInfo.blendConstants;
+			float *bc = m_curGraphicsPipelineInfo.colorBlendInfo.blendConstants;
 			bc[0] = R;
 			bc[1] = G;
 			bc[2] = B;
@@ -899,32 +901,32 @@ namespace rj
 
 		void graphicsPipelineAddDynamicState(VkDynamicState dynamicState)
 		{
-			m_curGraphicsPipelineInfo->dynamicStates.push_back(dynamicState);
-			m_curGraphicsPipelineInfo->dynamicStateInfo.dynamicStateCount = static_cast<uint32_t>(m_curGraphicsPipelineInfo->dynamicStates.size());
-			m_curGraphicsPipelineInfo->dynamicStateInfo.pDynamicStates = m_curGraphicsPipelineInfo->dynamicStates.data();
+			m_curGraphicsPipelineInfo.dynamicStates.push_back(dynamicState);
+			m_curGraphicsPipelineInfo.dynamicStateInfo.dynamicStateCount = static_cast<uint32_t>(m_curGraphicsPipelineInfo.dynamicStates.size());
+			m_curGraphicsPipelineInfo.dynamicStateInfo.pDynamicStates = m_curGraphicsPipelineInfo.dynamicStates.data();
 		}
 
 		uint32_t endCreateGraphicsPipeline()
 		{
-			auto &info = m_curGraphicsPipelineInfo->pipelineInfo;
+			auto &info = m_curGraphicsPipelineInfo.pipelineInfo;
 
-			info.stageCount = static_cast<uint32_t>(m_curGraphicsPipelineInfo->shaderStages.size());
-			info.pStages = m_curGraphicsPipelineInfo->shaderStages.data();
-			info.pVertexInputState = &m_curGraphicsPipelineInfo->vertexInputInfo;
-			info.pInputAssemblyState = &m_curGraphicsPipelineInfo->inputAssemblyInfo;
+			info.stageCount = static_cast<uint32_t>(m_curGraphicsPipelineInfo.shaderStages.size());
+			info.pStages = m_curGraphicsPipelineInfo.shaderStages.data();
+			info.pVertexInputState = &m_curGraphicsPipelineInfo.vertexInputInfo;
+			info.pInputAssemblyState = &m_curGraphicsPipelineInfo.inputAssemblyInfo;
 			info.pTessellationState = nullptr;
-			if (m_curGraphicsPipelineInfo->tessellationInfo.patchControlPoints > 0)
+			if (m_curGraphicsPipelineInfo.tessellationInfo.patchControlPoints > 0)
 			{
-				info.pTessellationState = &m_curGraphicsPipelineInfo->tessellationInfo;
+				info.pTessellationState = &m_curGraphicsPipelineInfo.tessellationInfo;
 			}
-			info.pViewportState = &m_curGraphicsPipelineInfo->viewportStateInfo;
-			info.pRasterizationState = &m_curGraphicsPipelineInfo->rasterizerInfo;
-			info.pMultisampleState = &m_curGraphicsPipelineInfo->multisamplingInfo;
-			info.pDepthStencilState = &m_curGraphicsPipelineInfo->depthStencilInfo;
-			info.pColorBlendState = &m_curGraphicsPipelineInfo->colorBlendInfo;
-			if (!m_curGraphicsPipelineInfo->dynamicStates.empty())
+			info.pViewportState = &m_curGraphicsPipelineInfo.viewportStateInfo;
+			info.pRasterizationState = &m_curGraphicsPipelineInfo.rasterizerInfo;
+			info.pMultisampleState = &m_curGraphicsPipelineInfo.multisamplingInfo;
+			info.pDepthStencilState = &m_curGraphicsPipelineInfo.depthStencilInfo;
+			info.pColorBlendState = &m_curGraphicsPipelineInfo.colorBlendInfo;
+			if (!m_curGraphicsPipelineInfo.dynamicStates.empty())
 			{
-				info.pDynamicState = &m_curGraphicsPipelineInfo->dynamicStateInfo;
+				info.pDynamicState = &m_curGraphicsPipelineInfo.dynamicStateInfo;
 			}
 
 			if (vkCreateGraphicsPipelines(m_device, m_pipelineCache, 1, &info, nullptr, m_pipelines[m_curPipelineName].replace()) != VK_SUCCESS)
@@ -932,7 +934,6 @@ namespace rj
 				throw std::runtime_error("failed to create pipeline!");
 			}
 
-			m_curGraphicsPipelineInfo = nullptr;
 			return m_curPipelineName;
 		}
 		// --- Graphics pipeline creation ---
@@ -941,11 +942,12 @@ namespace rj
 		void beginCreateComputePipeline(uint32_t layoutName,
 			uint32_t basePipelineName = std::numeric_limits<uint32_t>::max(), VkPipelineCreateFlags flags = 0)
 		{
-			m_curComputePipelineInfo = std::make_shared<ComputePipelineCreateInfo>(m_device);
+			m_curComputePipelineInfo = ComputePipelineCreateInfo{};
 			m_curPipelineName = static_cast<uint32_t>(m_pipelines.size());
-			m_pipelines.emplace(std::piecewise_construct, m_curPipelineName, m_device, vkDestroyPipeline);
+			m_pipelines.emplace(std::piecewise_construct, std::forward_as_tuple(m_curPipelineName),
+				std::forward_as_tuple(m_device, vkDestroyPipeline));
 
-			auto &pipelineInfo = m_curComputePipelineInfo->pipelineInfo;
+			auto &pipelineInfo = m_curComputePipelineInfo.pipelineInfo;
 			pipelineInfo.flags = flags;
 
 			auto layoutFound = m_pipelineLayouts.find(layoutName);
@@ -976,10 +978,10 @@ namespace rj
 		void computePipelineAddShaderStage(const std::string &spvFileName, VkPipelineShaderStageCreateFlags flags = 0)
 		{
 			auto shaderByteCode = readFile(spvFileName);
-			createShaderModule(m_curComputePipelineInfo->computeShaderModule, m_device, shaderByteCode);
+			createShaderModule(m_curComputePipelineInfo.computeShaderModule, m_device, shaderByteCode);
 
-			auto &info = m_curComputePipelineInfo->pipelineInfo.stage;
-			info.module = m_curComputePipelineInfo->computeShaderModule;
+			auto &info = m_curComputePipelineInfo.pipelineInfo.stage;
+			info.module = m_curComputePipelineInfo.computeShaderModule;
 			info.flags = flags;
 		}
 
@@ -987,13 +989,13 @@ namespace rj
 		{
 			if (!srcData) throw std::invalid_argument("data cannot be null");
 			if (size == 0) throw std::invalid_argument("size need to be greater than 0");
-			if (!m_curComputePipelineInfo->computeShaderModule.isvalid()) throw std::runtime_error("Cannot add specialization data to empty compute shader stage");
+			if (!m_curComputePipelineInfo.computeShaderModule.isvalid()) throw std::runtime_error("Cannot add specialization data to empty compute shader stage");
 
-			auto &specializationInfo = m_curComputePipelineInfo->computeSpecializationInfo;
-			auto &mapEntries = m_curComputePipelineInfo->computeSpecializationMapEntries;
+			auto &specializationInfo = m_curComputePipelineInfo.computeSpecializationInfo;
+			auto &mapEntries = m_curComputePipelineInfo.computeSpecializationMapEntries;
 			mapEntries.push_back({});
 			auto &mapEntry = mapEntries.back();
-			auto &specializationData = m_curComputePipelineInfo->computeSpecializationData;
+			auto &specializationData = m_curComputePipelineInfo.computeSpecializationData;
 
 			mapEntry.constantID = constantID;
 			mapEntry.offset = offset;
@@ -1010,18 +1012,17 @@ namespace rj
 			specializationInfo.dataSize = specializationData.size();
 			specializationInfo.pData = specializationData.data();
 
-			m_curComputePipelineInfo->pipelineInfo.stage.pSpecializationInfo = &specializationInfo;
+			m_curComputePipelineInfo.pipelineInfo.stage.pSpecializationInfo = &specializationInfo;
 		}
 
 		uint32_t endCreateComputePipeline()
 		{
-			if (vkCreateComputePipelines(m_device, m_pipelineCache, 1, &m_curComputePipelineInfo->pipelineInfo,
+			if (vkCreateComputePipelines(m_device, m_pipelineCache, 1, &m_curComputePipelineInfo.pipelineInfo,
 				nullptr, m_pipelines[m_curPipelineName].replace()) != VK_SUCCESS)
 			{
 				throw std::runtime_error("failed to create compute pipeline!");
 			}
 
-			m_curComputePipelineInfo = nullptr;
 			return m_curPipelineName;
 		}
 		// --- Compute pipeline creation ---
@@ -1379,6 +1380,8 @@ namespace rj
 			auto &poolSizes = m_curDescriptorPoolInfo.poolSizes;
 			m_descriptorPools.at(m_curDescriptorPoolName).init(maxSet, poolSizes);
 			
+			m_poolSetTable[m_curDescriptorPoolName] = {};
+
 			return m_curDescriptorPoolName;
 		}
 
@@ -1493,13 +1496,14 @@ namespace rj
 
 			auto &imageInfoTable = m_curDescriptorSetInfo.imageInfos;
 			assert(imageInfoTable.find(binding) == imageInfoTable.end());
+			imageInfoTable[binding] = {};
 			auto &imageInfos = imageInfoTable.at(binding);
 
 			imageInfos.reserve(updateInfos.size());
 			for (const auto &updateInfo : updateInfos)
 			{
 				VkDescriptorImageInfo info = {};
-				info.sampler = updateInfo.samplerName == std::numeric_limits<uint32_t>::max() ? VK_NULL_HANDLE : m_samplers.at(updateInfo.samplerName);
+				info.sampler = updateInfo.samplerName == std::numeric_limits<uint32_t>::max() ? VK_NULL_HANDLE : VkSampler(m_samplers.at(updateInfo.samplerName));
 				info.imageView = m_imageViews.at(updateInfo.imageViewName);
 				info.imageLayout = updateInfo.layout;
 				imageInfos.push_back(info);
@@ -1732,7 +1736,7 @@ namespace rj
 		}
 
 		void cmdBeginRenderPass(uint32_t cmdBufferName, uint32_t renderPassName, uint32_t frameBufferName,
-			std::vector<VkClearValue> &clearValues, VkRect2D renderArea = {}, VkSubpassContents subpassContents = VK_SUBPASS_CONTENTS_INLINE) const
+			const std::vector<VkClearValue> &clearValues, VkRect2D renderArea = {}, VkSubpassContents subpassContents = VK_SUBPASS_CONTENTS_INLINE) const
 		{
 			const auto &cmdBuffer = m_commandBuffers.at(cmdBufferName);
 			const auto &renderPass = m_renderPasses.at(renderPassName);
@@ -1989,7 +1993,7 @@ namespace rj
 			}
 
 			assert(m_curSubmitQueue);
-			VkFence fence = fenceName == std::numeric_limits<uint32_t>::max() ? VK_NULL_HANDLE : m_fences[fenceName];
+			VkFence fence = fenceName == std::numeric_limits<uint32_t>::max() ? VK_NULL_HANDLE : VkFence(m_fences[fenceName]);
 			if (vkQueueSubmit(m_curSubmitQueue, numSubmits, infos.data(), fence) != VK_SUCCESS)
 			{
 				throw std::runtime_error("failed to submit");
@@ -2105,14 +2109,14 @@ namespace rj
 
 		VkFormat getSwapChainImageFormat() const
 		{
-			return m_swapChain.format;
+			return m_swapChain.format();
 		}
 
 		VkResult swapChainNextImageIndex(uint32_t *pIdx, uint32_t signalSemaphoreName, uint32_t waitFenceName,
 			uint64_t timeout = std::numeric_limits<uint64_t>::max())
 		{
-			VkSemaphore semaphore = signalSemaphoreName == std::numeric_limits<uint32_t>::max() ? VK_NULL_HANDLE : m_semaphores[signalSemaphoreName];
-			VkFence fence = waitFenceName == std::numeric_limits<uint32_t>::max() ? VK_NULL_HANDLE : m_fences[waitFenceName];
+			VkSemaphore semaphore = signalSemaphoreName == std::numeric_limits<uint32_t>::max() ? VK_NULL_HANDLE : VkSemaphore(m_semaphores[signalSemaphoreName]);
+			VkFence fence = waitFenceName == std::numeric_limits<uint32_t>::max() ? VK_NULL_HANDLE : VkFence(m_fences[waitFenceName]);
 
 			return vkAcquireNextImageKHR(m_device, m_swapChain, timeout, semaphore, fence, pIdx);
 		}
@@ -2203,11 +2207,8 @@ namespace rj
 		uint32_t m_curPipelineLayoutName;
 		std::unordered_map<uint32_t, VDeleter<VkPipelineLayout>> m_pipelineLayouts;
 
-		union
-		{
-			std::shared_ptr<GraphicsPipelineCreateInfo> m_curGraphicsPipelineInfo;
-			std::shared_ptr<ComputePipelineCreateInfo> m_curComputePipelineInfo;
-		};
+		GraphicsPipelineCreateInfo m_curGraphicsPipelineInfo;
+		ComputePipelineCreateInfo m_curComputePipelineInfo;
 		uint32_t m_curPipelineName;
 		std::unordered_map<uint32_t, VDeleter<VkPipeline>> m_pipelines;
 

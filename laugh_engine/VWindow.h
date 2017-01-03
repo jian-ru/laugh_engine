@@ -67,6 +67,7 @@ namespace rj
 
 			unsigned int glfwExtensionCount = 0;
 			const char** glfwExtensions;
+			glfwInit();
 			glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
 
 			for (unsigned int i = 0; i < glfwExtensionCount; i++)

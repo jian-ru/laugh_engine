@@ -3,9 +3,9 @@
 #include <vector>
 #include <set>
 
+#include "vk_helpers.h"
 #include "VDeleter.h"
 #include "VQueueFamilyIndices.h"
-#include "VSwapChain.h"
 
 
 namespace rj

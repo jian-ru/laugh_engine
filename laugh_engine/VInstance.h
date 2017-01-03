@@ -71,6 +71,18 @@ namespace rj
 				return VK_ERROR_EXTENSION_NOT_PRESENT;
 			}
 		}
+
+		void destroyDebugReportCallbackEXT(
+			VkInstance instance,
+			VkDebugReportCallbackEXT callback,
+			const VkAllocationCallbacks* pAllocator)
+		{
+			auto func = (PFN_vkDestroyDebugReportCallbackEXT)vkGetInstanceProcAddr(instance, "vkDestroyDebugReportCallbackEXT");
+			if (func != nullptr)
+			{
+				func(instance, callback, pAllocator);
+			}
+		}
 	}
 
 	using namespace helper_functions;
