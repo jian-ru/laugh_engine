@@ -1087,7 +1087,7 @@ namespace rj
 		// --- Image view creation ---
 
 		// --- Image utilities ---
-		void transitionImageLayout(uint32_t imageName, VkImageLayout newLayout, bool tryPreserveContent = true)
+		void transitionImageLayout(uint32_t imageName, VkImageLayout oldLayout, VkImageLayout newLayout)
 		{
 			auto found = m_images.find(imageName);
 			if (found == m_images.end())
@@ -1095,24 +1095,25 @@ namespace rj
 				throw std::invalid_argument("Invalid image name");
 			}
 			auto &image = found->second;
-			VkImageLayout oldLayout = tryPreserveContent ? image.layout() : VK_IMAGE_LAYOUT_UNDEFINED;
 
 			beginSingleTimeCommands();
 			recordImageLayoutTransitionCommands(m_singleTimeCommandBuffer, image, image.format(), 0, image.levels(),
 				0, image.layers(), oldLayout, newLayout);
 			endSingleTimeCommands();
+
+			image.setLayout(newLayout);
 		}
 
 		// TODO: Add support for more formats
-		void transferHostDataToImage(uint32_t imageName, VkDeviceSize sizeInBytes, const void *hostData,
-			VkImageAspectFlags aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, VkImageLayout finalLayout = VK_IMAGE_LAYOUT_UNDEFINED)
+		void transferHostDataToImage(uint32_t imageName, VkDeviceSize sizeInBytes, const void *hostData, VkImageAspectFlags aspectMask,
+			VkImageLayout currentLayout, VkImageLayout finalLayout = VK_IMAGE_LAYOUT_UNDEFINED)
 		{
 			if (!hostData) throw std::invalid_argument("hostData cannot be null");
 			if (sizeInBytes == 0) throw std::invalid_argument("sizeInBytes cannot be 0");
 
-			transitionImageLayout(imageName, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-
 			auto &image = m_images.at(imageName);
+
+			transitionImageLayout(imageName, currentLayout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
 			VBuffer stagingBuffer{ m_device };
 			stagingBuffer.init(sizeInBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
@@ -1130,8 +1131,61 @@ namespace rj
 
 			if (finalLayout != VK_IMAGE_LAYOUT_UNDEFINED)
 			{
-				transitionImageLayout(imageName, finalLayout);
+				transitionImageLayout(imageName, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, finalLayout);
 			}
+		}
+
+		void readImage(std::vector<char> &hostBuffer, uint32_t imageName, VkImageAspectFlags aspectMask, VkImageLayout currentLayout)
+		{
+			auto &image = m_images.at(imageName);
+
+			transitionImageLayout(imageName, currentLayout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+			std::vector<VkBufferImageCopy> imageCopyRegions;
+			VkDeviceSize offset = 0;
+			const uint32_t blockSize = g_formatInfoTable[image.format()].blockSize;
+
+			for (uint32_t layer = 0; layer < image.layers(); ++layer)
+			{
+				for (uint32_t level = 0; level < image.levels(); ++level)
+				{
+					auto extent = image.extent(level);
+					uint32_t width = extent.width;
+					uint32_t height = extent.height;
+
+					VkBufferImageCopy region = {};
+					region.imageSubresource.aspectMask = aspectMask;
+					region.imageSubresource.mipLevel = level;
+					region.imageSubresource.baseArrayLayer = layer;
+					region.imageSubresource.layerCount = 1;
+					region.imageExtent.width = width;
+					region.imageExtent.height = height;
+					region.imageExtent.depth = 1;
+					region.bufferOffset = offset;
+
+					imageCopyRegions.push_back(region);
+
+					offset += width * height * blockSize;
+				}
+			}
+
+			const VkDeviceSize sizeInBytes = offset;
+
+			VBuffer stagingBuffer{ m_device };
+			stagingBuffer.init(sizeInBytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+			hostBuffer.resize(sizeInBytes);
+
+			beginSingleTimeCommands();
+			vkCmdCopyImageToBuffer(m_singleTimeCommandBuffer, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+				stagingBuffer, static_cast<uint32_t>(imageCopyRegions.size()), imageCopyRegions.data());
+			endSingleTimeCommands();
+
+			void *mapped = stagingBuffer.mapBuffer();
+			memcpy(&hostBuffer[0], mapped, sizeInBytes);
+			stagingBuffer.unmapBuffer();
+			mapped = nullptr;
 		}
 		// --- Image utilities ---
 
@@ -1653,7 +1707,7 @@ namespace rj
 			g_commandBufferMutex.unlock_shared();
 		}
 
-		void cmdBindVertexBuffer(uint32_t cmdBufferName, const std::vector<uint32_t> &bufferNames,
+		void cmdBindVertexBuffers(uint32_t cmdBufferName, const std::vector<uint32_t> &bufferNames,
 			const std::vector<VkDeviceSize> &offsets, uint32_t firstBinding = 0) const
 		{
 			const auto &cmdBuffer = m_commandBuffers.at(cmdBufferName);
@@ -2051,7 +2105,7 @@ namespace rj
 
 		VkFormat getSwapChainImageFormat() const
 		{
-			return m_swapChain.
+			return m_swapChain.format;
 		}
 
 		VkResult swapChainNextImageIndex(uint32_t *pIdx, uint32_t signalSemaphoreName, uint32_t waitFenceName,

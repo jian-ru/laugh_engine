@@ -56,6 +56,11 @@ namespace rj
 
 		operator VkImage() const { return m_image; }
 
+		void setLayout(VkImageLayout layout)
+		{
+			m_curLayout = layout;
+		}
+
 		// --- Geters ---
 		bool isCubeImage() const { return m_isCubeImage; }
 

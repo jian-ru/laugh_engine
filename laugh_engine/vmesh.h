@@ -225,7 +225,7 @@ namespace rj
 				mipLevels);
 
 			pManager->transferHostDataToImage(pTexRet->image, sizeInBytes, textureMipmapped.data(),
-				VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+				VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_PREINITIALIZED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
 			pTexRet->imageViews.push_back(pManager->createImageView2D(pTexRet->image, VK_IMAGE_ASPECT_COLOR_BIT, 0, mipLevels));
 
@@ -270,10 +270,8 @@ namespace rj
 			pTexRet->image = pManager->createImageCube(width, height, format,
 				VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, mipLevels);
 
-			pManager->transitionImageLayout(pTexRet->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-
 			pManager->transferHostDataToImage(pTexRet->image, sizeInBytes, texCube.data(),
-				VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+				VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_PREINITIALIZED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
 			pTexRet->imageViews.push_back(pManager->createImageViewCube(pTexRet->image, VK_IMAGE_ASPECT_COLOR_BIT, 0, mipLevels));
 
