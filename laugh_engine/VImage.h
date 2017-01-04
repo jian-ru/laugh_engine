@@ -105,29 +105,31 @@ namespace rj
 	class VImageView
 	{
 	public:
-		VImageView(const VDevice &device, const VImage &image)
+		VImageView(const VDevice &device, const std::vector<VImage> &images)
 			:
 			m_device(device),
-			m_image(image),
+			m_imagePool(images),
 			m_imageView{ m_device, vkDestroyImageView }
 		{}
 
-		void init(VkImageViewType viewType, VkImageAspectFlags aspectFlags,
+		void init(uint32_t imageName, VkImageViewType viewType, VkImageAspectFlags aspectFlags,
 			uint32_t baseMipLevel = 0, uint32_t levelCount = 1, uint32_t baseArrayLayer = 0, uint32_t layerCount = 1,
 			VkComponentMapping componentMapping = {}, VkImageViewCreateFlags flags = 0)
 		{
-			init(viewType, m_image.format(), aspectFlags, baseMipLevel, levelCount, baseArrayLayer, layerCount, componentMapping, flags);
+			init(imageName, viewType, m_imagePool[imageName].format(), aspectFlags, baseMipLevel, levelCount, baseArrayLayer, layerCount, componentMapping, flags);
 		}
 
 		// Mutable format feature need to be enabled if the view has different format from the image
 		// and view's format needs to be compatible
-		void init(VkImageViewType viewType, VkFormat format, VkImageAspectFlags aspectFlags,
+		void init(uint32_t imageName, VkImageViewType viewType, VkFormat format, VkImageAspectFlags aspectFlags,
 			uint32_t baseMipLevel = 0, uint32_t levelCount = 1, uint32_t baseArrayLayer = 0, uint32_t layerCount = 1,
 			VkComponentMapping componentMapping = {}, VkImageViewCreateFlags flags = 0)
 		{
+			const auto &image = m_imagePool[imageName];
+
 			VkImageViewCreateInfo viewInfo = {};
 			viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-			viewInfo.image = m_image;
+			viewInfo.image = image;
 			viewInfo.viewType = viewType;
 			viewInfo.format = format;
 			viewInfo.components = componentMapping;
@@ -143,6 +145,7 @@ namespace rj
 				throw std::runtime_error("failed to create texture image view!");
 			}
 
+			m_imageName = imageName;
 			m_type = viewType;
 			m_format = format;
 			m_componentMapping = componentMapping;
@@ -164,13 +167,14 @@ namespace rj
 		uint32_t levels() const { return m_levelCount; }
 		uint32_t baseLayer() const { return m_baseArrayLayer; }
 		uint32_t layers() const { return m_layerCount; }
-		const VImage *image() const { return &m_image; }
+		const VImage *image() const { return &m_imagePool[m_imageName]; }
 		// --- Geters ---
 
 	protected:
 		const VDevice &m_device;
-		const VImage &m_image;
+		const std::vector<VImage> &m_imagePool;
 
+		uint32_t m_imageName; // due to reallocation we cannot store pointer
 		VDeleter<VkImageView> m_imageView;
 
 		VkImageViewType m_type;

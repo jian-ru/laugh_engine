@@ -152,9 +152,9 @@ protected:
 	std::vector<uint32_t> m_bloomPipelines;
 	uint32_t m_finalOutputPipeline;
 
-	ImageWrapper m_depthImage;
+	rj::helper_functions::ImageWrapper m_depthImage;
 	const VkFormat m_lightingResultImageFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
-	ImageWrapper m_lightingResultImage; // VK_FORMAT_R16G16B16A16_SFLOAT
+	rj::helper_functions::ImageWrapper m_lightingResultImage; // VK_FORMAT_R16G16B16A16_SFLOAT
 	const uint32_t m_numGBuffers = 3;
 	const std::vector<VkFormat> m_gbufferFormats =
 	{
@@ -162,21 +162,21 @@ protected:
 		VK_FORMAT_R32G32B32A32_SFLOAT,
 		VK_FORMAT_R8G8B8A8_UNORM
 	};
-	std::vector<ImageWrapper> m_gbufferImages; // GB1: VK_FORMAT_R32G32B32A32_SFLOAT, GB2: VK_FORMAT_R32G32B32A32_SFLOAT, GB3: VK_FORMAT_R8G8B8A8_UNORM
+	std::vector<rj::helper_functions::ImageWrapper> m_gbufferImages; // GB1: VK_FORMAT_R32G32B32A32_SFLOAT, GB2: VK_FORMAT_R32G32B32A32_SFLOAT, GB3: VK_FORMAT_R8G8B8A8_UNORM
 	const uint32_t m_numPostEffectImages = 2;
 	const std::vector<VkFormat> m_postEffectImageFormats =
 	{
 		VK_FORMAT_R16G16B16A16_SFLOAT,
 		VK_FORMAT_R16G16B16A16_SFLOAT
 	};
-	std::vector<ImageWrapper> m_postEffectImages; // Image1: VK_FORMAT_R16G16B16A16_SFLOAT, Image2: VK_FORMAT_R16G16B16A16_SFLOAT
+	std::vector<rj::helper_functions::ImageWrapper> m_postEffectImages; // Image1: VK_FORMAT_R16G16B16A16_SFLOAT, Image2: VK_FORMAT_R16G16B16A16_SFLOAT
 
 	rj::helper_functions::UniformBlob<ALL_UNIFORM_BLOB_SIZE> m_allUniformHostData;
 	CubeMapCameraUniformBuffer *m_uCubeViews = nullptr;
 	TransMatsUniformBuffer *m_uTransMats = nullptr;
 	LightingPassUniformBuffer *m_uLightInfo = nullptr;
 	DisplayInfoUniformBuffer *m_uDisplayInfo = nullptr;
-	BufferWrapper m_allUniformBuffer;
+	rj::helper_functions::BufferWrapper m_allUniformBuffer;
 
 	uint32_t m_brdfLutDescriptorSet;
 	uint32_t m_specEnvPrefilterDescriptorSet;
@@ -361,6 +361,9 @@ void DeferredRenderer::drawFrame()
 		throw std::runtime_error("failed to acquire swap chain image!");
 	}
 
+	updateText(imageIndex);
+	m_perfTimer.start();
+
 	m_vulkanManager.beginQueueSubmit(VK_QUEUE_GRAPHICS_BIT);
 
 	m_vulkanManager.queueSubmitNewSubmit({ m_geomAndLightingCommandBuffer }, { m_imageAvailableSemaphore },
@@ -374,7 +377,10 @@ void DeferredRenderer::drawFrame()
 
 	m_vulkanManager.endQueueSubmit();
 
-	result = m_vulkanManager.queuePresent({ m_finalOutputFinishedSemaphore }, imageIndex);
+	m_textOverlay.submit(imageIndex, { m_finalOutputFinishedSemaphore }, { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT },
+		{ m_renderFinishedSemaphore });
+
+	result = m_vulkanManager.queuePresent({ m_renderFinishedSemaphore }, imageIndex);
 
 	if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR)
 	{
@@ -475,6 +481,21 @@ void DeferredRenderer::createComputeResources()
 
 void DeferredRenderer::createDepthResources()
 {
+	if (m_initialized)
+	{
+		m_vulkanManager.destroyImage(m_depthImage.image);
+
+		for (auto name : m_depthImage.imageViews)
+		{
+			m_vulkanManager.destroyImageView(name);
+		}
+
+		for (auto name : m_depthImage.samplers)
+		{
+			m_vulkanManager.destroySampler(name);
+		}
+	}
+
 	VkExtent2D swapChainExtent = m_vulkanManager.getSwapChainExtent();
 	VkFormat depthFormat = findDepthFormat();
 
@@ -503,6 +524,51 @@ void DeferredRenderer::createDepthResources()
 
 void DeferredRenderer::createColorAttachmentResources()
 {
+	if (m_initialized)
+	{
+		for (const auto &image : m_gbufferImages)
+		{
+			m_vulkanManager.destroyImage(image.image);
+
+			for (auto name : image.imageViews)
+			{
+				m_vulkanManager.destroyImageView(name);
+			}
+
+			for (auto name : image.samplers)
+			{
+				m_vulkanManager.destroySampler(name);
+			}
+		}
+
+		m_vulkanManager.destroyImage(m_lightingResultImage.image);
+
+		for (auto name : m_lightingResultImage.imageViews)
+		{
+			m_vulkanManager.destroyImageView(name);
+		}
+
+		for (auto name : m_lightingResultImage.samplers)
+		{
+			m_vulkanManager.destroySampler(name);
+		}
+
+		for (const auto &image : m_postEffectImages)
+		{
+			m_vulkanManager.destroyImage(image.image);
+
+			for (auto name : image.imageViews)
+			{
+				m_vulkanManager.destroyImageView(name);
+			}
+
+			for (auto name : image.samplers)
+			{
+				m_vulkanManager.destroySampler(name);
+			}
+		}
+	}
+
 	VkExtent2D swapChainExtent = m_vulkanManager.getSwapChainExtent();
 
 	// Gbuffer images
@@ -720,6 +786,11 @@ void DeferredRenderer::createFramebuffers()
 
 	// Used in geometry and lighting pass
 	{
+		if (m_initialized)
+		{
+			m_vulkanManager.destroyFramebuffer(m_geomAndLightingFramebuffer);
+		}
+
 		std::vector<uint32_t> attachmentViews =
 		{
 			m_depthImage.imageViews[0],
@@ -734,6 +805,14 @@ void DeferredRenderer::createFramebuffers()
 
 	// Bloom
 	{
+		if (m_initialized)
+		{
+			for (auto name : m_postEffectFramebuffers)
+			{
+				m_vulkanManager.destroyFramebuffer(name);
+			}
+		}
+
 		m_postEffectFramebuffers.resize(3);
 
 		m_postEffectFramebuffers[0] = m_vulkanManager.createFramebuffer(m_bloomRenderPasses[0], { m_postEffectImages[0].imageViews[0] });
@@ -790,6 +869,11 @@ void DeferredRenderer::createSynchronizationObjects()
 
 void DeferredRenderer::createSpecEnvPrefilterRenderPass()
 {
+	if (m_initialized)
+	{
+		m_vulkanManager.destroyRenderPass(m_specEnvPrefilterRenderPass);
+	}
+
 	m_vulkanManager.beginCreateRenderPass();
 
 	m_vulkanManager.renderPassAddAttachment(m_skybox.specularIrradianceMap.format,
@@ -812,6 +896,11 @@ void DeferredRenderer::createSpecEnvPrefilterRenderPass()
 
 void DeferredRenderer::createGeometryAndLightingRenderPass()
 {
+	if (m_initialized)
+	{
+		m_vulkanManager.destroyRenderPass(m_geomAndLightRenderPass);
+	}
+
 	m_vulkanManager.beginCreateRenderPass();
 
 	// --- Attachments used in this render pass
@@ -880,6 +969,14 @@ void DeferredRenderer::createGeometryAndLightingRenderPass()
 
 void DeferredRenderer::createBloomRenderPasses()
 {
+	if (m_initialized)
+	{
+		for (auto renderPass : m_bloomRenderPasses)
+		{
+			m_vulkanManager.destroyRenderPass(renderPass);
+		}
+	}
+
 	m_bloomRenderPasses.resize(2);
 
 	// --- Bloom render pass 1 (brightness and blur passes): will clear framebuffer
@@ -918,6 +1015,11 @@ void DeferredRenderer::createBloomRenderPasses()
 
 void DeferredRenderer::createFinalOutputRenderPass()
 {
+	if (m_initialized)
+	{
+		m_vulkanManager.destroyRenderPass(m_finalOutputRenderPass);
+	}
+
 	m_vulkanManager.beginCreateRenderPass();
 
 	m_vulkanManager.renderPassAddAttachment(m_vulkanManager.getSwapChainImageFormat(),
@@ -1078,6 +1180,12 @@ void DeferredRenderer::createBrdfLutPipeline()
 
 void DeferredRenderer::createDiffEnvPrefilterPipeline()
 {
+	if (m_initialized)
+	{
+		m_vulkanManager.destroyPipelineLayout(m_diffEnvPrefilterPipelineLayout);
+		m_vulkanManager.destroyPipeline(m_diffEnvPrefilterPipeline);
+	}
+
 	const std::string vsFileName = "../shaders/env_prefilter_pass/env_prefilter.vert.spv";
 	const std::string gsFileName = "../shaders/env_prefilter_pass/env_prefilter.geom.spv";
 	const std::string fsFileName = "../shaders/env_prefilter_pass/diff_env_prefilter.frag.spv";
@@ -1114,6 +1222,12 @@ void DeferredRenderer::createDiffEnvPrefilterPipeline()
 
 void DeferredRenderer::createSpecEnvPrefilterPipeline()
 {
+	if (m_initialized)
+	{
+		m_vulkanManager.destroyPipelineLayout(m_specEnvPrefilterPipelineLayout);
+		m_vulkanManager.destroyPipeline(m_specEnvPrefilterPipeline);
+	}
+
 	const std::string vsFileName = "../shaders/env_prefilter_pass/env_prefilter.vert.spv";
 	const std::string gsFileName = "../shaders/env_prefilter_pass/env_prefilter.geom.spv";
 	const std::string fsFileName = "../shaders/env_prefilter_pass/spec_env_prefilter.frag.spv";
@@ -1157,6 +1271,12 @@ void DeferredRenderer::createGeomPassPipeline()
 
 void DeferredRenderer::createSkyboxPipeline()
 {
+	if (m_initialized)
+	{
+		m_vulkanManager.destroyPipelineLayout(m_skyboxPipelineLayout);
+		m_vulkanManager.destroyPipeline(m_skyboxPipeline);
+	}
+
 	const std::string vsFileName = "../shaders/geom_pass/skybox.vert.spv";
 	const std::string fsFileName = "../shaders/geom_pass/skybox.frag.spv";
 
@@ -1193,6 +1313,12 @@ void DeferredRenderer::createSkyboxPipeline()
 
 void DeferredRenderer::createStaticMeshPipeline()
 {
+	if (m_initialized)
+	{
+		m_vulkanManager.destroyPipelineLayout(m_geomPipelineLayout);
+		m_vulkanManager.destroyPipeline(m_geomPipeline);
+	}
+
 	const std::string vsFileName = "../shaders/geom_pass/geom.vert.spv";
 	const std::string fsFileName = "../shaders/geom_pass/geom.frag.spv";
 
@@ -1227,6 +1353,12 @@ void DeferredRenderer::createStaticMeshPipeline()
 
 void DeferredRenderer::createLightingPassPipeline()
 {
+	if (m_initialized)
+	{
+		m_vulkanManager.destroyPipelineLayout(m_lightingPipelineLayout);
+		m_vulkanManager.destroyPipeline(m_lightingPipeline);
+	}
+
 	const std::string vsFileName = "../shaders/fullscreen.vert.spv";
 	const std::string fsFileName = "../shaders/lighting_pass/lighting.frag.spv";
 
@@ -1257,6 +1389,19 @@ void DeferredRenderer::createLightingPassPipeline()
 
 void DeferredRenderer::createBloomPipelines()
 {
+	if (m_initialized)
+	{
+		for (auto name : m_bloomPipelineLayouts)
+		{
+			m_vulkanManager.destroyPipelineLayout(name);
+		}
+
+		for (auto name : m_bloomPipelines)
+		{
+			m_vulkanManager.destroyPipeline(name);
+		}
+	}
+
 	const std::string vsFileName = "../shaders/fullscreen.vert.spv";
 	const std::string fsFileName1 = "../shaders/bloom_pass/brightness_mask.frag.spv";
 	const std::string fsFileName2 = "../shaders/bloom_pass/gaussian_blur.frag.spv";
@@ -1328,6 +1473,12 @@ void DeferredRenderer::createBloomPipelines()
 
 void DeferredRenderer::createFinalOutputPassPipeline()
 {
+	if (m_initialized)
+	{
+		m_vulkanManager.destroyPipelineLayout(m_finalOutputPipelineLayout);
+		m_vulkanManager.destroyPipeline(m_finalOutputPipeline);
+	}
+
 	const std::string vsFileName = "../shaders/fullscreen.vert.spv";
 	const std::string fsFileName = "../shaders/final_output_pass/final_output.frag.spv";
 

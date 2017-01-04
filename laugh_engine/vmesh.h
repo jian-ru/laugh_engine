@@ -63,25 +63,6 @@ struct Vertex
 	}
 };
 
-struct ImageWrapper
-{
-	uint32_t image;
-	std::vector<uint32_t> imageViews;
-	std::vector<uint32_t> samplers;
-
-	VkFormat format;
-	uint32_t width, height, depth = 1;
-	uint32_t mipLevelCount = 1;
-	uint32_t layerCount = 1;
-};
-
-struct BufferWrapper
-{
-	uint32_t buffer;
-	VkDeviceSize offset;
-	VkDeviceSize size;
-};
-
 namespace std
 {
 	template<> struct hash<Vertex>
@@ -311,14 +292,14 @@ public:
 	glm::quat worldRotation{ glm::vec3(0.f, 0.f, 0.f) }; // Euler angles to quaternion
 	float scale = 1.f;
 
-	BufferWrapper vertexBuffer;
-	BufferWrapper indexBuffer;
+	rj::helper_functions::BufferWrapper vertexBuffer;
+	rj::helper_functions::BufferWrapper indexBuffer;
 
-	ImageWrapper albedoMap;
-	ImageWrapper normalMap;
-	ImageWrapper roughnessMap;
-	ImageWrapper metalnessMap;
-	ImageWrapper aoMap;
+	rj::helper_functions::ImageWrapper albedoMap;
+	rj::helper_functions::ImageWrapper normalMap;
+	rj::helper_functions::ImageWrapper roughnessMap;
+	rj::helper_functions::ImageWrapper metalnessMap;
+	rj::helper_functions::ImageWrapper aoMap;
 
 	MaterialType_t materialType = MATERIAL_TYPE_FSCHLICK_DGGX_GSMITH;
 
@@ -399,9 +380,9 @@ public:
 class Skybox : public VMesh
 {
 public:
-	ImageWrapper radianceMap; // unfiltered map
-	ImageWrapper specularIrradianceMap;
-	ImageWrapper diffuseIrradianceMap; // TODO: use spherical harmonics instead
+	rj::helper_functions::ImageWrapper radianceMap; // unfiltered map
+	rj::helper_functions::ImageWrapper specularIrradianceMap;
+	rj::helper_functions::ImageWrapper diffuseIrradianceMap; // TODO: use spherical harmonics instead
 
 	bool specMapReady = false;
 	bool diffMapReady = false;

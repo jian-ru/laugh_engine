@@ -25,7 +25,27 @@ namespace rj
 			{ VK_FORMAT_R8G8B8A8_UNORM, { 4, { 1, 1, 1 } } },
 			{ VK_FORMAT_R32G32_SFLOAT, { 8, { 1, 1, 1 } } },
 			{ VK_FORMAT_R32G32B32A32_SFLOAT, { 16, { 1, 1, 1 } } },
-			{ VK_FORMAT_BC3_UNORM_BLOCK, { 16, { 4, 4, 1 } } }
+			{ VK_FORMAT_BC3_UNORM_BLOCK, { 16, { 4, 4, 1 } } },
+			{ VK_FORMAT_R8_UNORM, { 1, { 1, 1, 1 } } }
+		};
+
+		struct ImageWrapper
+		{
+			uint32_t image;
+			std::vector<uint32_t> imageViews;
+			std::vector<uint32_t> samplers;
+
+			VkFormat format;
+			uint32_t width, height, depth = 1;
+			uint32_t mipLevelCount = 1;
+			uint32_t layerCount = 1;
+		};
+
+		struct BufferWrapper
+		{
+			uint32_t buffer;
+			VkDeviceSize offset;
+			VkDeviceSize size;
 		};
 
 		// A chunck of memory storing many uniforms
@@ -91,6 +111,50 @@ namespace rj
 			};
 		};
 
+		class Timer
+		{
+		public:
+			Timer(uint32_t ac = 100) :
+				tStart(std::chrono::high_resolution_clock::now()),
+				tEnd(tStart),
+				averageCount{ac},
+				timeIntervals(ac, 0.f)
+			{}
+		
+			void start()
+			{
+				tStart = std::chrono::high_resolution_clock::now();
+			}
+		
+			void stop()
+			{
+				tEnd = std::chrono::high_resolution_clock::now();
+				float te = timeElapsed();
+				total -= timeIntervals[nextIdx];
+				timeIntervals[nextIdx] = te;
+				total += te;
+				nextIdx = (nextIdx + 1) % averageCount;
+			}
+		
+			float timeElapsed() const
+			{
+				return std::chrono::duration<float, std::milli>(tEnd - tStart).count();
+			}
+		
+			float getAverageTime() const
+			{
+				return total / averageCount;
+			}
+		
+		private:
+			std::chrono::time_point<std::chrono::high_resolution_clock> tStart;
+			decltype(tStart) tEnd;
+		
+			uint32_t averageCount;
+			uint32_t nextIdx = 0;
+			float total = 0.f;
+			std::vector<float> timeIntervals;
+		};
 
 		template <class T>
 		inline void hash_combine(std::size_t& seed, const T& v)

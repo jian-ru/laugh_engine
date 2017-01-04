@@ -23,12 +23,6 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="vutils.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="common_utils.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="vbase.h">
       <Filter>Header Files</Filter>
     </ClInclude>

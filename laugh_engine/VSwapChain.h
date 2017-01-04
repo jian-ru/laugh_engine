@@ -173,7 +173,7 @@ namespace rj
 		const VDevice &m_device;
 		const VWindow &m_window;
 
-		VDeleter<VkSwapchainKHR> m_swapChain;
+		VDeleter<VkSwapchainKHR> m_swapChain{ m_device, vkDestroySwapchainKHR };
 		std::vector<VkImage> m_swapChainImages; // swap chain images will be released when the swap chain is destroyed
 		std::vector<VDeleter<VkImageView>> m_swapChainImageViews;
 		VkFormat m_swapChainImageFormat;

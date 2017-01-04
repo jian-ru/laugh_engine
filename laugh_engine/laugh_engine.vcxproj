@@ -157,7 +157,6 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="camera.h" />
-    <ClInclude Include="common_utils.h" />
     <ClInclude Include="deferred_renderer.h" />
     <ClInclude Include="vbase.h" />
     <ClInclude Include="VBuffer.h" />
@@ -174,7 +173,6 @@
     <ClInclude Include="VSampler.h" />
     <ClInclude Include="VSwapChain.h" />
     <ClInclude Include="vtextoverlay.h" />
-    <ClInclude Include="vutils.h" />
     <ClInclude Include="VWindow.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

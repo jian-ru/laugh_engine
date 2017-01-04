@@ -238,12 +238,21 @@ namespace rj
 
 		virtual ~VManager() {}
 
-		// --- Render pass creation ---
+		// --- Render pass related ---
 		void beginCreateRenderPass()
 		{
 			m_curRenderPassInfo = {};
-			m_curRenderPassName = static_cast<uint32_t>(m_renderPasses.size());
-			m_renderPasses[m_curRenderPassName] = VDeleter<VkRenderPass>{ m_device, vkDestroyRenderPass };
+
+			if (!m_availableRenderPassNames.empty())
+			{
+				m_curRenderPassName = m_availableRenderPassNames.back();
+				m_availableRenderPassNames.pop_back();
+			}
+			else
+			{
+				m_curRenderPassName = static_cast<uint32_t>(m_renderPasses.size());
+				m_renderPasses.emplace_back(m_device, vkDestroyRenderPass);
+			}
 		}
 
 		void renderPassAddAttachment(VkFormat format,
@@ -359,7 +368,8 @@ namespace rj
 
 		void renderPassAddSubpassDependency(uint32_t srcSubpass, uint32_t dstSubpass,
 			VkPipelineStageFlags srcStages, VkPipelineStageFlags dstStages,
-			VkAccessFlags srcAccessFlags, VkAccessFlags dstAccessFlags)
+			VkAccessFlags srcAccessFlags, VkAccessFlags dstAccessFlags,
+			VkDependencyFlags flags = 0)
 		{
 			m_curRenderPassInfo.subpassDependencies.push_back({});
 			VkSubpassDependency &dependency = m_curRenderPassInfo.subpassDependencies.back();
@@ -370,6 +380,7 @@ namespace rj
 			dependency.srcAccessMask = srcAccessFlags;
 			dependency.dstStageMask = dstStages;
 			dependency.dstAccessMask = dstAccessFlags;
+			dependency.dependencyFlags = flags;
 		}
 
 		uint32_t endCreateRenderPass()
@@ -391,7 +402,15 @@ namespace rj
 			m_curRenderPassInfo = {};
 			return m_curRenderPassName;
 		}
-		// --- Render pass creation ---
+
+		void destroyRenderPass(uint32_t renderPassName)
+		{
+			assert(renderPassName < m_renderPasses.size());
+			assert(std::find(m_availableRenderPassNames.begin(), m_availableRenderPassNames.end(), renderPassName) == m_availableRenderPassNames.end());
+
+			m_availableRenderPassNames.push_back(renderPassName);
+		}
+		// --- Render pass related ---
 
 		// --- Descriptor set layout creation ---
 		void beginCreateDescriptorSetLayout()
@@ -453,13 +472,21 @@ namespace rj
 		}
 		// --- Descriptor set layout creation ---
 
-		// --- Pipeline layouts creation ---
+		// --- Pipeline layouts related ---
 		void beginCreatePipelineLayout()
 		{
 			m_curPipelineLayoutInfo = {};
-			m_curPipelineLayoutName = static_cast<uint32_t>(m_pipelineLayouts.size());
-			m_pipelineLayouts.emplace(std::piecewise_construct, std::forward_as_tuple(m_curPipelineLayoutName),
-				std::forward_as_tuple(m_device, vkDestroyPipelineLayout));
+
+			if (!m_availablePipelineLayoutNames.empty())
+			{
+				m_curPipelineLayoutName = m_availablePipelineLayoutNames.back();
+				m_availablePipelineLayoutNames.pop_back();
+			}
+			else
+			{
+				m_curPipelineLayoutName = static_cast<uint32_t>(m_pipelineLayouts.size());
+				m_pipelineLayouts.emplace_back(m_device, vkDestroyPipelineLayout);
+			}
 		}
 
 		void pipelineLayoutAddDescriptorSetLayouts(const std::vector<uint32_t> &setLayoutNames)
@@ -515,49 +542,46 @@ namespace rj
 			m_curPipelineLayoutInfo = {};
 			return m_curPipelineLayoutName;
 		}
-		// --- Pipeline layouts creation ---
+
+		void destroyPipelineLayout(uint32_t pipelineLayoutName)
+		{
+			assert(pipelineLayoutName < m_pipelineLayouts.size());
+			assert(std::find(m_availablePipelineLayoutNames.begin(), m_availablePipelineLayoutNames.end(), pipelineLayoutName) == m_availablePipelineLayoutNames.end());
+
+			m_availablePipelineLayoutNames.push_back(pipelineLayoutName);
+		}
+		// --- Pipeline layouts related ---
 
 		// --- Graphics pipeline creation ---
 		void beginCreateGraphicsPipeline(uint32_t layoutName, uint32_t renderPassName, uint32_t subpassIdx,
 			uint32_t basePipelineName = std::numeric_limits<uint32_t>::max(), VkPipelineCreateFlags flags = 0)
 		{
 			m_curGraphicsPipelineInfo = GraphicsPipelineCreateInfo{};
-			m_curPipelineName = static_cast<uint32_t>(m_pipelines.size());
-			m_pipelines.emplace(std::piecewise_construct, std::forward_as_tuple(m_curPipelineName),
-				std::forward_as_tuple(m_device, vkDestroyPipeline));
+
+			if (!m_availablePipelineNames.empty())
+			{
+				m_curPipelineName = m_availablePipelineNames.back();
+				m_availablePipelineNames.pop_back();
+			}
+			else
+			{
+				m_curPipelineName = static_cast<uint32_t>(m_pipelines.size());
+				m_pipelines.emplace_back(m_device, vkDestroyPipeline);
+			}
 
 			auto &pipelineInfo = m_curGraphicsPipelineInfo.pipelineInfo;
 			pipelineInfo.flags = flags;
-
-			auto layoutFound = m_pipelineLayouts.find(layoutName);
-			if (layoutFound != m_pipelineLayouts.end())
-			{
-				pipelineInfo.layout = layoutFound->second;
-			}
-			else
-			{
-				throw std::runtime_error("Invalid pipeline layout");
-			}
-
-			auto renderPassFound = m_renderPasses.find(renderPassName);
-			if (renderPassFound != m_renderPasses.end())
-			{
-				pipelineInfo.renderPass = renderPassFound->second;
-			}
-			else
-			{
-				throw std::runtime_error("Invalid render pass");
-			}
-
+			pipelineInfo.layout = m_pipelineLayouts[layoutName];
+			pipelineInfo.renderPass = m_renderPasses[renderPassName];
 			pipelineInfo.subpass = subpassIdx;
 
 			pipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
 			if (flags & VK_PIPELINE_CREATE_DERIVATIVE_BIT)
 			{
-				auto basePipelineFound = m_pipelines.find(basePipelineName);
-				if (basePipelineFound != m_pipelines.end())
+				if (basePipelineName < m_pipelines.size() &&
+					std::find(m_availablePipelineNames.begin(), m_availablePipelineNames.end(), basePipelineName) == m_availablePipelineNames.end())
 				{
-					pipelineInfo.basePipelineHandle = basePipelineFound->second;
+					pipelineInfo.basePipelineHandle = m_pipelines[basePipelineName];
 					pipelineInfo.basePipelineIndex = -1;
 				}
 				else
@@ -943,29 +967,29 @@ namespace rj
 			uint32_t basePipelineName = std::numeric_limits<uint32_t>::max(), VkPipelineCreateFlags flags = 0)
 		{
 			m_curComputePipelineInfo = ComputePipelineCreateInfo{};
-			m_curPipelineName = static_cast<uint32_t>(m_pipelines.size());
-			m_pipelines.emplace(std::piecewise_construct, std::forward_as_tuple(m_curPipelineName),
-				std::forward_as_tuple(m_device, vkDestroyPipeline));
 
-			auto &pipelineInfo = m_curComputePipelineInfo.pipelineInfo;
-			pipelineInfo.flags = flags;
-
-			auto layoutFound = m_pipelineLayouts.find(layoutName);
-			if (layoutFound != m_pipelineLayouts.end())
+			if (!m_availablePipelineNames.empty())
 			{
-				pipelineInfo.layout = layoutFound->second;
+				m_curPipelineName = m_availablePipelineNames.back();
+				m_availablePipelineNames.pop_back();
 			}
 			else
 			{
-				throw std::runtime_error("Invalid pipeline layout");
+				m_curPipelineName = static_cast<uint32_t>(m_pipelines.size());
+				m_pipelines.emplace_back(m_device, vkDestroyPipeline);
 			}
 
+			auto &pipelineInfo = m_curComputePipelineInfo.pipelineInfo;
+			pipelineInfo.flags = flags;
+			pipelineInfo.layout = m_pipelineLayouts[layoutName];
+
+			pipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
 			if (flags & VK_PIPELINE_CREATE_DERIVATIVE_BIT)
 			{
-				auto basePipelineFound = m_pipelines.find(basePipelineName);
-				if (basePipelineFound != m_pipelines.end())
+				if (basePipelineName < m_pipelines.size() &&
+					std::find(m_availablePipelineNames.begin(), m_availablePipelineNames.end(), basePipelineName) == m_availablePipelineNames.end())
 				{
-					pipelineInfo.basePipelineHandle = basePipelineFound->second;
+					pipelineInfo.basePipelineHandle = m_pipelines[basePipelineName];
 					pipelineInfo.basePipelineIndex = -1;
 				}
 				else
@@ -978,6 +1002,7 @@ namespace rj
 		void computePipelineAddShaderStage(const std::string &spvFileName, VkPipelineShaderStageCreateFlags flags = 0)
 		{
 			auto shaderByteCode = readFile(spvFileName);
+			m_curComputePipelineInfo.computeShaderModule = VDeleter<VkShaderModule>{ m_device, vkDestroyShaderModule };
 			createShaderModule(m_curComputePipelineInfo.computeShaderModule, m_device, shaderByteCode);
 
 			auto &info = m_curComputePipelineInfo.pipelineInfo.stage;
@@ -1027,14 +1052,35 @@ namespace rj
 		}
 		// --- Compute pipeline creation ---
 
-		// --- Image creation ---
+		// --- Pipeline destruction ---
+		void destroyPipeline(uint32_t pipelineName)
+		{
+			assert(pipelineName < m_pipelines.size());
+			assert(std::find(m_availablePipelineNames.begin(), m_availablePipelineNames.end(), pipelineName) == m_availablePipelineNames.end());
+
+			m_availablePipelineNames.push_back(pipelineName);
+		}
+		// --- Pipeline destruction ---
+
+		// --- Image related ---
 		uint32_t createImage2D(uint32_t width, uint32_t height, VkFormat format, VkImageUsageFlags usage, VkMemoryPropertyFlags memProps,
 			uint32_t mipLevels = 1, uint32_t arrayLayers = 1, VkSampleCountFlagBits sampleCount = VK_SAMPLE_COUNT_1_BIT,
 			VkImageLayout initialLayout = VK_IMAGE_LAYOUT_PREINITIALIZED, VkImageTiling tiling = VK_IMAGE_TILING_OPTIMAL)
 		{
-			uint32_t imageName = static_cast<uint32_t>(m_images.size());
-			m_images.emplace(std::piecewise_construct, std::forward_as_tuple(imageName), std::forward_as_tuple(m_device));
+			uint32_t imageName;
+			if (!m_availableImageNames.empty())
+			{
+				imageName = m_availableImageNames.back();
+				m_availableImageNames.pop_back();
+			}
+			else
+			{
+				imageName = static_cast<uint32_t>(m_images.size());
+				m_images.emplace_back(m_device);
+			}
+
 			m_images.at(imageName).initAs2DImage(width, height, format, usage, memProps, mipLevels, arrayLayers, sampleCount, initialLayout, tiling);
+			
 			return imageName;
 		}
 
@@ -1042,29 +1088,50 @@ namespace rj
 			uint32_t mipLevels = 1,
 			VkImageLayout initialLayout = VK_IMAGE_LAYOUT_PREINITIALIZED, VkImageTiling tiling = VK_IMAGE_TILING_OPTIMAL)
 		{
-			uint32_t imageName = static_cast<uint32_t>(m_images.size());
-			m_images.emplace(std::piecewise_construct, std::forward_as_tuple(imageName), std::forward_as_tuple(m_device));
+			uint32_t imageName;
+			if (!m_availableImageNames.empty())
+			{
+				imageName = m_availableImageNames.back();
+				m_availableImageNames.pop_back();
+			}
+			else
+			{
+				imageName = static_cast<uint32_t>(m_images.size());
+				m_images.emplace_back(m_device);
+			}
+
 			m_images.at(imageName).initAsCubeImage(width, height, format, usage, memProps, mipLevels, initialLayout, tiling);
+			
 			return imageName;
 		}
-		// --- Image creation ---
 
-		// --- Image view creation ---
+		void destroyImage(uint32_t imageName)
+		{
+			assert(imageName < m_images.size());
+			assert(std::find(m_availableImageNames.begin(), m_availableImageNames.end(), imageName) == m_availableImageNames.end());
+
+			m_availableImageNames.push_back(imageName);
+		}
+		// --- Image related ---
+
+		// --- Image view related ---
 		uint32_t createImageView(uint32_t imageName, VkImageViewType viewType, VkImageAspectFlags aspectMask,
 			uint32_t baseMipLevel = 0, uint32_t levelCount = 1, uint32_t baseArrayLayer = 0, uint32_t layerCount = 1,
 			VkComponentMapping componentMapping = {}, VkImageViewCreateFlags flags = 0)
 		{
-			auto found = m_images.find(imageName);
-			if (found == m_images.end())
+			uint32_t viewName;
+			if (!m_availableImageViewNames.empty())
 			{
-				throw std::invalid_argument("Invalid image name");
+				viewName = m_availableImageViewNames.back();
+				m_availableImageViewNames.pop_back();
 			}
-			auto &image = found->second;
+			else
+			{
+				viewName = static_cast<uint32_t>(m_imageViews.size());
+				m_imageViews.emplace_back(m_device, m_images);
+			}
 
-			uint32_t viewName = static_cast<uint32_t>(m_imageViews.size());
-			m_imageViews.emplace(std::piecewise_construct, std::forward_as_tuple(viewName),
-				std::forward_as_tuple(m_device, image));
-			m_imageViews.at(viewName).init(viewType, aspectMask, baseMipLevel, levelCount, baseArrayLayer, layerCount,
+			m_imageViews.at(viewName).init(imageName, viewType, aspectMask, baseMipLevel, levelCount, baseArrayLayer, layerCount,
 				componentMapping, flags);
 
 			return viewName;
@@ -1085,17 +1152,20 @@ namespace rj
 			return this->createImageView(imageName, VK_IMAGE_VIEW_TYPE_2D, aspectMask,
 				baseMipLevel, levelCount, baseArrayLayer, 1, componentMapping, flags);
 		}
-		// --- Image view creation ---
+
+		void destroyImageView(uint32_t imageViewName)
+		{
+			assert(imageViewName < m_imageViews.size());
+			assert(std::find(m_availableImageViewNames.begin(), m_availableImageViewNames.end(), imageViewName) == m_availableImageViewNames.end());
+
+			m_availableImageViewNames.push_back(imageViewName);
+		}
+		// --- Image view related ---
 
 		// --- Image utilities ---
 		void transitionImageLayout(uint32_t imageName, VkImageLayout oldLayout, VkImageLayout newLayout)
 		{
-			auto found = m_images.find(imageName);
-			if (found == m_images.end())
-			{
-				throw std::invalid_argument("Invalid image name");
-			}
-			auto &image = found->second;
+			auto &image = m_images[imageName];
 
 			beginSingleTimeCommands();
 			recordImageLayoutTransitionCommands(m_singleTimeCommandBuffer, image, image.format(), 0, image.levels(),
@@ -1250,7 +1320,7 @@ namespace rj
 		}
 		// --- Buffer related ---
 
-		// --- Sampler creation ---
+		// --- Sampler related ---
 		uint32_t createSampler(VkFilter magFilter, VkFilter minFilter, VkSamplerMipmapMode mipmapMode,
 			VkSamplerAddressMode addressModeU, VkSamplerAddressMode addressModeV, VkSamplerAddressMode addressModeW,
 			float minLod = 0.f, float maxLod = 0.f, float mipLodBias = 0.f, VkBool32 anisotropyEnable = VK_FALSE,
@@ -1258,14 +1328,33 @@ namespace rj
 			VkBorderColor borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK, VkBool32 unnormailzedCoords = VK_FALSE,
 			VkSamplerCreateFlags flags = 0)
 		{
-			uint32_t samplerName = static_cast<uint32_t>(m_samplers.size());
-			m_samplers.emplace(std::piecewise_construct, std::forward_as_tuple(samplerName), std::forward_as_tuple(m_device));
+			uint32_t samplerName;
+			if (!m_availableSamplerNames.empty())
+			{
+				samplerName = m_availableSamplerNames.back();
+				m_availableSamplerNames.pop_back();
+			}
+			else
+			{
+				samplerName = static_cast<uint32_t>(m_samplers.size());
+				m_samplers.emplace_back(m_device);
+			}
+
 			m_samplers.at(samplerName).init(magFilter, minFilter, mipmapMode, addressModeU, addressModeV, addressModeW,
 				minLod, maxLod, mipLodBias, anisotropyEnable, maxAnisotropy, compareEnable, compareOp,
 				borderColor, unnormailzedCoords, flags);
+			
 			return samplerName;
 		}
-		// --- Sampler creation ---
+
+		void destroySampler(uint32_t samplerName)
+		{
+			assert(samplerName < m_samplers.size());
+			assert(std::find(m_availableSamplerNames.begin(), m_availableSamplerNames.end(), samplerName) == m_availableSamplerNames.end());
+
+			m_availableSamplerNames.push_back(samplerName);
+		}
+		// --- Sampler related ---
 
 		// --- Framebuffer related ---
 		uint32_t createFramebuffer(uint32_t renderPassName, const std::vector<uint32_t> &attachmentViewNames)
@@ -1345,6 +1434,15 @@ namespace rj
 			}
 
 			return m_swapChainFramebufferNames;
+		}
+
+		void destroyFramebuffer(uint32_t framebufferName)
+		{
+			assert(framebufferName < m_framebuffers.size());
+			assert(std::find(m_availableFramebufferNames.begin(), m_availableFramebufferNames.end(), framebufferName) == m_availableFramebufferNames.end());
+			
+			if (std::find(m_swapChainFramebufferNames.begin(), m_swapChainFramebufferNames.end(), framebufferName) != m_swapChainFramebufferNames.end()) return;
+			m_availableFramebufferNames.push_back(framebufferName);
 		}
 
 		VkExtent2D getFramebufferExtent(uint32_t framebufferName)
@@ -2112,6 +2210,16 @@ namespace rj
 			return m_swapChain.format();
 		}
 
+		std::vector<uint32_t> getSwapChainFramebuffers() const
+		{
+			return m_swapChainFramebufferNames;
+		}
+
+		uint32_t getSwapChainSize() const
+		{
+			return static_cast<uint32_t>(m_swapChainFramebufferNames.size());
+		}
+
 		VkResult swapChainNextImageIndex(uint32_t *pIdx, uint32_t signalSemaphoreName, uint32_t waitFenceName,
 			uint64_t timeout = std::numeric_limits<uint64_t>::max())
 		{
@@ -2197,7 +2305,8 @@ namespace rj
 		RenderPassCreateInfo m_curRenderPassInfo;
 		uint32_t m_curRenderPassName;
 		SubpassCreateInfo *m_pCurSubpassInfo;
-		std::unordered_map<uint32_t, VDeleter<VkRenderPass>> m_renderPasses;
+		std::vector<uint32_t> m_availableRenderPassNames;
+		std::vector<VDeleter<VkRenderPass>> m_renderPasses;
 
 		DescriptorSetLayoutCreateInfo m_curSetLayoutInfo;
 		uint32_t m_curSetLayoutName;
@@ -2205,12 +2314,14 @@ namespace rj
 
 		PipelineLayoutCreateInfo m_curPipelineLayoutInfo;
 		uint32_t m_curPipelineLayoutName;
-		std::unordered_map<uint32_t, VDeleter<VkPipelineLayout>> m_pipelineLayouts;
+		std::vector<uint32_t> m_availablePipelineLayoutNames;
+		std::vector<VDeleter<VkPipelineLayout>> m_pipelineLayouts;
 
 		GraphicsPipelineCreateInfo m_curGraphicsPipelineInfo;
 		ComputePipelineCreateInfo m_curComputePipelineInfo;
 		uint32_t m_curPipelineName;
-		std::unordered_map<uint32_t, VDeleter<VkPipeline>> m_pipelines;
+		std::vector<uint32_t> m_availablePipelineNames;
+		std::vector<VDeleter<VkPipeline>> m_pipelines;
 
 		const uint32_t m_singleSubmitCommandPoolName = 0;
 		std::unordered_map<uint32_t, VDeleter<VkCommandPool>> m_commandPools;
@@ -2225,9 +2336,14 @@ namespace rj
 		std::vector<uint32_t> m_availableBufferNames;
 		std::vector<VBuffer> m_buffers;
 
-		std::unordered_map<uint32_t, VImage> m_images;
-		std::unordered_map<uint32_t, VImageView> m_imageViews;
-		std::unordered_map<uint32_t, VSampler> m_samplers;
+		std::vector<uint32_t> m_availableImageNames;
+		std::vector<VImage> m_images;
+
+		std::vector<uint32_t> m_availableImageViewNames;
+		std::vector<VImageView> m_imageViews;
+		
+		std::vector<uint32_t> m_availableSamplerNames;
+		std::vector<VSampler> m_samplers;
 
 		std::vector<uint32_t> m_swapChainFramebufferNames;
 		std::vector<uint32_t> m_availableFramebufferNames;
