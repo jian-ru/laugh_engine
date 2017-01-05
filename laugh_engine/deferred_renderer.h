@@ -752,8 +752,6 @@ void DeferredRenderer::createDescriptorSets()
 		m_bloomDescriptorSets[i] = sets[idx++];
 	}
 
-	// geometry pass descriptor set will be updated for every model
-	// so there is no need to pre-initialize it
 	createBrdfLutDescriptorSet();
 	createSpecEnvPrefilterDescriptorSet();
 	createGeomPassDescriptorSets();
