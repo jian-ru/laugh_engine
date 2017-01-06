@@ -26,7 +26,7 @@ float packRGBA(vec4 color)
 void main() 
 {
 	vec3 hdrColor = textureLod(hdrProbe, inUVW, 0).rgb;
-	outGbuffer1 = vec4(hdrColor, packRGBA(vec4(0.0, 0.0, float(pcs.materialId) / 255.0, 0.0)));
+	outGbuffer1 = vec4(hdrColor, 0.0);
 	outGbuffer2 = vec4(0.0);
-	outGbuffer3 = vec4(0.0);
+	outGbuffer3 = vec4(0.0, 0.0, 0.0, float(pcs.materialId) / 255.0);
 }

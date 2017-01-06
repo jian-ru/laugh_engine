@@ -3,10 +3,10 @@
 #extension GL_ARB_separate_shader_objects : enable
 
 layout (set = 0, binding = 0) uniform sampler2D finalOutput;
-layout (set = 0, binding = 1) uniform sampler2D gbuffer1;
-layout (set = 0, binding = 2) uniform sampler2D gbuffer2;
-layout (set = 0, binding = 3) uniform sampler2D gbuffer3;
-layout (set = 0, binding = 4) uniform sampler2D depthImage;
+layout (set = 0, binding = 1) uniform sampler2DMS gbuffer1;
+layout (set = 0, binding = 2) uniform sampler2DMS gbuffer2;
+layout (set = 0, binding = 3) uniform sampler2DMS gbuffer3;
+layout (set = 0, binding = 4) uniform sampler2DMS depthImage;
 
 layout (location = 0) in vec2 inUV;
 
@@ -48,11 +48,14 @@ vec3 applyFilmicToneMap(vec3 color)
 
 void main() 
 {
+	ivec2 extent = textureSize(gbuffer1);
+	ivec2 pixelPos = ivec2(extent * inUV);
+
 	vec3 finalColor = texture(finalOutput, inUV).rgb;
-	vec4 gb1 = texture(gbuffer1, inUV);
-	vec4 gb2 = texture(gbuffer2, inUV);
-	vec4 RMAI = texture(gbuffer3, inUV);
-	float depth = texture(depthImage, inUV).r;
+	vec4 gb1 = texelFetch(gbuffer1, pixelPos, 0);
+	vec4 gb2 = texelFetch(gbuffer2, pixelPos, 0);
+	vec4 RMAI = texelFetch(gbuffer3, pixelPos, 0);
+	float depth = texelFetch(depthImage, pixelPos, 0).r;
 	
 	vec3 albedo = unpackRGBA(gb1.w).rgb;
 	vec3 pos = gb2.xyz;

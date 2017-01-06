@@ -39,6 +39,7 @@ namespace rj
 			uint32_t width, height, depth = 1;
 			uint32_t mipLevelCount = 1;
 			uint32_t layerCount = 1;
+			VkSampleCountFlagBits sampleCount = VK_SAMPLE_COUNT_1_BIT;
 		};
 
 		struct BufferWrapper

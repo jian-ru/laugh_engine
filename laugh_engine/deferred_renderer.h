@@ -53,6 +53,7 @@
 #define BRDF_LUT_SIZE 256
 #define ALL_UNIFORM_BLOB_SIZE (64 * 1024)
 #define NUM_LIGHTS 2
+#define SAMPLE_COUNT VK_SAMPLE_COUNT_4_BIT
 
 #define BRDF_BASE_DIR "../textures/BRDF_LUTs/"
 #define BRDF_NAME "FSchlick_DGGX_GSmith.dds"
@@ -122,7 +123,8 @@ public:
 
 protected:
 	uint32_t m_specEnvPrefilterRenderPass;
-	uint32_t m_geomAndLightRenderPass;
+	uint32_t m_geomRenderPass;
+	uint32_t m_lightingRenderPass;
 	std::vector<uint32_t> m_bloomRenderPasses;
 	uint32_t m_finalOutputRenderPass;
 
@@ -188,7 +190,8 @@ protected:
 
 	uint32_t m_diffEnvPrefilterFramebuffer;
 	std::vector<uint32_t> m_specEnvPrefilterFramebuffers;
-	uint32_t m_geomAndLightingFramebuffer;
+	uint32_t m_geomFramebuffer;
+	uint32_t m_lightingFramebuffer;
 	std::vector<uint32_t> m_postEffectFramebuffers;
 
 	uint32_t m_imageAvailableSemaphore;
@@ -229,7 +232,8 @@ protected:
 
 	// Helpers
 	virtual void createSpecEnvPrefilterRenderPass();
-	virtual void createGeometryAndLightingRenderPass();
+	virtual void createGeometryRenderPass();
+	virtual void createLightingRenderPass();
 	virtual void createBloomRenderPasses();
 	virtual void createFinalOutputRenderPass();
 
@@ -395,7 +399,8 @@ void DeferredRenderer::drawFrame()
 void DeferredRenderer::createRenderPasses()
 {
 	createSpecEnvPrefilterRenderPass();
-	createGeometryAndLightingRenderPass();
+	createGeometryRenderPass();
+	createLightingRenderPass();
 	createBloomRenderPasses();
 	createFinalOutputRenderPass();
 }
@@ -505,10 +510,11 @@ void DeferredRenderer::createDepthResources()
 	m_depthImage.depth = 1;
 	m_depthImage.mipLevelCount = 1;
 	m_depthImage.layerCount = 1;
+	m_depthImage.sampleCount = SAMPLE_COUNT;
 
 	m_depthImage.image = m_vulkanManager.createImage2D(m_depthImage.width, m_depthImage.height, m_depthImage.format,
-		VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 1, 1, SAMPLE_COUNT);
 
 	m_depthImage.imageViews.resize(1);
 	VkImageAspectFlags aspectMask =
@@ -582,10 +588,11 @@ void DeferredRenderer::createColorAttachmentResources()
 		image.depth = 1;
 		image.mipLevelCount = 1;
 		image.layerCount = 1;
+		image.sampleCount = SAMPLE_COUNT;
 
 		image.image = m_vulkanManager.createImage2D(image.width, image.height, image.format,
-			VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+			VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 1, 1, SAMPLE_COUNT);
 
 		image.imageViews.resize(1);
 		image.imageViews[0] = m_vulkanManager.createImageView2D(image.image, VK_IMAGE_ASPECT_COLOR_BIT);
@@ -596,7 +603,7 @@ void DeferredRenderer::createColorAttachmentResources()
 	}
 
 	// Lighting result image
-	m_lightingResultImage.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+	m_lightingResultImage.format = m_lightingResultImageFormat;
 	m_lightingResultImage.width = swapChainExtent.width;
 	m_lightingResultImage.height = swapChainExtent.height;
 	m_lightingResultImage.depth = 1;
@@ -706,8 +713,7 @@ void DeferredRenderer::createDescriptorPools()
 	m_vulkanManager.beginCreateDescriptorPool(8 + m_models.size());
 
 	m_vulkanManager.descriptorPoolAddDescriptors(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 6 + 2 * m_models.size());
-	m_vulkanManager.descriptorPoolAddDescriptors(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 14 + m_models.size() * VMesh::numMapsPerMesh + m_bakedBRDFs.size());
-	m_vulkanManager.descriptorPoolAddDescriptors(VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 4);
+	m_vulkanManager.descriptorPoolAddDescriptors(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 18 + m_models.size() * VMesh::numMapsPerMesh + m_bakedBRDFs.size());
 	m_vulkanManager.descriptorPoolAddDescriptors(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1);
 
 	m_descriptorPool = m_vulkanManager.endCreateDescriptorPool();
@@ -782,11 +788,11 @@ void DeferredRenderer::createFramebuffers()
 		}
 	}
 
-	// Used in geometry and lighting pass
+	// Geometry pass
 	{
 		if (m_initialized)
 		{
-			m_vulkanManager.destroyFramebuffer(m_geomAndLightingFramebuffer);
+			m_vulkanManager.destroyFramebuffer(m_geomFramebuffer);
 		}
 
 		std::vector<uint32_t> attachmentViews =
@@ -794,29 +800,34 @@ void DeferredRenderer::createFramebuffers()
 			m_depthImage.imageViews[0],
 			m_gbufferImages[0].imageViews[0],
 			m_gbufferImages[1].imageViews[0],
-			m_gbufferImages[2].imageViews[0],
-			m_lightingResultImage.imageViews[0]
+			m_gbufferImages[2].imageViews[0]
 		};
 
-		m_geomAndLightingFramebuffer = m_vulkanManager.createFramebuffer(m_geomAndLightRenderPass, attachmentViews);
+		m_geomFramebuffer = m_vulkanManager.createFramebuffer(m_geomRenderPass, attachmentViews);
 	}
+
+	// Lighting pass
+	if (m_initialized)
+	{
+		m_vulkanManager.destroyFramebuffer(m_lightingFramebuffer);
+	}
+
+	m_lightingFramebuffer = m_vulkanManager.createFramebuffer(m_lightingRenderPass, { m_lightingResultImage.imageViews[0] });
 
 	// Bloom
+	if (m_initialized)
 	{
-		if (m_initialized)
+		for (auto name : m_postEffectFramebuffers)
 		{
-			for (auto name : m_postEffectFramebuffers)
-			{
-				m_vulkanManager.destroyFramebuffer(name);
-			}
+			m_vulkanManager.destroyFramebuffer(name);
 		}
-
-		m_postEffectFramebuffers.resize(3);
-
-		m_postEffectFramebuffers[0] = m_vulkanManager.createFramebuffer(m_bloomRenderPasses[0], { m_postEffectImages[0].imageViews[0] });
-		m_postEffectFramebuffers[1] = m_vulkanManager.createFramebuffer(m_bloomRenderPasses[0], { m_postEffectImages[1].imageViews[0] });
-		m_postEffectFramebuffers[2] = m_vulkanManager.createFramebuffer(m_bloomRenderPasses[1], { m_lightingResultImage.imageViews[0] });
 	}
+
+	m_postEffectFramebuffers.resize(3);
+
+	m_postEffectFramebuffers[0] = m_vulkanManager.createFramebuffer(m_bloomRenderPasses[0], { m_postEffectImages[0].imageViews[0] });
+	m_postEffectFramebuffers[1] = m_vulkanManager.createFramebuffer(m_bloomRenderPasses[0], { m_postEffectImages[1].imageViews[0] });
+	m_postEffectFramebuffers[2] = m_vulkanManager.createFramebuffer(m_bloomRenderPasses[1], { m_lightingResultImage.imageViews[0] });
 }
 
 void DeferredRenderer::createCommandBuffers()
@@ -892,11 +903,11 @@ void DeferredRenderer::createSpecEnvPrefilterRenderPass()
 	m_specEnvPrefilterRenderPass = m_vulkanManager.endCreateRenderPass();
 }
 
-void DeferredRenderer::createGeometryAndLightingRenderPass()
+void DeferredRenderer::createGeometryRenderPass()
 {
 	if (m_initialized)
 	{
-		m_vulkanManager.destroyRenderPass(m_geomAndLightRenderPass);
+		m_vulkanManager.destroyRenderPass(m_geomRenderPass);
 	}
 
 	m_vulkanManager.beginCreateRenderPass();
@@ -905,20 +916,17 @@ void DeferredRenderer::createGeometryAndLightingRenderPass()
 	// Depth
 	// Clear only happens in the FIRST subpass that uses this attachment
 	// VK_IMAGE_LAYOUT_UNDEFINED as initial layout means that we don't care about the initial layout of this attachment image (content may not be preserved)
-	m_vulkanManager.renderPassAddAttachment(findDepthFormat(), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	m_vulkanManager.renderPassAddAttachment(findDepthFormat(), VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, SAMPLE_COUNT);
 
 	// World space normal + albedo
 	// Normal has been perturbed by normal mapping
-	m_vulkanManager.renderPassAddAttachment(m_gbufferFormats[0], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	m_vulkanManager.renderPassAddAttachment(m_gbufferFormats[0], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, SAMPLE_COUNT);
 
 	// World postion
-	m_vulkanManager.renderPassAddAttachment(m_gbufferFormats[1], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	m_vulkanManager.renderPassAddAttachment(m_gbufferFormats[1], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, SAMPLE_COUNT);
 
 	// RMAI
-	m_vulkanManager.renderPassAddAttachment(m_gbufferFormats[2], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-
-	// Lighting result
-	m_vulkanManager.renderPassAddAttachment(m_lightingResultImageFormat, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	m_vulkanManager.renderPassAddAttachment(m_gbufferFormats[2], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, SAMPLE_COUNT);
 
 	// --- Reference to render pass attachments used in each subpass
 	// --- Subpasses
@@ -930,39 +938,39 @@ void DeferredRenderer::createGeometryAndLightingRenderPass()
 	m_vulkanManager.subpassAddDepthAttachmentReference(0, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
 	m_vulkanManager.endDescribeSubpass();
 
-	// Lighting subpass
-	m_vulkanManager.beginDescribeSubpass();
-	m_vulkanManager.subpassAddColorAttachmentReference(4, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-	m_vulkanManager.subpassAddInputAttachmentReference(1, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-	m_vulkanManager.subpassAddInputAttachmentReference(2, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-	m_vulkanManager.subpassAddInputAttachmentReference(3, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-	m_vulkanManager.subpassAddInputAttachmentReference(0, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
-	m_vulkanManager.subpassAddDepthAttachmentReference(0, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
-	m_vulkanManager.endDescribeSubpass();
-
 	// --- Subpass dependencies
 	m_vulkanManager.renderPassAddSubpassDependency(VK_SUBPASS_EXTERNAL, 0,
 		VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-		0,
-		VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
-		VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
-
-	m_vulkanManager.renderPassAddSubpassDependency(0, 1,
-		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-		VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-		VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-		VK_ACCESS_INPUT_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
-		VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT);
-
-	m_vulkanManager.renderPassAddSubpassDependency(1, VK_SUBPASS_EXTERNAL,
 		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-		VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-		VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-		VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+		0,
+		VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
 
 	// --- Create render pass
-	m_geomAndLightRenderPass = m_vulkanManager.endCreateRenderPass();
+	m_geomRenderPass = m_vulkanManager.endCreateRenderPass();
+}
+
+void DeferredRenderer::createLightingRenderPass()
+{
+	if (m_initialized)
+	{
+		m_vulkanManager.destroyRenderPass(m_lightingRenderPass);
+	}
+
+	m_vulkanManager.beginCreateRenderPass();
+
+	m_vulkanManager.renderPassAddAttachment(m_lightingResultImageFormat, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+	m_vulkanManager.beginDescribeSubpass();
+	m_vulkanManager.subpassAddColorAttachmentReference(0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+	m_vulkanManager.endDescribeSubpass();
+
+	m_vulkanManager.renderPassAddSubpassDependency(VK_SUBPASS_EXTERNAL, 0,
+		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+		VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+		VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+		VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+
+	m_lightingRenderPass = m_vulkanManager.endCreateRenderPass();
 }
 
 void DeferredRenderer::createBloomRenderPasses()
@@ -1113,16 +1121,16 @@ void DeferredRenderer::createLightingPassDescriptorSetLayout()
 	m_vulkanManager.setLayoutAddBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_FRAGMENT_BIT);
 
 	// gbuffer 1
-	m_vulkanManager.setLayoutAddBinding(1, VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, VK_SHADER_STAGE_FRAGMENT_BIT);
+	m_vulkanManager.setLayoutAddBinding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT);
 
 	// gbuffer 2
-	m_vulkanManager.setLayoutAddBinding(2, VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, VK_SHADER_STAGE_FRAGMENT_BIT);
+	m_vulkanManager.setLayoutAddBinding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT);
 
 	// gbuffer 3
-	m_vulkanManager.setLayoutAddBinding(3, VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, VK_SHADER_STAGE_FRAGMENT_BIT);
+	m_vulkanManager.setLayoutAddBinding(3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT);
 
 	// depth image
-	m_vulkanManager.setLayoutAddBinding(4, VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, VK_SHADER_STAGE_FRAGMENT_BIT);
+	m_vulkanManager.setLayoutAddBinding(4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT);
 
 	// diffuse irradiance map
 	m_vulkanManager.setLayoutAddBinding(5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT);
@@ -1283,7 +1291,7 @@ void DeferredRenderer::createSkyboxPipeline()
 	m_vulkanManager.pipelineLayoutAddPushConstantRange(0, sizeof(uint32_t), VK_SHADER_STAGE_FRAGMENT_BIT);
 	m_skyboxPipelineLayout = m_vulkanManager.endCreatePipelineLayout();
 
-	m_vulkanManager.beginCreateGraphicsPipeline(m_skyboxPipelineLayout, m_geomAndLightRenderPass, 0);
+	m_vulkanManager.beginCreateGraphicsPipeline(m_skyboxPipelineLayout, m_geomRenderPass, 0);
 
 	m_vulkanManager.graphicsPipelineAddShaderStage(VK_SHADER_STAGE_VERTEX_BIT, vsFileName);
 	m_vulkanManager.graphicsPipelineAddShaderStage(VK_SHADER_STAGE_FRAGMENT_BIT, fsFileName);
@@ -1295,6 +1303,8 @@ void DeferredRenderer::createSkyboxPipeline()
 	{
 		m_vulkanManager.graphicsPipelineAddAttributeDescription(attrDesc.location, attrDesc.binding, attrDesc.format, attrDesc.offset);
 	}
+
+	m_vulkanManager.graphicsPipelineConfigureMultisampleState(SAMPLE_COUNT);
 
 	VkExtent2D swapChainExtent = m_vulkanManager.getSwapChainExtent();
 	m_vulkanManager.graphicsPipelineAddViewportAndScissor(0.f, 0.f,
@@ -1325,7 +1335,7 @@ void DeferredRenderer::createStaticMeshPipeline()
 	m_vulkanManager.pipelineLayoutAddPushConstantRange(0, 2 * sizeof(uint32_t), VK_SHADER_STAGE_FRAGMENT_BIT);
 	m_geomPipelineLayout = m_vulkanManager.endCreatePipelineLayout();
 
-	m_vulkanManager.beginCreateGraphicsPipeline(m_geomPipelineLayout, m_geomAndLightRenderPass, 0);
+	m_vulkanManager.beginCreateGraphicsPipeline(m_geomPipelineLayout, m_geomRenderPass, 0);
 
 	m_vulkanManager.graphicsPipelineAddShaderStage(VK_SHADER_STAGE_VERTEX_BIT, vsFileName);
 	m_vulkanManager.graphicsPipelineAddShaderStage(VK_SHADER_STAGE_FRAGMENT_BIT, fsFileName);
@@ -1337,6 +1347,8 @@ void DeferredRenderer::createStaticMeshPipeline()
 	{
 		m_vulkanManager.graphicsPipelineAddAttributeDescription(attrDesc.location, attrDesc.binding, attrDesc.format, attrDesc.offset);
 	}
+
+	m_vulkanManager.graphicsPipelineConfigureMultisampleState(SAMPLE_COUNT, VK_TRUE, 0.25f);
 
 	VkExtent2D swapChainExtent = m_vulkanManager.getSwapChainExtent();
 	m_vulkanManager.graphicsPipelineAddViewportAndScissor(0.f, 0.f,
@@ -1365,20 +1377,22 @@ void DeferredRenderer::createLightingPassPipeline()
 	m_vulkanManager.pipelineLayoutAddPushConstantRange(0, sizeof(uint32_t), VK_SHADER_STAGE_FRAGMENT_BIT);
 	m_lightingPipelineLayout = m_vulkanManager.endCreatePipelineLayout();
 
-	m_vulkanManager.beginCreateGraphicsPipeline(m_lightingPipelineLayout, m_geomAndLightRenderPass, 1);
+	m_vulkanManager.beginCreateGraphicsPipeline(m_lightingPipelineLayout, m_lightingRenderPass, 0);
 
 	m_vulkanManager.graphicsPipelineAddShaderStage(VK_SHADER_STAGE_VERTEX_BIT, vsFileName);
 	m_vulkanManager.graphicsPipelineAddShaderStage(VK_SHADER_STAGE_FRAGMENT_BIT, fsFileName);
 
-	// Use specialization constants to pass number of lights to the shader
-	uint32_t specializationData = NUM_LIGHTS;
-	m_vulkanManager.graphicsPipelineAddSpecializationConstant(VK_SHADER_STAGE_FRAGMENT_BIT, 0, 0, sizeof(uint32_t), &specializationData);
-	
+	// Use specialization constants to pass number of lights and samples to the shader
+	uint32_t numLights = NUM_LIGHTS;
+	uint32_t sampleCount = SAMPLE_COUNT;
+	m_vulkanManager.graphicsPipelineAddSpecializationConstant(VK_SHADER_STAGE_FRAGMENT_BIT, 0, 0, sizeof(uint32_t), &numLights);
+	m_vulkanManager.graphicsPipelineAddSpecializationConstant(VK_SHADER_STAGE_FRAGMENT_BIT, 1, sizeof(uint32_t), sizeof(uint32_t), &sampleCount);
+
 	VkExtent2D swapChainExtent = m_vulkanManager.getSwapChainExtent();
 	m_vulkanManager.graphicsPipelineAddViewportAndScissor(0.f, 0.f,
 		static_cast<float>(swapChainExtent.width), static_cast<float>(swapChainExtent.height));
 
-	m_vulkanManager.graphicsPipelineConfigureDepthState(VK_TRUE, VK_FALSE, VK_COMPARE_OP_ALWAYS); // TODO: reenable it when proxy is implemented
+	m_vulkanManager.graphicsPipelineConfigureDepthState(VK_FALSE, VK_FALSE, VK_COMPARE_OP_ALWAYS);
 
 	m_vulkanManager.graphicsPipeLineAddColorBlendAttachment(VK_FALSE);
 
@@ -1616,19 +1630,19 @@ void DeferredRenderer::createLightingPassDescriptorSets()
 	imageInfos[0].layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	imageInfos[0].imageViewName = m_gbufferImages[0].imageViews[0];
 	imageInfos[0].samplerName = m_gbufferImages[0].samplers[0];
-	m_vulkanManager.descriptorSetAddImageDescriptor(1, VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, imageInfos);
+	m_vulkanManager.descriptorSetAddImageDescriptor(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, imageInfos);
 
 	imageInfos[0].imageViewName = m_gbufferImages[1].imageViews[0];
 	imageInfos[0].samplerName = m_gbufferImages[1].samplers[0];
-	m_vulkanManager.descriptorSetAddImageDescriptor(2, VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, imageInfos);
+	m_vulkanManager.descriptorSetAddImageDescriptor(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, imageInfos);
 
 	imageInfos[0].imageViewName = m_gbufferImages[2].imageViews[0];
 	imageInfos[0].samplerName = m_gbufferImages[2].samplers[0];
-	m_vulkanManager.descriptorSetAddImageDescriptor(3, VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, imageInfos);
+	m_vulkanManager.descriptorSetAddImageDescriptor(3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, imageInfos);
 
 	imageInfos[0].imageViewName = m_depthImage.imageViews[0];
 	imageInfos[0].samplerName = m_depthImage.samplers[0];
-	m_vulkanManager.descriptorSetAddImageDescriptor(4, VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, imageInfos);
+	m_vulkanManager.descriptorSetAddImageDescriptor(4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, imageInfos);
 
 	imageInfos[0].imageViewName = m_skybox.diffuseIrradianceMap.imageViews[0];
 	imageInfos[0].samplerName = m_skybox.diffuseIrradianceMap.samplers[0];
@@ -1783,13 +1797,12 @@ void DeferredRenderer::createGeomAndLightingCommandBuffer()
 {
 	m_vulkanManager.beginCommandBuffer(m_geomAndLightingCommandBuffer, VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT);
 
-	std::vector<VkClearValue> clearValues(5);
+	std::vector<VkClearValue> clearValues(4);
 	clearValues[0].depthStencil = { 1.0f, 0 };
 	clearValues[1].color = { { 0.0f, 0.0f, 0.0f, 0.0f } }; // g-buffer 1
 	clearValues[2].color = { { 0.0f, 0.0f, 0.0f, 0.0f } }; // g-buffer 2
 	clearValues[3].color = { { 0.0f, 0.0f, 0.0f, 0.0f } }; // g-buffer 3
-	clearValues[4].color = { { 0.0f, 0.0f, 0.0f, 0.0f } }; // lighting result
-	m_vulkanManager.cmdBeginRenderPass(m_geomAndLightingCommandBuffer, m_geomAndLightRenderPass, m_geomAndLightingFramebuffer, clearValues);
+	m_vulkanManager.cmdBeginRenderPass(m_geomAndLightingCommandBuffer, m_geomRenderPass, m_geomFramebuffer, clearValues);
 
 	// Geometry pass
 	{
@@ -1831,8 +1844,12 @@ void DeferredRenderer::createGeomAndLightingCommandBuffer()
 		m_vulkanManager.cmdDrawIndexed(m_geomAndLightingCommandBuffer, numIndices);
 	}
 
+	m_vulkanManager.cmdEndRenderPass(m_geomAndLightingCommandBuffer);
+
 	// Lighting pass
-	m_vulkanManager.cmdNextSubpass(m_geomAndLightingCommandBuffer);
+	clearValues.resize(1);
+	clearValues[0].color = { { 0.f, 0.f, 0.f, 0.f } };
+	m_vulkanManager.cmdBeginRenderPass(m_geomAndLightingCommandBuffer, m_lightingRenderPass, m_lightingFramebuffer, clearValues);
 
 	m_vulkanManager.cmdBindPipeline(m_geomAndLightingCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_lightingPipeline);
 	m_vulkanManager.cmdBindDescriptorSets(m_geomAndLightingCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
