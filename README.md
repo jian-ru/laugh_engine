@@ -42,6 +42,19 @@ A Vulkan implementation of real-time PBR renderer.
   * Basically no addtional cost by using PBR over Blinn-Phong but we get much better quality
   
   ![](docs/pbr_vs_blinnphong.png)
+  
+* Anti-Aliasing
+  * Increases visual quality (smoother edges and more accurate shading)
+  * Decreases performance. For 2xAA, 4xAA, and 8xAA, frame time is increased by 31%, 70%, and 173%, respectively when compared to no AA
+  * I did custom resolve in a fragment shader because Laugh Engine is deferred. Right now, I am doing lighting computation on each sample so it is basically SSAA not MSAA. I tried to perform computation only once per material type but the performance was much worse because the code that figures out distinct material types is expensive causes a lot of branching (frame time goes up to 8ms for 4xAA). So I will stick to the current scheme until I find a better way.
+  
+  | 1xAA | 2xAA |
+  | --- | --- |
+  | ![](docs/1xaa.png) | ![](docs/2xaa.png) |
+  
+  | 4xAA | 8xAA |
+  | --- | --- |
+  | ![](docs/4xaa.png) | ![](docs/8xaa.png) |
 
 ### Build Instruction
 
