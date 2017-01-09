@@ -26,7 +26,8 @@ namespace rj
 			{ VK_FORMAT_R32G32_SFLOAT, { 8, { 1, 1, 1 } } },
 			{ VK_FORMAT_R32G32B32A32_SFLOAT, { 16, { 1, 1, 1 } } },
 			{ VK_FORMAT_BC3_UNORM_BLOCK, { 16, { 4, 4, 1 } } },
-			{ VK_FORMAT_R8_UNORM, { 1, { 1, 1, 1 } } }
+			{ VK_FORMAT_R8_UNORM, { 1, { 1, 1, 1 } } },
+			{ VK_FORMAT_R8G8B8_UNORM, { 3, { 1, 1, 1 } } }
 		};
 
 		struct ImageWrapper

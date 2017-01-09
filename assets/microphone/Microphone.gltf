@@ -893,19 +893,19 @@
 	],
 	"images": {
 		"image_01_-_Default_albedo_11068": {
-			"uri": "01 - Default_albedo.jpg"
+			"uri": "01 - Default_albedo.dds"
 		},
 		"image_01_-_Default_MetalGloss_22504_metallic": {
-			"uri": "01_-_Default_MetalGloss_metallic.jpg"
+			"uri": "01_-_Default_MetalGloss_metallic.dds"
 		},
 		"image_01_-_Default_MetalGloss_22504_roughness": {
-			"uri": "01_-_Default_MetalGloss_roughness.jpg"
+			"uri": "01_-_Default_MetalGloss_roughness.dds"
 		},
 		"image_01_-_Default_normal_23668": {
-			"uri": "01 - Default_normal.jpg"
+			"uri": "01 - Default_normal.dds"
 		},
 		"image_01_-_Default_AO_22972": {
-			"uri": "01 - Default_AO.jpg"
+			"uri": "01 - Default_AO.dds"
 		}
 	},
 	"materials": {

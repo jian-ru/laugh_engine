@@ -12,6 +12,9 @@
 #include "assimp/cimport.h"
 #include "VManager.h"
 
+#include "tiny_gltf_loader.h"
+#undef max
+#undef min
 
 #define DIFF_IRRADIANCE_MAP_SIZE 32
 #define SPEC_IRRADIANCE_MAP_SIZE 512
@@ -63,6 +66,17 @@ struct Vertex
 	}
 };
 
+struct BBox
+{
+	glm::vec3 min;
+	glm::vec3 max;
+
+	BBox() : min(std::numeric_limits<float>::max()), max(-std::numeric_limits<float>::max()) {}
+
+	BBox(const glm::vec3 &_min, const glm::vec3 &_max)
+		: min(_min), max(_max) {}
+};
+
 namespace std
 {
 	template<> struct hash<Vertex>
@@ -88,12 +102,35 @@ namespace rj
 			{ gli::FORMAT_RGBA8_UNORM_PACK8, VK_FORMAT_R8G8B8A8_UNORM },
 			{ gli::FORMAT_RGBA32_SFLOAT_PACK32, VK_FORMAT_R32G32B32A32_SFLOAT },
 			{ gli::FORMAT_RGBA_DXT5_UNORM_BLOCK16, VK_FORMAT_BC3_UNORM_BLOCK },
-			{ gli::FORMAT_RG32_SFLOAT_PACK32, VK_FORMAT_R32G32_SFLOAT }
+			{ gli::FORMAT_RG32_SFLOAT_PACK32, VK_FORMAT_R32G32_SFLOAT },
+			{ gli::FORMAT_RGB8_UNORM_PACK8, VK_FORMAT_R8G8B8_UNORM }
 		};
 
-		void loadMeshIntoHostBuffers(const std::string &modelFileName,
-			std::vector<Vertex> &hostVerts, std::vector<uint32_t> &hostIndices)
+		gli::format chooseFormat(uint32_t componentType, uint32_t componentCount)
 		{
+			if (componentCount == 3)
+			{
+				if (componentType == 5121)
+				{
+					return gli::FORMAT_RGB8_UNORM_PACK8;
+				}
+			}
+			else if (componentCount == 4)
+			{
+				if (componentType == 5121)
+				{
+					return gli::FORMAT_RGBA8_UNORM_PACK8;
+				}
+			}
+		}
+
+		void loadMeshIntoHostBuffers(const std::string &modelFileName,
+			std::vector<Vertex> &hostVerts, std::vector<uint32_t> &hostIndices,
+			glm::vec3 *minPos = nullptr, glm::vec3 *maxPos = nullptr)
+		{
+			if (minPos) *minPos = glm::vec3(std::numeric_limits<float>::max());
+			if (maxPos) *maxPos = glm::vec3(-std::numeric_limits<float>::max());
+
 			Assimp::Importer meshImporter;
 			const aiScene *scene = nullptr;
 
@@ -140,6 +177,9 @@ namespace rj
 							glm::vec2(texCoord.x, 1.f - texCoord.y)
 						};
 
+						if (minPos) *minPos = glm::min(*minPos, vert.pos);
+						if (maxPos) *maxPos = glm::max(*maxPos, vert.pos);
+
 						const auto searchResult = vert2IdxLut.find(vert);
 						if (searchResult == vert2IdxLut.end())
 						{
@@ -154,6 +194,52 @@ namespace rj
 						}
 					}
 				}
+			}
+		}
+
+		void loadTexture2DFromBinaryData(ImageWrapper *pTexRet, VManager *pManager, const void *pixels,
+			uint32_t width, uint32_t height, gli::format gliformat, uint32_t mipLevels = 1, bool createSampler = true)
+		{
+			VkFormat format = gliFormat2VkFormatTable[gliformat];
+			const auto &formatInfo = g_formatInfoTable[format];
+
+			gli::extent2d extent = { width, height };
+			gli::texture2d textureMipmapped{ gliformat, extent, mipLevels };
+			size_t sizeInBytes = compute2DImageSizeInBytes(width, height, formatInfo.blockSize, mipLevels, 1);
+			memcpy(textureMipmapped.data(), pixels, sizeInBytes);
+
+			if (format != VK_FORMAT_R8G8B8A8_UNORM)
+			{
+				textureMipmapped = gli::convert(textureMipmapped, gli::FORMAT_RGBA8_UNORM_PACK8);
+				format = VK_FORMAT_R8G8B8A8_UNORM;
+			}
+
+			mipLevels = static_cast<uint32_t>(textureMipmapped.levels());
+			sizeInBytes = textureMipmapped.size();
+
+			pTexRet->width = width;
+			pTexRet->height = height;
+			pTexRet->depth = 1;
+			pTexRet->format = format;
+			pTexRet->mipLevelCount = mipLevels;
+			pTexRet->layerCount = 1;
+
+			pTexRet->image = pManager->createImage2D(width, height, format,
+				VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+				mipLevels);
+
+			pManager->transferHostDataToImage(pTexRet->image, sizeInBytes, textureMipmapped.data(),
+				VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_PREINITIALIZED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+			pTexRet->imageViews.push_back(pManager->createImageView2D(pTexRet->image, VK_IMAGE_ASPECT_COLOR_BIT, 0, mipLevels));
+
+			if (createSampler)
+			{
+				pTexRet->samplers.resize(1);
+				pTexRet->samplers[0] = pManager->createSampler(VK_FILTER_LINEAR, VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_LINEAR,
+					VK_SAMPLER_ADDRESS_MODE_REPEAT, VK_SAMPLER_ADDRESS_MODE_REPEAT, VK_SAMPLER_ADDRESS_MODE_REPEAT,
+					0.f, float(mipLevels - 1), 0.f, VK_TRUE, 16.f);
 			}
 		}
 
@@ -286,11 +372,12 @@ public:
 	rj::VManager *pVulkanManager;
 
 	PerModelUniformBuffer *uPerModelInfo = nullptr;
-
 	bool uniformDataChanged = true;
+	
 	glm::vec3 worldPosition{ 0.f, 0.f, 0.f };
 	glm::quat worldRotation{ glm::vec3(0.f, 0.f, 0.f) }; // Euler angles to quaternion
 	float scale = 1.f;
+	BBox bounds;
 
 	rj::helper_functions::BufferWrapper vertexBuffer;
 	rj::helper_functions::BufferWrapper indexBuffer;
@@ -302,6 +389,211 @@ public:
 	rj::helper_functions::ImageWrapper aoMap;
 
 	MaterialType_t materialType = MATERIAL_TYPE_FSCHLICK_DGGX_GSMITH;
+
+
+	static void loadFromGLTF(std::vector<VMesh> &retMeshes, rj::VManager *pManager, const std::string gltfFileName)
+	{
+		using namespace rj::helper_functions;
+
+		// Parse glTF
+		tinygltf::Scene scene;
+		tinygltf::TinyGLTFLoader loader;
+		std::string err;
+		bool status;
+
+		std::string ext = rj::helper_functions::getFileExtension(gltfFileName);
+		if (ext == "gltf")
+		{
+			status = loader.LoadASCIIFromFile(&scene, &err, gltfFileName);
+		}
+		else if (ext == "glb")
+		{
+			status = loader.LoadBinaryFromFile(&scene, &err, gltfFileName);
+		}
+		else
+		{
+			throw std::invalid_argument("invalid input file name");
+		}
+
+		if (!status)
+		{
+			throw std::runtime_error("failed to parse glTF: " + err);
+		}
+
+		// Meshes
+		std::unordered_map<std::string, std::vector<const tinygltf::Primitive *>> mat2meshes;
+		const auto &meshes = scene.meshes;
+		const auto &materials = scene.materials;
+		const auto &textures = scene.textures;
+		const auto &images = scene.images;
+		
+		for (const auto &nameMeshPair : meshes)
+		{
+			const auto &name = nameMeshPair.first;
+			const auto &mesh = nameMeshPair.second;
+
+			for (const auto &prim : mesh.primitives)
+			{
+				const auto &matName = prim.material;
+				mat2meshes[matName].emplace_back(&prim);
+			}
+		}
+
+		for (const auto &matMeshes : mat2meshes)
+		{
+			retMeshes.emplace_back(pManager);
+			auto &retMesh = retMeshes.back();
+
+			// Textures
+			const auto &material = materials.at(matMeshes.first);
+			{
+				const auto &texName = material.values.at("baseColorTexture").string_value;
+				const auto &tex = textures.at(texName);
+				const auto &image = images.at(tex.source);
+
+				auto gliFormat = chooseFormat(tex.type, image.component);
+				loadTexture2DFromBinaryData(&retMesh.albedoMap, pManager, image.image.data(), image.width, image.height, gliFormat, image.levelCount);
+			}
+			{
+				const auto &texName = material.values.at("normalTexture").string_value;
+				const auto &tex = textures.at(texName);
+				const auto &image = images.at(tex.source);
+
+				auto gliFormat = chooseFormat(tex.type, image.component);
+				loadTexture2DFromBinaryData(&retMesh.normalMap, pManager, image.image.data(), image.width, image.height, gliFormat, image.levelCount);
+			}
+			{
+				const auto &texName = material.values.at("roughnessTexture").string_value;
+				const auto &tex = textures.at(texName);
+				const auto &image = images.at(tex.source);
+
+				auto gliFormat = chooseFormat(tex.type, image.component);
+				loadTexture2DFromBinaryData(&retMesh.roughnessMap, pManager, image.image.data(), image.width, image.height, gliFormat, image.levelCount);
+			}
+			{
+				const auto &texName = material.values.at("metallicTexture").string_value;
+				const auto &tex = textures.at(texName);
+				const auto &image = images.at(tex.source);
+
+				auto gliFormat = chooseFormat(tex.type, image.component);
+				loadTexture2DFromBinaryData(&retMesh.metalnessMap, pManager, image.image.data(), image.width, image.height, gliFormat, image.levelCount);
+			}
+			if (material.values.find("aoTexture") != material.values.end())
+			{
+				const auto &texName = material.values.at("aoTexture").string_value;
+				const auto &tex = textures.at(texName);
+				const auto &image = images.at(tex.source);
+
+				auto gliFormat = chooseFormat(tex.type, image.component);
+				loadTexture2DFromBinaryData(&retMesh.aoMap, pManager, image.image.data(), image.width, image.height, gliFormat, image.levelCount);
+			}
+
+			// Geometry
+			std::vector<Vertex> hostVertices;
+			std::vector<uint32_t> hostIndices;
+			uint32_t vertOffset = 0;
+			uint32_t indexOffset = 0;
+			const auto &accessors = scene.accessors;
+			const auto &bufferViews = scene.bufferViews;
+			const auto &buffers = scene.buffers;
+
+			for (const auto &pMeshPrim : matMeshes.second)
+			{
+				const auto &mesh = *pMeshPrim;
+				const auto &posAccessor = accessors.at(mesh.attributes.at("POSITION"));
+				const auto &nrmAccessor = accessors.at(mesh.attributes.at("NORMAL"));
+				const auto &uvAccessor = accessors.at(mesh.attributes.at("TEXCOORD_0"));
+				const auto &idxAccessor = accessors.at(mesh.indices);
+				uint32_t numVertices = posAccessor.count;
+				hostVertices.resize(hostVertices.size() + numVertices);
+				uint32_t numIndices = idxAccessor.count;
+				hostIndices.resize(hostIndices.size() + numIndices);
+
+				// Postions
+				{
+					const auto &bufferView = bufferViews.at(posAccessor.bufferView);
+					const auto &buffer = buffers.at(bufferView.buffer);
+					size_t offset = bufferView.byteOffset + posAccessor.byteOffset;
+					size_t stride = posAccessor.byteStride;
+					assert(stride >= 12);
+					assert(posAccessor.count == numVertices);
+					const auto *data = &buffer.data[offset];
+
+					for (uint32_t i = 0; i < numVertices; ++i)
+					{
+						const float *pos = reinterpret_cast<const float *>(&data[stride * i]);
+						hostVertices[vertOffset + i].pos = glm::vec3(pos[0], pos[1], pos[2]);
+
+						retMesh.bounds.max = glm::max(retMesh.bounds.max, hostVertices[vertOffset + i].pos);
+						retMesh.bounds.min = glm::min(retMesh.bounds.max, hostVertices[vertOffset + i].pos);
+					}
+				}
+				// Normal
+				{
+					const auto &bufferView = bufferViews.at(nrmAccessor.bufferView);
+					const auto &buffer = buffers.at(bufferView.buffer);
+					size_t offset = bufferView.byteOffset + nrmAccessor.byteOffset;
+					size_t stride = nrmAccessor.byteStride;
+					assert(stride >= 12);
+					assert(nrmAccessor.count == numVertices);
+					const auto *data = &buffer.data[offset];
+
+					for (uint32_t i = 0; i < numVertices; ++i)
+					{
+						const float *nrm = reinterpret_cast<const float *>(&data[stride * i]);
+						hostVertices[vertOffset + i].normal = glm::vec3(nrm[0], nrm[1], nrm[2]);
+					}
+				}
+				// Texture coordinates
+				{
+					const auto &bufferView = bufferViews.at(uvAccessor.bufferView);
+					const auto &buffer = buffers.at(bufferView.buffer);
+					size_t offset = bufferView.byteOffset + uvAccessor.byteOffset;
+					size_t stride = uvAccessor.byteStride;
+					assert(stride >= 8);
+					assert(uvAccessor.count == numVertices);
+					const auto *data = &buffer.data[offset];
+
+					for (uint32_t i = 0; i < numVertices; ++i)
+					{
+						const float *uv = reinterpret_cast<const float *>(&data[stride * i]);
+						hostVertices[vertOffset + i].texCoord = glm::vec2(uv[0], 1.f - uv[1]);
+					}
+				}
+				// Indices
+				{
+					const auto &bufferView = bufferViews.at(idxAccessor.bufferView);
+					const auto &buffer = buffers.at(bufferView.buffer);
+					size_t offset = bufferView.byteOffset + idxAccessor.byteOffset;
+					const uint16_t *data = reinterpret_cast<const uint16_t *>(&buffer.data[offset]);
+
+					for (uint32_t i = 0; i < numIndices; ++i)
+					{
+						hostIndices[indexOffset + i] = vertOffset + static_cast<uint32_t>(data[i]);
+					}
+				}
+
+				vertOffset += numVertices;
+				indexOffset += numIndices;
+			}
+
+			// create vertex buffer
+			retMesh.vertexBuffer = {};
+			retMesh.vertexBuffer.size = sizeof(hostVertices[0]) * hostVertices.size();
+			retMesh.vertexBuffer.buffer = pManager->createBuffer(retMesh.vertexBuffer.size,
+				VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+			pManager->transferHostDataToBuffer(retMesh.vertexBuffer.buffer, retMesh.vertexBuffer.size, hostVertices.data());
+
+			// create index buffer
+			retMesh.indexBuffer = {};
+			retMesh.indexBuffer.size = sizeof(hostIndices[0]) * hostIndices.size();
+			retMesh.indexBuffer.buffer = pManager->createBuffer(retMesh.indexBuffer.size,
+				VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+			pManager->transferHostDataToBuffer(retMesh.indexBuffer.buffer, retMesh.indexBuffer.size, hostIndices.data());
+		}
+	}
 
 
 	VMesh(rj::VManager *pManager) : pVulkanManager(pManager)
@@ -348,7 +640,10 @@ public:
 		// load mesh
 		std::vector<Vertex> hostVerts;
 		std::vector<uint32_t> hostIndices;
-		loadMeshIntoHostBuffers(modelFileName, hostVerts, hostIndices);
+		glm::vec3 minPos, maxPos;
+		loadMeshIntoHostBuffers(modelFileName, hostVerts, hostIndices, &minPos, &maxPos);
+		bounds.min = minPos;
+		bounds.max = maxPos;
 
 		// create vertex buffer
 		vertexBuffer = {};

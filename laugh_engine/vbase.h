@@ -6,8 +6,8 @@
 #include <iomanip>
 
 #include "camera.h"
-#include "vmesh.h"
 #include "vtextoverlay.h"
+#include "vmesh.h"
 
 
 enum DisplayMode

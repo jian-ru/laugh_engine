@@ -50,6 +50,7 @@
 
 #include "vbase.h"
 
+
 #define BRDF_LUT_SIZE 256
 #define ALL_UNIFORM_BLOB_SIZE (64 * 1024)
 #define NUM_LIGHTS 2
@@ -661,30 +662,35 @@ void DeferredRenderer::loadAndPrepareAssets()
 	{
 		diffuseProbeFileName = PROBE_BASE_DIR "Diffuse_HDR.dds";
 	}
-
+	
 	m_skybox.load(skyboxFileName, unfilteredProbeFileName, specProbeFileName, diffuseProbeFileName);
 
-	std::vector<std::string> modelNames = MODEL_NAMES;
-	m_models.resize(modelNames.size(), { &m_vulkanManager });
+	//std::vector<std::string> modelNames = MODEL_NAMES;
+	//m_models.resize(modelNames.size(), { &m_vulkanManager });
 
-	for (size_t i = 0; i < m_models.size(); ++i)
-	{
-		const std::string &name = modelNames[i];
+	//for (size_t i = 0; i < m_models.size(); ++i)
+	//{
+	//	const std::string &name = modelNames[i];
 
-		std::string modelFileName = "../models/" + name + ".obj";
-		std::string albedoMapName = "../textures/" + name + "/A.dds";
-		std::string normalMapName = "../textures/" + name + "/N.dds";
-		std::string roughnessMapName = "../textures/" + name + "/R.dds";
-		std::string metalnessMapName = "../textures/" + name + "/M.dds";
-		std::string aoMapName = "";
-		if (fileExist("../textures/" + name + "/AO.dds"))
-		{
-			aoMapName = "../textures/" + name + "/AO.dds";
-		}
+	//	std::string modelFileName = "../models/" + name + ".obj";
+	//	std::string albedoMapName = "../textures/" + name + "/A.dds";
+	//	std::string normalMapName = "../textures/" + name + "/N.dds";
+	//	std::string roughnessMapName = "../textures/" + name + "/R.dds";
+	//	std::string metalnessMapName = "../textures/" + name + "/M.dds";
+	//	std::string aoMapName = "";
+	//	if (fileExist("../textures/" + name + "/AO.dds"))
+	//	{
+	//		aoMapName = "../textures/" + name + "/AO.dds";
+	//	}
 
-		m_models[i].load(modelFileName, albedoMapName, normalMapName, roughnessMapName, metalnessMapName, aoMapName);
-		m_models[i].worldRotation = glm::quat(glm::vec3(0.f, glm::pi<float>(), 0.f));
-	}
+	//	m_models[i].load(modelFileName, albedoMapName, normalMapName, roughnessMapName, metalnessMapName, aoMapName);
+	//	m_models[i].worldRotation = glm::quat(glm::vec3(0.f, glm::pi<float>(), 0.f));
+	//}
+
+	//const std::string gltfName = "../assets/microphone/Microphone.gltf";
+	const std::string gltfName = "../assets/centurion/Centurion.gltf";
+
+	VMesh::loadFromGLTF(m_models, &m_vulkanManager, gltfName);
 }
 
 void DeferredRenderer::createUniformBuffers()
@@ -1347,6 +1353,9 @@ void DeferredRenderer::createStaticMeshPipeline()
 	{
 		m_vulkanManager.graphicsPipelineAddAttributeDescription(attrDesc.location, attrDesc.binding, attrDesc.format, attrDesc.offset);
 	}
+
+	// temporary hack
+	m_vulkanManager.graphicsPipelineConfigureRasterizer(VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE, VK_FRONT_FACE_COUNTER_CLOCKWISE);
 
 	m_vulkanManager.graphicsPipelineConfigureMultisampleState(SAMPLE_COUNT, VK_TRUE, 0.25f);
 
