@@ -48,6 +48,7 @@
 
 #include <array>
 
+//#define USE_GLTF
 #include "vbase.h"
 
 
@@ -60,10 +61,14 @@
 #define BRDF_NAME "FSchlick_DGGX_GSmith.dds"
 
 #define PROBE_BASE_DIR "../textures/Environment/PaperMill/"
-//#define PROBE_BASE_DIR "../textures/Environment/Factory/"
-//#define PROBE_BASE_DIR "../textures/Environment/MonValley/"
-//#define PROBE_BASE_DIR "../textures/Environment/Canyon/"
+ //#define PROBE_BASE_DIR "../textures/Environment/Factory/"
+ //#define PROBE_BASE_DIR "../textures/Environment/MonValley/"
+ //#define PROBE_BASE_DIR "../textures/Environment/Canyon/"
 
+#ifdef USE_GLTF
+#define GLTF_NAME "../assets/microphone/Microphone.gltf"
+//#define GLTF_NAME "../assets/centurion/Centurion.gltf"
+#else
 #define MODEL_NAMES { "Cerberus" }
 //#define MODEL_NAMES { "Jeep_Wagoneer" }
 //#define MODEL_NAMES { "9mm_Pistol" }
@@ -71,6 +76,7 @@
 //#define MODEL_NAMES { "Combat_Helmet" }
 //#define MODEL_NAMES { "Bug_Ship" }
 //#define MODEL_NAMES { "Knight_Base", "Knight_Helmet", "Knight_Chainmail", "Knight_Skirt", "Knight_Sword", "Knight_Armor" }
+#endif
 
 
 struct CubeMapCameraUniformBuffer
@@ -453,7 +459,7 @@ void DeferredRenderer::createComputeResources()
 	if (brdfFileName != "")
 	{
 		// Do not generate mip levels for BRDF LUTs
-		loadTexture2D(&m_bakedBRDFs[0], &m_vulkanManager, brdfFileName, false, false);
+		loadTexture2D(&m_bakedBRDFs[0], &m_vulkanManager, brdfFileName, false);
 		m_bakedBRDFs[0].samplers.resize(1);
 		m_bakedBRDFs[0].samplers[0] = m_vulkanManager.createSampler(VK_FILTER_LINEAR, VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_NEAREST,
 			VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
@@ -665,32 +671,31 @@ void DeferredRenderer::loadAndPrepareAssets()
 	
 	m_skybox.load(skyboxFileName, unfilteredProbeFileName, specProbeFileName, diffuseProbeFileName);
 
-	//std::vector<std::string> modelNames = MODEL_NAMES;
-	//m_models.resize(modelNames.size(), { &m_vulkanManager });
+#ifdef USE_GLTF
+	VMesh::loadFromGLTF(m_models, &m_vulkanManager, GLTF_NAME);
+#else
+	std::vector<std::string> modelNames = MODEL_NAMES;
+	m_models.resize(modelNames.size(), { &m_vulkanManager });
 
-	//for (size_t i = 0; i < m_models.size(); ++i)
-	//{
-	//	const std::string &name = modelNames[i];
+	for (size_t i = 0; i < m_models.size(); ++i)
+	{
+		const std::string &name = modelNames[i];
 
-	//	std::string modelFileName = "../models/" + name + ".obj";
-	//	std::string albedoMapName = "../textures/" + name + "/A.dds";
-	//	std::string normalMapName = "../textures/" + name + "/N.dds";
-	//	std::string roughnessMapName = "../textures/" + name + "/R.dds";
-	//	std::string metalnessMapName = "../textures/" + name + "/M.dds";
-	//	std::string aoMapName = "";
-	//	if (fileExist("../textures/" + name + "/AO.dds"))
-	//	{
-	//		aoMapName = "../textures/" + name + "/AO.dds";
-	//	}
+		std::string modelFileName = "../models/" + name + ".obj";
+		std::string albedoMapName = "../textures/" + name + "/A.dds";
+		std::string normalMapName = "../textures/" + name + "/N.dds";
+		std::string roughnessMapName = "../textures/" + name + "/R.dds";
+		std::string metalnessMapName = "../textures/" + name + "/M.dds";
+		std::string aoMapName = "";
+		if (fileExist("../textures/" + name + "/AO.dds"))
+		{
+			aoMapName = "../textures/" + name + "/AO.dds";
+		}
 
-	//	m_models[i].load(modelFileName, albedoMapName, normalMapName, roughnessMapName, metalnessMapName, aoMapName);
-	//	m_models[i].worldRotation = glm::quat(glm::vec3(0.f, glm::pi<float>(), 0.f));
-	//}
-
-	//const std::string gltfName = "../assets/microphone/Microphone.gltf";
-	const std::string gltfName = "../assets/centurion/Centurion.gltf";
-
-	VMesh::loadFromGLTF(m_models, &m_vulkanManager, gltfName);
+		m_models[i].load(modelFileName, albedoMapName, normalMapName, roughnessMapName, metalnessMapName, aoMapName);
+		m_models[i].worldRotation = glm::quat(glm::vec3(0.f, glm::pi<float>(), 0.f));
+	}
+#endif
 }
 
 void DeferredRenderer::createUniformBuffers()
@@ -1354,8 +1359,10 @@ void DeferredRenderer::createStaticMeshPipeline()
 		m_vulkanManager.graphicsPipelineAddAttributeDescription(attrDesc.location, attrDesc.binding, attrDesc.format, attrDesc.offset);
 	}
 
+#ifdef USE_GLTF
 	// temporary hack
 	m_vulkanManager.graphicsPipelineConfigureRasterizer(VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE, VK_FRONT_FACE_COUNTER_CLOCKWISE);
+#endif
 
 	m_vulkanManager.graphicsPipelineConfigureMultisampleState(SAMPLE_COUNT, VK_TRUE, 0.25f);
 

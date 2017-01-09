@@ -204,18 +204,18 @@ namespace rj
 			const auto &formatInfo = g_formatInfoTable[format];
 
 			gli::extent2d extent = { width, height };
-			gli::texture2d textureMipmapped{ gliformat, extent, mipLevels };
+			gli::texture2d textureSrc{ gliformat, extent, mipLevels };
 			size_t sizeInBytes = compute2DImageSizeInBytes(width, height, formatInfo.blockSize, mipLevels, 1);
-			memcpy(textureMipmapped.data(), pixels, sizeInBytes);
+			memcpy(textureSrc.data(), pixels, sizeInBytes);
 
 			if (format != VK_FORMAT_R8G8B8A8_UNORM)
 			{
-				textureMipmapped = gli::convert(textureMipmapped, gli::FORMAT_RGBA8_UNORM_PACK8);
+				textureSrc = gli::convert(textureSrc, gli::FORMAT_RGBA8_UNORM_PACK8);
 				format = VK_FORMAT_R8G8B8A8_UNORM;
 			}
 
-			mipLevels = static_cast<uint32_t>(textureMipmapped.levels());
-			sizeInBytes = textureMipmapped.size();
+			mipLevels = static_cast<uint32_t>(textureSrc.levels());
+			sizeInBytes = textureSrc.size();
 
 			pTexRet->width = width;
 			pTexRet->height = height;
@@ -229,7 +229,7 @@ namespace rj
 				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
 				mipLevels);
 
-			pManager->transferHostDataToImage(pTexRet->image, sizeInBytes, textureMipmapped.data(),
+			pManager->transferHostDataToImage(pTexRet->image, sizeInBytes, textureSrc.data(),
 				VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_PREINITIALIZED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
 			pTexRet->imageViews.push_back(pManager->createImageView2D(pTexRet->image, VK_IMAGE_ASPECT_COLOR_BIT, 0, mipLevels));
@@ -243,7 +243,7 @@ namespace rj
 			}
 		}
 
-		void loadTexture2D(ImageWrapper *pTexRet, VManager *pManager, const std::string &fn, bool createSampler = true, bool generateMipLevels = true)
+		void loadTexture2D(ImageWrapper *pTexRet, VManager *pManager, const std::string &fn, bool createSampler = true)
 		{
 			std::string ext = getFileExtension(fn);
 			if (ext != "ktx" && ext != "dds")
@@ -258,22 +258,12 @@ namespace rj
 				throw std::runtime_error("cannot load texture.");
 			}
 
-			gli::texture2d textureMipmapped;
-			if (textureSrc.levels() == 1 && generateMipLevels)
-			{
-				textureMipmapped = gli::generate_mipmaps(textureSrc, gli::FILTER_LINEAR);
-			}
-			else
-			{
-				textureMipmapped = textureSrc;
-			}
+			VkFormat format = gliFormat2VkFormatTable.at(textureSrc.format());
 
-			VkFormat format = gliFormat2VkFormatTable.at(textureMipmapped.format());
-
-			uint32_t width = static_cast<uint32_t>(textureMipmapped.extent().x);
-			uint32_t height = static_cast<uint32_t>(textureMipmapped.extent().y);
-			uint32_t mipLevels = static_cast<uint32_t>(textureMipmapped.levels());
-			size_t sizeInBytes = textureMipmapped.size();
+			uint32_t width = static_cast<uint32_t>(textureSrc.extent().x);
+			uint32_t height = static_cast<uint32_t>(textureSrc.extent().y);
+			uint32_t mipLevels = static_cast<uint32_t>(textureSrc.levels());
+			size_t sizeInBytes = textureSrc.size();
 
 			pTexRet->width = width;
 			pTexRet->height = height;
@@ -287,7 +277,7 @@ namespace rj
 				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
 				mipLevels);
 
-			pManager->transferHostDataToImage(pTexRet->image, sizeInBytes, textureMipmapped.data(),
+			pManager->transferHostDataToImage(pTexRet->image, sizeInBytes, textureSrc.data(),
 				VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_PREINITIALIZED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
 			pTexRet->imageViews.push_back(pManager->createImageView2D(pTexRet->image, VK_IMAGE_ASPECT_COLOR_BIT, 0, mipLevels));
