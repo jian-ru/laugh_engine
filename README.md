@@ -16,6 +16,17 @@ A Vulkan implementation of real-time PBR renderer.
 | --- | --- |
 | ![](docs/mon_valley.png) | ![](docs/canyon.png) |
 
+### glTF Support
+
+* glTF, also called the GL Transmission Format, it is a runtime asset dilivery format for GL-based applications. It supports common functionalities of 3D applications such as geometry, texture, skin, and animation. It also allows extension, for example, I used the FRAUNHOFER_materials_pbr extension to load PBR textures.
+* It aims to form a standard/common format for runtime asset dilivery/exchange. In my opinion, it has better documentation than FBX and possess some abilities that some other file formats don't (e.g. scene hierarchy, skin, animation). I believe, if it gets popular, it will be a great convenience to both application developers and artists because less effort will be required to perform application-specific conversion on file formats.
+* In order to show my support, I added glTF support to Laugh Egine. It is now able to load geometry and material data from glTF files.
+* Below are some screen shots of 3D models loaded from glTF files. Thanks to Sketchfab for providing these glTF assets.
+
+| Microphone | Centurion |
+| --- | --- |
+| ![](docs/gltf_demo001.png) | ![](docs/gltf_demo000.png) |
+
 ### Overview
 
 | ![](docs/how_it_work0.png) | ![](docs/how_it_work1.png) |
@@ -80,5 +91,6 @@ A Vulkan implementation of real-time PBR renderer.
 * [Assimp](http://www.assimp.org/)
 
 #### Assets
-* [Chalet Hippolyte Chassande Baroz by Gaël](https://skfb.ly/HDVU)
+* [Mysterious Island Centurion by levikingvolant](https://sketchfab.com/levikingvolant)
+* [Microphone GXL 066 Bafhcteks by Gistold](https://sketchfab.com/gistold)
 * [Cerberus by Andrew Maximov](http://artisaverb.info/Cerberus.html)
