@@ -89,6 +89,7 @@ A Vulkan implementation of real-time PBR renderer.
 * [GLM](http://glm.g-truc.net/0.9.8/index.html)
 * [GLI](http://gli.g-truc.net/0.8.2/index.html)
 * [Assimp](http://www.assimp.org/)
+* [Tinygltf](https://github.com/syoyo/tinygltfloader)
 
 #### Assets
 * [Mysterious Island Centurion by levikingvolant](https://sketchfab.com/levikingvolant)
