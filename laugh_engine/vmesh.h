@@ -122,6 +122,8 @@ namespace rj
 					return gli::FORMAT_RGBA8_UNORM_PACK8;
 				}
 			}
+
+			throw std::runtime_error("Not able to choose image format");
 		}
 
 		void loadMeshIntoHostBuffers(const std::string &modelFileName,
@@ -357,7 +359,7 @@ struct PerModelUniformBuffer
 class VMesh
 {
 public:
-	const static uint32_t numMapsPerMesh = 5;
+	const static uint32_t numMapsPerMesh = 6;
 
 	rj::VManager *pVulkanManager;
 
@@ -377,6 +379,7 @@ public:
 	rj::helper_functions::ImageWrapper roughnessMap;
 	rj::helper_functions::ImageWrapper metalnessMap;
 	rj::helper_functions::ImageWrapper aoMap;
+	rj::helper_functions::ImageWrapper emissiveMap;
 
 	MaterialType_t materialType = MATERIAL_TYPE_FSCHLICK_DGGX_GSMITH;
 
@@ -477,6 +480,15 @@ public:
 				auto gliFormat = chooseFormat(tex.type, image.component);
 				loadTexture2DFromBinaryData(&retMesh.aoMap, pManager, image.image.data(), image.width, image.height, gliFormat, image.levelCount);
 			}
+			if (material.values.find("emissiveTexture") != material.values.end())
+			{
+				const auto &texName = material.values.at("emissiveTexture").string_value;
+				const auto &tex = textures.at(texName);
+				const auto &image = images.at(tex.source);
+
+				auto gliFormat = chooseFormat(tex.type, image.component);
+				loadTexture2DFromBinaryData(&retMesh.emissiveMap, pManager, image.image.data(), image.width, image.height, gliFormat, image.levelCount);
+			}
 
 			// Geometry
 			std::vector<Vertex> hostVertices;
@@ -494,9 +506,9 @@ public:
 				const auto &nrmAccessor = accessors.at(mesh.attributes.at("NORMAL"));
 				const auto &uvAccessor = accessors.at(mesh.attributes.at("TEXCOORD_0"));
 				const auto &idxAccessor = accessors.at(mesh.indices);
-				uint32_t numVertices = posAccessor.count;
+				uint32_t numVertices = static_cast<uint32_t>(posAccessor.count);
 				hostVertices.resize(hostVertices.size() + numVertices);
-				uint32_t numIndices = idxAccessor.count;
+				uint32_t numIndices = static_cast<uint32_t>(idxAccessor.count);
 				hostIndices.resize(hostIndices.size() + numIndices);
 
 				// Postions
@@ -593,6 +605,7 @@ public:
 		roughnessMap.image = std::numeric_limits<uint32_t>::max();
 		metalnessMap.image = std::numeric_limits<uint32_t>::max();
 		aoMap.image = std::numeric_limits<uint32_t>::max();
+		emissiveMap.image = std::numeric_limits<uint32_t>::max();
 	}
 
 	void load(
@@ -601,7 +614,8 @@ public:
 		const std::string &normalMapName = "",
 		const std::string &roughnessMapName = "",
 		const std::string &metalnessMapName = "",
-		const std::string &aoMapName = "")
+		const std::string &aoMapName = "",
+		const std::string &emissiveMapName = "")
 	{
 		using namespace rj::helper_functions;
 
@@ -625,6 +639,10 @@ public:
 		if (aoMapName != "")
 		{
 			loadTexture2D(&aoMap, pVulkanManager, aoMapName);
+		}
+		if (emissiveMapName != "")
+		{
+			loadTexture2D(&emissiveMap, pVulkanManager, emissiveMapName);
 		}
 
 		// load mesh

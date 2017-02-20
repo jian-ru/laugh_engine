@@ -91,10 +91,10 @@ public:
 			const float rotScale = .01f;
 			const float panScale = .002f;
 
-			float dx = xpos - lastX;
-			float dy = ypos - lastY;
-			lastX = xpos;
-			lastY = ypos;
+			float dx = static_cast<float>(xpos) - lastX;
+			float dy = static_cast<float>(ypos) - lastY;
+			lastX = static_cast<float>(xpos);
+			lastY = static_cast<float>(ypos);
 			
 			if (leftMBDown)
 			{
@@ -111,7 +111,7 @@ public:
 	{
 		VBaseGraphics *app = reinterpret_cast<VBaseGraphics *>(glfwGetWindowUserPointer(window));
 		const float scale = .2f;
-		app->m_camera.addZoom(scale * yoffset);
+		app->m_camera.addZoom(scale * static_cast<float>(yoffset));
 	}
 
 	static void keyCB(GLFWwindow* window, int key, int scancode, int action, int mods)

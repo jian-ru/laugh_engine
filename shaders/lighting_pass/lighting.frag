@@ -30,7 +30,8 @@ struct Light
 
 layout (std140, set = 0, binding = 0) uniform UBO 
 {
-	vec4 eyePos;
+	vec3 eyePos;
+	float emissiveStrength;
 	Light pointLights[NUM_LIGHTS];
 };
 
@@ -65,6 +66,7 @@ void main()
 		vec4 RMAI = texelFetch(gbuffer3, pixelPos, i); // (roughness, metalness, AO, material id)
 		
 		vec3 pos = gb2.xyz;
+		float emissiveness = gb2.w;
 		vec3 nrm = gb1.xyz;
 		vec3 albedo = unpackRGBA(gb1.w).rgb;
 		albedo = pow(albedo, vec3(2.2)); // to linear space
@@ -97,7 +99,9 @@ void main()
 			vec3 specColor = mix(dielectricF0, albedo, metalness); // since metal has no albedo, we use the space to store its F0
 			
 			vec3 result = diffColor * diffIr + specIr * (specColor * brdfTerm.x + brdfTerm.y);
-			finalColor += result * aoVal;
+			result *= aoVal;
+			result += albedo * emissiveness * emissiveStrength;
+			finalColor += result;
 		}
 	}
 	

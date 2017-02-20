@@ -2071,7 +2071,7 @@ namespace rj
 
 		void endQueueSubmit(uint32_t fenceName = std::numeric_limits<uint32_t>::max(), bool waitForFence = true)
 		{
-			uint32_t numSubmits = m_curQueueSubmitInfos.size();
+			uint32_t numSubmits = static_cast<uint32_t>(m_curQueueSubmitInfos.size());
 			assert(numSubmits > 0);
 			std::vector<VkSubmitInfo> infos(numSubmits, {});
 
@@ -2258,6 +2258,11 @@ namespace rj
 		void windowPollEvents() const
 		{
 			glfwPollEvents();
+		}
+
+		void windowSetTitle(const std::string &title)
+		{
+			m_window.setWindowTitle(title);
 		}
 		// --- Window system ---
 

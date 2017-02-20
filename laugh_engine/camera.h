@@ -6,7 +6,7 @@
 #include "glm/gtc/matrix_transform.hpp"
 #include "glm/gtx/hash.hpp"
 
-#define PI 3.14159265358979323846
+#define PI 3.14159265358979323846f
 
 class Camera
 {

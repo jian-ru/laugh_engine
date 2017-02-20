@@ -7,11 +7,13 @@ layout (binding = 3) uniform sampler2D samplerNormal;
 layout (binding = 4) uniform sampler2D samplerRoughness;
 layout (binding = 5) uniform sampler2D samplerMetalness;
 layout (binding = 6) uniform sampler2D samplerAO;
+layout (binding = 7) uniform sampler2D samplerEmissive;
 
 layout (push_constant) uniform pushConstants
 {
 	uint materialId;
 	uint hasAoMap;
+	uint hasEmissiveMap;
 } pcs;
 
 layout (location = 0) in vec3 inWorldPos;
@@ -48,7 +50,15 @@ mat3 computeTBN(vec3 n)
 
 void main() 
 {
-	vec4 albedo = vec4(texture(samplerAlbedo, inTexcoord).rgb, 0.0);
+	vec3 emissiveColor = vec3(0.0);
+	if (pcs.hasEmissiveMap > 0)
+	{
+		emissiveColor = texture(samplerEmissive, inTexcoord).rgb;
+	}
+	vec4 albedo = texture(samplerAlbedo, inTexcoord);
+	float emissiveness = min(dot(emissiveColor, vec3(0.2126, 0.7152, 0.0722)) * 2.0, 1.0);
+	
+	albedo = vec4(mix(albedo.rgb, emissiveColor, emissiveness), 0.0);
 	vec3 nrmmap = texture(samplerNormal, inTexcoord).rgb;
 	float roughness = texture(samplerRoughness, inTexcoord).r;
 	float metalness = texture(samplerMetalness, inTexcoord).r;
@@ -66,6 +76,6 @@ void main()
 	vec4 RMAI = vec4(roughness, metalness, aoVal, float(pcs.materialId) / 255.0);
 	
 	outGbuffer1 = vec4(nrm, packedAlbedo);
-	outGbuffer2 = vec4(inWorldPos, 0.0);
+	outGbuffer2 = vec4(inWorldPos, emissiveness);
 	outGbuffer3 = RMAI;
 }

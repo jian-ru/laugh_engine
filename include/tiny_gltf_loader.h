@@ -1896,6 +1896,12 @@ static void parseExtMaterialPBR(Material *material, std::string *err, const pico
 	{
 		material->values["aoTexture"].string_value = found->second.get<std::string>();
 	}
+
+	found = valueObj.find("emissiveTexture");
+	if (found != valueObj.end())
+	{
+		material->values["emissiveTexture"].string_value = found->second.get<std::string>();
+	}
 }
 
 static bool ParseMaterial(Material *material, std::string *err,

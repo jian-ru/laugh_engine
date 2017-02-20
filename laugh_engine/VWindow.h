@@ -61,6 +61,12 @@ namespace rj
 			*pHeight = m_height;
 		}
 
+		void setWindowTitle(const std::string &title)
+		{
+			m_windowTitle = title;
+			glfwSetWindowTitle(m_window, m_windowTitle.c_str());
+		}
+
 		static std::vector<const char *> getRequiredExtensions()
 		{
 			std::vector<const char *> extensions;

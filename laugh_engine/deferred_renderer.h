@@ -65,9 +65,11 @@
  //#define PROBE_BASE_DIR "../textures/Environment/MonValley/"
  //#define PROBE_BASE_DIR "../textures/Environment/Canyon/"
 
+#define USE_GLTF
 #ifdef USE_GLTF
-#define GLTF_NAME "../assets/microphone/Microphone.gltf"
+//#define GLTF_NAME "../assets/microphone/Microphone.gltf"
 //#define GLTF_NAME "../assets/centurion/Centurion.gltf"
+#define GLTF_NAME "../assets/damagedHelmet/Helmet.gltf"
 #else
 #define MODEL_NAMES { "Cerberus" }
 //#define MODEL_NAMES { "Jeep_Wagoneer" }
@@ -101,7 +103,8 @@ struct PointLight
 // only use data types that are vec4 or multiple of vec4's
 struct LightingPassUniformBuffer
 {
-	glm::vec4 eyePos;
+	glm::vec3 eyePos;
+	float emissiveStrength;
 	PointLight pointLights[NUM_LIGHTS];
 };
 
@@ -120,6 +123,9 @@ public:
 	{
 		m_verNumMajor = 0;
 		m_verNumMinor = 1;
+
+		m_windowTitle = "Laugh Engine";
+		m_vulkanManager.windowSetTitle(m_windowTitle);
 
 		VkPhysicalDeviceProperties props;
 		m_vulkanManager.getPhysicalDeviceProperties(&props);
@@ -216,8 +222,6 @@ protected:
 	uint32_t m_postEffectCommandBuffer;
 
 
-	virtual const std::string &getWindowTitle();
-
 	virtual void createRenderPasses();
 	virtual void createDescriptorSetLayouts();
 	virtual void createComputePipelines();
@@ -290,12 +294,6 @@ protected:
 
 #ifdef DEFERED_RENDERER_IMPLEMENTATION
 
-const std::string &DeferredRenderer::getWindowTitle()
-{
-	m_windowTitle = "Laugh Engine";
-	return m_windowTitle;
-}
-
 void DeferredRenderer::run()
 {
 	//system("pause");
@@ -341,7 +339,8 @@ void DeferredRenderer::updateUniformBuffers()
 		glm::vec3(1.5f, 1.5f, 1.5f),
 		5.f
 	};
-	m_uLightInfo->eyePos = glm::vec4(m_camera.position, 1.0f);
+	m_uLightInfo->eyePos = m_camera.position;
+	m_uLightInfo->emissiveStrength = 5.f;
 
 	// update per model information
 	for (auto &model : m_models)
@@ -686,13 +685,18 @@ void DeferredRenderer::loadAndPrepareAssets()
 		std::string normalMapName = "../textures/" + name + "/N.dds";
 		std::string roughnessMapName = "../textures/" + name + "/R.dds";
 		std::string metalnessMapName = "../textures/" + name + "/M.dds";
-		std::string aoMapName = "";
-		if (fileExist("../textures/" + name + "/AO.dds"))
+		std::string aoMapName = "../textures/" + name + "/AO.dds";
+		if (!fileExist(aoMapName))
 		{
-			aoMapName = "../textures/" + name + "/AO.dds";
+			aoMapName = "";
+		}
+		std::string emissiveMapName = "../textures/" + name + "/E.dds";
+		if (!fileExist(emissiveMapName))
+		{
+			emissiveMapName = "";
 		}
 
-		m_models[i].load(modelFileName, albedoMapName, normalMapName, roughnessMapName, metalnessMapName, aoMapName);
+		m_models[i].load(modelFileName, albedoMapName, normalMapName, roughnessMapName, metalnessMapName, aoMapName, emissiveMapName);
 		m_models[i].worldRotation = glm::quat(glm::vec3(0.f, glm::pi<float>(), 0.f));
 	}
 #endif
@@ -721,9 +725,9 @@ void DeferredRenderer::createUniformBuffers()
 
 void DeferredRenderer::createDescriptorPools()
 {
-	m_vulkanManager.beginCreateDescriptorPool(8 + m_models.size());
+	m_vulkanManager.beginCreateDescriptorPool(static_cast<uint32_t>(8 + m_models.size()));
 
-	m_vulkanManager.descriptorPoolAddDescriptors(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 6 + 2 * m_models.size());
+	m_vulkanManager.descriptorPoolAddDescriptors(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, static_cast<uint32_t>(6 + 2 * m_models.size()));
 	m_vulkanManager.descriptorPoolAddDescriptors(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 18 + m_models.size() * VMesh::numMapsPerMesh + m_bakedBRDFs.size());
 	m_vulkanManager.descriptorPoolAddDescriptors(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1);
 
@@ -1121,6 +1125,9 @@ void DeferredRenderer::createStaticMeshDescriptorSetLayout()
 	// AO map
 	m_vulkanManager.setLayoutAddBinding(6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT);
 
+	// Emissive map
+	m_vulkanManager.setLayoutAddBinding(7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT);
+
 	m_geomDescriptorSetLayout = m_vulkanManager.endCreateDescriptorSetLayout();
 }
 
@@ -1343,7 +1350,7 @@ void DeferredRenderer::createStaticMeshPipeline()
 
 	m_vulkanManager.beginCreatePipelineLayout();
 	m_vulkanManager.pipelineLayoutAddDescriptorSetLayouts({ m_geomDescriptorSetLayout });
-	m_vulkanManager.pipelineLayoutAddPushConstantRange(0, 2 * sizeof(uint32_t), VK_SHADER_STAGE_FRAGMENT_BIT);
+	m_vulkanManager.pipelineLayoutAddPushConstantRange(0, 3 * sizeof(uint32_t), VK_SHADER_STAGE_FRAGMENT_BIT);
 	m_geomPipelineLayout = m_vulkanManager.endCreatePipelineLayout();
 
 	m_vulkanManager.beginCreateGraphicsPipeline(m_geomPipelineLayout, m_geomRenderPass, 0);
@@ -1627,6 +1634,10 @@ void DeferredRenderer::createStaticMeshDescriptorSet()
 		imageInfos[0].samplerName = m_models[i].aoMap.image == std::numeric_limits<uint32_t>::max() ? m_models[i].albedoMap.samplers[0] : m_models[i].aoMap.samplers[0];
 		m_vulkanManager.descriptorSetAddImageDescriptor(6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, imageInfos);
 
+		imageInfos[0].imageViewName = m_models[i].emissiveMap.image == std::numeric_limits<uint32_t>::max() ? m_models[i].albedoMap.imageViews[0] : m_models[i].emissiveMap.imageViews[0];
+		imageInfos[0].samplerName = m_models[i].emissiveMap.image == std::numeric_limits<uint32_t>::max() ? m_models[i].albedoMap.samplers[0] : m_models[i].emissiveMap.samplers[0];
+		m_vulkanManager.descriptorSetAddImageDescriptor(7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, imageInfos);
+
 		m_vulkanManager.endUpdateDescriptorSet();
 	}
 }
@@ -1850,9 +1861,11 @@ void DeferredRenderer::createGeomAndLightingCommandBuffer()
 		{
 			uint32_t materialId;
 			uint32_t hasAoMap;
+			uint32_t hasEmissiveMap;
 		} pushConst;
 		pushConst.materialId = m_models[j].materialType;
 		pushConst.hasAoMap = m_models[j].aoMap.image != std::numeric_limits<uint32_t>::max();
+		pushConst.hasEmissiveMap = m_models[j].emissiveMap.image != std::numeric_limits<uint32_t>::max();
 
 		m_vulkanManager.cmdPushConstants(m_geomAndLightingCommandBuffer, m_geomPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pushConst), &pushConst);
 
