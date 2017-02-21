@@ -66,11 +66,18 @@
  //#define PROBE_BASE_DIR "../textures/Environment/Canyon/"
 
 #define USE_GLTF
+#define GLTF_2_0
+
 #ifdef USE_GLTF
+#ifdef GLTF_2_0
+#define GLTF_VERSION "2.0"
+#define GLTF_NAME "../assets/avocado/Avocado.gltf"
+#else
+#define GLTF_VERSION "1.0"
 //#define GLTF_NAME "../assets/microphone/Microphone.gltf"
 //#define GLTF_NAME "../assets/centurion/Centurion.gltf"
-//#define GLTF_NAME "../assets/damagedHelmet/Helmet.gltf"
-#define GLTF_NAME "../assets/avocado/Avocado.gltf"
+#define GLTF_NAME "../assets/damagedHelmet/Helmet.gltf"
+#endif
 #else
 #define MODEL_NAMES { "Cerberus" }
 //#define MODEL_NAMES { "Jeep_Wagoneer" }
@@ -672,7 +679,7 @@ void DeferredRenderer::loadAndPrepareAssets()
 	m_skybox.load(skyboxFileName, unfilteredProbeFileName, specProbeFileName, diffuseProbeFileName);
 
 #ifdef USE_GLTF
-	VMesh::loadFromGLTF(m_models, &m_vulkanManager, GLTF_NAME);
+	VMesh::loadFromGLTF(m_models, &m_vulkanManager, GLTF_NAME, GLTF_VERSION);
 #else
 	std::vector<std::string> modelNames = MODEL_NAMES;
 	m_models.resize(modelNames.size(), { &m_vulkanManager });

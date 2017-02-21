@@ -5,6 +5,9 @@
 #include "picojson.h"
 #include "gli/gli.hpp"
 
+#undef max
+#undef min
+
 namespace rj
 {
 	enum GLTFComponentType
@@ -14,6 +17,26 @@ namespace rj
 		GLTF_SHORT = 5122,
 		GLTF_UNSIGNED_SHORT = 5123,
 		GLTF_FLOAT = 5126
+	};
+
+	static std::unordered_map<std::string, uint32_t> g_attrType2CompCnt =
+	{
+		{ "SCALAR", 1 },
+		{ "VEC2", 2 },
+		{ "VEC3", 3 },
+		{ "VEC4", 4 },
+		{ "MAT2", 4 },
+		{ "MAT3", 9 },
+		{ "MAT4", 16 }
+	};
+
+	static std::unordered_map<GLTFComponentType, uint32_t> g_compType2ByteSize =
+	{
+		{ GLTF_BYTE, 1 },
+		{ GLTF_UNSIGNED_BYTE, 1 },
+		{ GLTF_SHORT, 2 },
+		{ GLTF_UNSIGNED_SHORT, 2 },
+		{ GLTF_FLOAT, 4 }
 	};
 
 	struct GLTFAccessor
@@ -34,6 +57,21 @@ namespace rj
 
 	typedef std::vector<char> GLTFBuffer;
 
+	template <typename T>
+	class GLTFBufferIterator
+	{
+	public:
+		GLTFBufferIterator(const T *b, const T *e) : cur(b), end(e) {}
+
+		bool hasNext() const { return cur != end; }
+
+		T getNext() { return *cur++; }
+
+	private:
+		const T *cur = nullptr;
+		const T *end = nullptr;
+	};
+
 	struct GLTFImage
 	{
 		uint32_t width;
@@ -47,6 +85,16 @@ namespace rj
 	{
 		uint32_t sampler;
 		uint32_t source; // index to a GLTFImage
+	};
+
+	struct GLTFMaterial
+	{
+		uint32_t albedoTexture = std::numeric_limits<uint32_t>::max();
+		uint32_t normalTexture = std::numeric_limits<uint32_t>::max();
+		uint32_t roughnessTexture = std::numeric_limits<uint32_t>::max();
+		uint32_t metallicTexture = std::numeric_limits<uint32_t>::max();
+		uint32_t aoTexture = std::numeric_limits<uint32_t>::max();
+		uint32_t emissiveTexture = std::numeric_limits<uint32_t>::max();
 	};
 
 	// GLTFMesh is defined as an aggregate of all the geometry of the same material
@@ -73,7 +121,7 @@ namespace rj
 	class GLTFLoader
 	{
 	public:
-		void load(GLTFScene *scene, const std::string &fn)
+		void load(GLTFScene *scene, const std::string &fn) const
 		{
 			auto baseDir = getBaseDir(fn);
 			auto ext = getExtension(fn);
@@ -100,12 +148,168 @@ namespace rj
 			// Parse buffers
 			if (!rootNode.contains("buffers") || !rootNode.get("buffers").is<picojson::array>()) throw std::runtime_error("Invalid buffers");
 			std::vector<GLTFBuffer> buffers;
-			parseBuffers(buffers, rootNode.get("buffers").get<picojson::array>());
+			parseBuffers(buffers, rootNode.get("buffers").get<picojson::array>(), baseDir);
 
 			// Parse images
+			if (!rootNode.contains("images") || !rootNode.get("images").is<picojson::array>()) throw std::runtime_error("Invalid images");
+			std::vector<GLTFImage> images;
+			parseImages(images, rootNode.get("images").get<picojson::array>(), baseDir);
+
+			// Parse textures
+			if (!rootNode.contains("textures") || !rootNode.get("textures").is<picojson::array>()) throw std::runtime_error("Invalid textures");
+			std::vector<GLTFTexture> textures;
+			parseTextures(textures, rootNode.get("textures").get<picojson::array>());
+
+			// Parse materials
+			if (!rootNode.contains("materials") || !rootNode.get("materials").is<picojson::array>()) throw std::runtime_error("Invalid materials");
+			std::vector<GLTFMaterial> materials;
+			parseMaterial(materials, rootNode.get("materials").get<picojson::array>());
+
+			// Parse meshes
+			if (!rootNode.contains("meshes") || !rootNode.get("meshes").is<picojson::array>()) throw std::runtime_error("Invalid meshes");
+			parseMeshes(scene->meshes, rootNode.get("meshes").get<picojson::array>(),
+				accessors, bufferViews, buffers, images, textures, materials);
 		}
 
 	private:
+		void parseMeshes(std::vector<GLTFMesh> &ms, const picojson::array &meshes,
+			const std::vector<GLTFAccessor> &accessors, const std::vector<GLTFBufferView> &bufferViews,
+			const std::vector<GLTFBuffer> &buffers, const std::vector<GLTFImage> &images,
+			const std::vector<GLTFTexture> &textures, const std::vector<GLTFMaterial> &materials) const
+		{
+			std::unordered_map<uint32_t, uint32_t> mat2mesh;
+
+			for (const auto &mesh : meshes)
+			{
+				const auto &prims = mesh.get<picojson::object>().at("primitives").get<picojson::array>();
+
+				for (const auto &prim : prims)
+				{
+					const auto &fields = prim.get<picojson::object>();
+					uint32_t matId = static_cast<uint32_t>(fields.at("material").get<int64_t>());
+
+					if (mat2mesh.find(matId) == mat2mesh.end())
+					{
+						mat2mesh[matId] = static_cast<uint32_t>(ms.size());
+						ms.resize(ms.size() + 1);
+					}
+					uint32_t meshId = mat2mesh[matId];
+					auto &m = ms[meshId];
+
+					const auto &attributes = fields.at("attributes").get<picojson::object>();
+					uint32_t posAccId = static_cast<uint32_t>(attributes.at("POSITION").get<int64_t>());
+					uint32_t nrmAccId = static_cast<uint32_t>(attributes.at("NORMAL").get<int64_t>());
+					uint32_t tcAccId = static_cast<uint32_t>(attributes.at("TEXCOORD_0").get<int64_t>());
+					uint32_t idxAccId = static_cast<uint32_t>(fields.at("indices").get<int64_t>());
+					uint32_t idxOffset = static_cast<uint32_t>(m.positions.size()) / 3;
+
+					// Positions
+					{
+						const GLTFAccessor &acc = accessors[posAccId];
+						assert(acc.type == "VEC3" && acc.componentType == GLTF_FLOAT);
+						const GLTFBufferView &bv = bufferViews[acc.bufferView];
+						const GLTFBuffer &buff = buffers[bv.buffer];
+						uint32_t offset = acc.byteOffset + bv.byteOffset;
+						uint32_t compCount = acc.count * g_attrType2CompCnt[acc.type];
+						uint32_t size = compCount * g_compType2ByteSize[acc.componentType];
+
+						uint32_t posStart = static_cast<uint32_t>(m.positions.size());
+						m.positions.resize(m.positions.size() + compCount);
+						memcpy(&m.positions[posStart], &buff[offset], size);
+					}
+					// Normals
+					{
+						const GLTFAccessor &acc = accessors[nrmAccId];
+						assert(acc.type == "VEC3" && acc.componentType == GLTF_FLOAT);
+						const GLTFBufferView &bv = bufferViews[acc.bufferView];
+						const GLTFBuffer &buff = buffers[bv.buffer];
+						uint32_t offset = acc.byteOffset + bv.byteOffset;
+						uint32_t compCount = acc.count * g_attrType2CompCnt[acc.type];
+						uint32_t size = compCount * g_compType2ByteSize[acc.componentType];
+
+						uint32_t nrmStart = static_cast<uint32_t>(m.normals.size());
+						m.normals.resize(m.normals.size() + compCount);
+						memcpy(&m.positions[nrmStart], &buff[offset], size);
+					}
+					// Texture coordinates
+					{
+						const GLTFAccessor &acc = accessors[tcAccId];
+						assert(acc.type == "VEC2" && acc.componentType == GLTF_FLOAT);
+						const GLTFBufferView &bv = bufferViews[acc.bufferView];
+						const GLTFBuffer &buff = buffers[bv.buffer];
+						uint32_t offset = acc.byteOffset + bv.byteOffset;
+						uint32_t compCount = acc.count * g_attrType2CompCnt[acc.type];
+						uint32_t size = compCount * g_compType2ByteSize[acc.componentType];
+
+						uint32_t tcStart = static_cast<uint32_t>(m.texCoords.size());
+						m.texCoords.resize(m.texCoords.size() + compCount);
+						memcpy(&m.texCoords[tcStart], &buff[offset], size);
+					}
+					// Indices
+					{
+						const GLTFAccessor &acc = accessors[idxAccId];
+						assert(acc.type == "SCALAR" && acc.componentType == GLTF_UNSIGNED_SHORT);
+						const GLTFBufferView &bv = bufferViews[acc.bufferView];
+						const GLTFBuffer &buff = buffers[bv.buffer];
+						uint32_t offset = acc.byteOffset + bv.byteOffset;
+						uint32_t compCount = acc.count * g_attrType2CompCnt[acc.type];
+						uint32_t size = compCount * g_compType2ByteSize[acc.componentType];
+
+						GLTFBufferIterator<uint16_t> it(
+							reinterpret_cast<const uint16_t *>(&buff[offset]),
+							reinterpret_cast<const uint16_t *>(&buff[offset]) + compCount);
+						while (it.hasNext())
+						{
+							m.indices.push_back(idxOffset + static_cast<uint32_t>(it.getNext()));
+						}
+					}
+
+#define INVALID_VAL std::numeric_limits<uint32_t>::max()
+#define IS_VALID(x) ((x) != INVALID_VAL)
+					const GLTFMaterial &material = materials[matId];
+					uint32_t albedoMapId = textures[material.albedoTexture].source;
+					uint32_t normalMapId = textures[material.normalTexture].source;
+					uint32_t roughnessMapId = textures[material.roughnessTexture].source;
+					uint32_t metallicMapId = textures[material.metallicTexture].source;
+					uint32_t aoMapId = IS_VALID(material.aoTexture) ? textures[material.aoTexture].source : INVALID_VAL;
+					uint32_t emissiveMapId = IS_VALID(material.emissiveTexture) ? textures[material.emissiveTexture].source : INVALID_VAL;
+					m.albedoMap = images[albedoMapId];
+					m.normalMap = images[normalMapId];
+					m.roughnessMap = images[roughnessMapId];
+					m.metallicMap = images[metallicMapId];
+					if (IS_VALID(aoMapId)) m.aoMap = images[aoMapId];
+					if (IS_VALID(emissiveMapId)) m.emissiveMap = images[emissiveMapId];
+#undef IS_VALID
+#undef INVALID_VAL
+				}
+			}
+		}
+
+		void parseMaterial(std::vector<GLTFMaterial> &mats, const picojson::array &materials) const
+		{
+			for (const auto &material : materials)
+			{
+				const auto &fields = material.get<picojson::object>();
+				const auto &pbrTextures = fields.at("pbrMetallicRoughness").get<picojson::object>();
+
+				GLTFMaterial mat;
+				mat.albedoTexture = static_cast<uint32_t>(pbrTextures.at("baseColorTexture").get<picojson::object>().at("index").get<int64_t>());
+				mat.roughnessTexture = static_cast<uint32_t>(pbrTextures.at("metallicRoughnessTexture").get<picojson::object>().at("index").get<int64_t>());
+				mat.metallicTexture = mat.roughnessTexture;
+				mat.normalTexture = static_cast<uint32_t>(fields.at("normalTexture").get<picojson::object>().at("index").get<int64_t>());
+				if (fields.find("occlusionTexture") != fields.end())
+				{
+					mat.aoTexture = static_cast<uint32_t>(fields.at("occlusionTexture").get<picojson::object>().at("index").get<int64_t>());
+				}
+				if (fields.find("emissiveTexture") != fields.end())
+				{
+					mat.emissiveTexture = static_cast<uint32_t>(fields.at("emissiveTexture").get<picojson::object>().at("index").get<int64_t>());
+				}
+
+				mats.emplace_back(mat);
+			}
+		}
+
 		void parseAccessors(std::vector<GLTFAccessor> &as, const picojson::array &accessors) const
 		{
 			for (const auto &accessor : accessors)
@@ -123,7 +327,7 @@ namespace rj
 			}
 		}
 
-		void parseBufferViews(std::vector<GLTFBufferView> &bvs, const picojson::array &bufferViews)
+		void parseBufferViews(std::vector<GLTFBufferView> &bvs, const picojson::array &bufferViews) const
 		{
 			for (const auto &bufferView : bufferViews)
 			{
@@ -138,7 +342,7 @@ namespace rj
 			}
 		}
 
-		void parseBuffers(std::vector<GLTFBuffer> &bs, const picojson::array &buffers)
+		void parseBuffers(std::vector<GLTFBuffer> &bs, const picojson::array &buffers, const std::string &baseDir) const
 		{
 			size_t p = bs.size();
 			bs.resize(bs.size() + buffers.size());
@@ -148,8 +352,48 @@ namespace rj
 				const auto &fields = buffer.get<picojson::object>();
 
 				auto &b = bs[p++];
-				readEntireFile(b, fields.at("uri").get<std::string>());
+				readEntireFile(b, baseDir + "/" + fields.at("uri").get<std::string>());
 				if (b.size() != static_cast<size_t>(fields.at("byteLength").get<int64_t>())) throw std::runtime_error("Incorrect buffer byte length");
+			}
+		}
+
+		void parseImages(std::vector<GLTFImage> &imgs, const picojson::array &images, const std::string &baseDir) const
+		{
+			size_t p = imgs.size();
+			imgs.resize(p + images.size());
+
+			for (const auto &image : images)
+			{
+				const auto &fields = image.get<picojson::object>();
+				auto fn = fields.at("uri").get<std::string>();
+				assert(getExtension(fn) == "dds");
+
+				fn = baseDir + "/" + fn;
+				gli::texture2d tex2D(gli::load(fn.c_str()));
+
+				assert(tex2D.format() == gli::FORMAT_RGBA8_UNORM_PACK8);
+
+				auto &img = imgs[p++];
+				img.width = tex2D.extent().x;
+				img.height = tex2D.extent().y;
+				img.component = 4; // must be RGBA8 right now
+				img.levelCount = tex2D.levels();
+				img.pixels.resize(tex2D.size());
+				memcpy(&img.pixels[0], tex2D.data(), tex2D.size());
+			}
+		}
+
+		void parseTextures(std::vector<GLTFTexture> &ts, const picojson::array &textures) const
+		{
+			for (const auto &texture : textures)
+			{
+				const auto &fields = texture.get<picojson::object>();
+
+				GLTFTexture t;
+				t.sampler = static_cast<uint32_t>(fields.at("sampler").get<int64_t>());
+				t.source = static_cast<uint32_t>(fields.at("source").get<int64_t>());
+
+				ts.emplace_back(t);
 			}
 		}
 

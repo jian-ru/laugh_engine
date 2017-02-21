@@ -111,13 +111,13 @@
 	"images":
 	[
 		{
-			"uri":"Avocado_image0.png"
+			"uri":"Avocado_image0.dds"
 		},
 		{
-			"uri":"Avocado_image1.png"
+			"uri":"Avocado_image1.dds"
 		},
 		{
-			"uri":"Avocado_image2.png"
+			"uri":"Avocado_image2.dds"
 		}
 	],
 	"meshes":
