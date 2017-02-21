@@ -60,7 +60,7 @@ void main()
 	
 	albedo = vec4(mix(albedo.rgb, emissiveColor, emissiveness), 0.0);
 	vec3 nrmmap = texture(samplerNormal, inTexcoord).rgb;
-	float roughness = texture(samplerRoughness, inTexcoord).r;
+	float roughness = texture(samplerRoughness, inTexcoord).g;
 	float metalness = texture(samplerMetalness, inTexcoord).r;
 	float aoVal = 1.0;
 	if (pcs.hasAoMap > 0)
