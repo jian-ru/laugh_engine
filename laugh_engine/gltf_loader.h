@@ -3,6 +3,7 @@
 #include <fstream>
 
 #include "picojson.h"
+#include "gli/gli.hpp"
 
 namespace rj
 {
@@ -97,6 +98,11 @@ namespace rj
 			parseBufferViews(bufferViews, rootNode.get("bufferViews").get<picojson::array>());
 
 			// Parse buffers
+			if (!rootNode.contains("buffers") || !rootNode.get("buffers").is<picojson::array>()) throw std::runtime_error("Invalid buffers");
+			std::vector<GLTFBuffer> buffers;
+			parseBuffers(buffers, rootNode.get("buffers").get<picojson::array>());
+
+			// Parse images
 		}
 
 	private:
@@ -129,6 +135,21 @@ namespace rj
 				bv.byteLength = static_cast<uint32_t>(fields.at("byteLength").get<int64_t>());
 
 				bvs.emplace_back(bv);
+			}
+		}
+
+		void parseBuffers(std::vector<GLTFBuffer> &bs, const picojson::array &buffers)
+		{
+			size_t p = bs.size();
+			bs.resize(bs.size() + buffers.size());
+
+			for (const auto &buffer : buffers)
+			{
+				const auto &fields = buffer.get<picojson::object>();
+
+				auto &b = bs[p++];
+				readEntireFile(b, fields.at("uri").get<std::string>());
+				if (b.size() != static_cast<size_t>(fields.at("byteLength").get<int64_t>())) throw std::runtime_error("Incorrect buffer byte length");
 			}
 		}
 
