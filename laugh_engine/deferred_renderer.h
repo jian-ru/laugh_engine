@@ -69,7 +69,8 @@
 #ifdef USE_GLTF
 //#define GLTF_NAME "../assets/microphone/Microphone.gltf"
 //#define GLTF_NAME "../assets/centurion/Centurion.gltf"
-#define GLTF_NAME "../assets/damagedHelmet/Helmet.gltf"
+//#define GLTF_NAME "../assets/damagedHelmet/Helmet.gltf"
+#define GLTF_NAME "../assets/avocado/Avocado.gltf"
 #else
 #define MODEL_NAMES { "Cerberus" }
 //#define MODEL_NAMES { "Jeep_Wagoneer" }

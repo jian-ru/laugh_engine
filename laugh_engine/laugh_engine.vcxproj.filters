@@ -77,5 +77,8 @@
     <ClInclude Include="VDescriptorPool.h">
       <Filter>Header Files\Vulkan</Filter>
     </ClInclude>
+    <ClInclude Include="gltf_loader.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>
