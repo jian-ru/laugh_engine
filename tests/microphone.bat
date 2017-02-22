@@ -1,0 +1,1 @@
+..\x64\Release\laugh_engine.exe --gltf_version 1.0 "../assets/microphone/Microphone.gltf"

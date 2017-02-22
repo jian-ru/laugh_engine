@@ -70,12 +70,7 @@
 
 #ifdef USE_GLTF
 
-#ifdef GLTF_2_0
-#define GLTF_VERSION "2.0"
-#else
-#define GLTF_VERSION "1.0"
-#endif
-
+extern std::string GLTF_VERSION;
 extern std::string GLTF_NAME;
 
 #else
