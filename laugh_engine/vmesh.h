@@ -643,8 +643,11 @@ public:
 				{
 					Vertex &vert = hostVertices[i];
 					vert.pos = glm::vec3(mesh.positions[3 * i], mesh.positions[3 * i + 1], mesh.positions[3 * i + 2]);
-					vert.normal = glm::vec3(mesh.normals[3 * i], mesh.positions[3 * i + 1], mesh.positions[3 * i + 2]);
+					vert.normal = glm::vec3(mesh.normals[3 * i], mesh.normals[3 * i + 1], mesh.normals[3 * i + 2]);
 					vert.texCoord = glm::vec2(mesh.texCoords[i << 1], mesh.texCoords[(i << 1) + 1]);
+
+					retMesh.bounds.max = glm::max(retMesh.bounds.max, vert.pos);
+					retMesh.bounds.min = glm::min(retMesh.bounds.min, vert.pos);
 				}
 
 				// create vertex buffer

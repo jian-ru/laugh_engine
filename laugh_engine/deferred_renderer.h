@@ -69,15 +69,15 @@
 #define GLTF_2_0
 
 #ifdef USE_GLTF
+
 #ifdef GLTF_2_0
 #define GLTF_VERSION "2.0"
-#define GLTF_NAME "../assets/avocado/Avocado.gltf"
 #else
 #define GLTF_VERSION "1.0"
-//#define GLTF_NAME "../assets/microphone/Microphone.gltf"
-//#define GLTF_NAME "../assets/centurion/Centurion.gltf"
-#define GLTF_NAME "../assets/damagedHelmet/Helmet.gltf"
 #endif
+
+extern std::string GLTF_NAME;
+
 #else
 #define MODEL_NAMES { "Cerberus" }
 //#define MODEL_NAMES { "Jeep_Wagoneer" }

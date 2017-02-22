@@ -1,6 +1,7 @@
 #pragma once
 
 #include <fstream>
+#include <unordered_set>
 
 #include "picojson.h"
 #include "gli/gli.hpp"
@@ -113,6 +114,13 @@ namespace rj
 		GLTFImage emissiveMap;
 	};
 
+	struct GLTFNode
+	{
+		std::vector<uint32_t> children;
+		uint32_t mesh = std::numeric_limits<uint32_t>::max();
+		glm::mat4 local2parent;
+	};
+
 	struct GLTFScene
 	{
 		std::vector<GLTFMesh> meshes;
@@ -165,22 +173,106 @@ namespace rj
 			std::vector<GLTFMaterial> materials;
 			parseMaterial(materials, rootNode.get("materials").get<picojson::array>());
 
+			// Parse scene hierarchy
+			if (!rootNode.contains("nodes") || !rootNode.get("nodes").is<picojson::array>()) throw std::runtime_error("Invalid nodes");
+			std::unordered_map<uint32_t, glm::mat4> meshId2Transform;
+			parseSceneHierarchy(meshId2Transform, rootNode.get("nodes").get<picojson::array>());
+
 			// Parse meshes
 			if (!rootNode.contains("meshes") || !rootNode.get("meshes").is<picojson::array>()) throw std::runtime_error("Invalid meshes");
 			parseMeshes(scene->meshes, rootNode.get("meshes").get<picojson::array>(),
-				accessors, bufferViews, buffers, images, textures, materials);
+				accessors, bufferViews, buffers, images, textures, materials, meshId2Transform);
 		}
 
 	private:
+		void parseSceneHierarchy(std::unordered_map<uint32_t, glm::mat4> &meshId2Transform, const picojson::array &nodes) const
+		{
+			std::unordered_set<uint32_t> rootCandidates;
+			for (uint32_t i = 0; i < static_cast<uint32_t>(nodes.size()); ++i)
+			{
+				rootCandidates.insert(i);
+			}
+
+			std::vector<GLTFNode> ns(nodes.size());
+			uint32_t p = 0;
+
+			for (const auto &node : nodes)
+			{
+				const auto &fields = node.get<picojson::object>();
+
+				GLTFNode &n = ns[p++];
+				if (fields.find("mesh") != fields.end()) n.mesh = static_cast<uint32_t>(fields.at("mesh").get<int64_t>());
+				
+				glm::vec3 trans(0.f);
+				if (fields.find("translation") != fields.end())
+				{
+					const auto &v3 = fields.at("translation").get<picojson::array>();
+					trans = glm::vec3(v3[0].get<double>(), v3[1].get<double>(), v3[2].get<double>());
+				}
+
+				glm::quat rot; // (0, 0, 0, 1);
+				if (fields.find("rotation") != fields.end())
+				{
+					const auto &q = fields.at("rotation").get<picojson::array>();
+					rot = glm::quat(q[3].get<double>(), q[0].get<double>(), q[1].get<double>(), q[2].get<double>());
+				}
+
+				glm::vec3 scale(1.f);
+				if (fields.find("scale") != fields.end())
+				{
+					const auto &v3 = fields.at("scale").get<picojson::array>();
+					scale = glm::vec3(v3[0].get<double>(), v3[1].get<double>(), v3[2].get<double>());
+				}
+
+				glm::mat4 I; // identity
+				n.local2parent = glm::translate(I, trans) * glm::mat4_cast(rot) * glm::scale(I, scale);
+
+				if (fields.find("children") != fields.end())
+				{
+					const auto &children = fields.at("children").get<picojson::array>();
+					for (const auto &childId : children)
+					{
+						n.children.push_back(static_cast<uint32_t>(childId.get<int64_t>()));
+
+						if (rootCandidates.find(n.children.back()) != rootCandidates.end())
+						{
+							rootCandidates.erase(n.children.back());
+						}
+					}
+				}
+			}
+
+			std::function<void (uint32_t, glm::mat4)> visit = [&visit, &meshId2Transform, &ns](uint32_t root, glm::mat4 T)
+			{
+				const auto &n = ns[root];
+				T *= n.local2parent;
+				if (n.mesh != std::numeric_limits<uint32_t>::max()) meshId2Transform[n.mesh] = T;
+				for (auto childId : n.children)
+				{
+					visit(childId, T);
+				}
+			};
+
+			for (auto rc : rootCandidates)
+			{
+				visit(rc, glm::mat4());
+			}
+		}
+
 		void parseMeshes(std::vector<GLTFMesh> &ms, const picojson::array &meshes,
 			const std::vector<GLTFAccessor> &accessors, const std::vector<GLTFBufferView> &bufferViews,
 			const std::vector<GLTFBuffer> &buffers, const std::vector<GLTFImage> &images,
-			const std::vector<GLTFTexture> &textures, const std::vector<GLTFMaterial> &materials) const
+			const std::vector<GLTFTexture> &textures, const std::vector<GLTFMaterial> &materials,
+			const std::unordered_map<uint32_t, glm::mat4> &meshId2Transform) const
 		{
 			std::unordered_map<uint32_t, uint32_t> mat2mesh;
 
-			for (const auto &mesh : meshes)
+			for (uint32_t meshId = 0; meshId < meshes.size(); ++meshId)
 			{
+				const auto &mesh = meshes[meshId];
+
+				glm::mat4 T = meshId2Transform.find(meshId) != meshId2Transform.end() ? meshId2Transform.at(meshId) : glm::mat4();
+				glm::mat4 Tit = glm::transpose(glm::inverse(T));
 				const auto &prims = mesh.get<picojson::object>().at("primitives").get<picojson::array>();
 
 				for (const auto &prim : prims)
@@ -216,6 +308,12 @@ namespace rj
 						uint32_t posStart = static_cast<uint32_t>(m.positions.size());
 						m.positions.resize(m.positions.size() + compCount);
 						memcpy(&m.positions[posStart], &buff[offset], size);
+
+						glm::vec3 *positions = reinterpret_cast<glm::vec3 *>(&m.positions[posStart]);
+						for (uint32_t i = 0; i < acc.count; ++i)
+						{
+							positions[i] = glm::vec3(T * glm::vec4(positions[i], 1.f));
+						}
 					}
 					// Normals
 					{
@@ -229,7 +327,13 @@ namespace rj
 
 						uint32_t nrmStart = static_cast<uint32_t>(m.normals.size());
 						m.normals.resize(m.normals.size() + compCount);
-						memcpy(&m.positions[nrmStart], &buff[offset], size);
+						memcpy(&m.normals[nrmStart], &buff[offset], size);
+
+						glm::vec3 *normals = reinterpret_cast<glm::vec3 *>(&m.normals[nrmStart]);
+						for (uint32_t i = 0; i < acc.count; ++i)
+						{
+							normals[i] = glm::normalize(glm::vec3(Tit * glm::vec4(normals[i], 0.f)));
+						}
 					}
 					// Texture coordinates
 					{
@@ -413,7 +517,7 @@ namespace rj
 
 		void readEntireFile(std::vector<char> &content, const std::string &fn) const
 		{
-			std::ifstream fs(fn);
+			std::ifstream fs(fn, std::ifstream::binary);
 			if (!fs.is_open()) throw std::runtime_error("file: " + fn + " not found");
 
 			fs.seekg(0, std::ifstream::end);

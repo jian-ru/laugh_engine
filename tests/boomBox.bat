@@ -1,0 +1,1 @@
+..\x64\Release\laugh_engine.exe "../assets/boomBox/BoomBox.gltf"
