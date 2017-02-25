@@ -626,17 +626,17 @@ void DeferredRenderer::createColorAttachmentResources()
 	m_lightingResultImage.imageViews[0] = m_vulkanManager.createImageView2D(m_lightingResultImage.image, VK_IMAGE_ASPECT_COLOR_BIT);
 
 	m_lightingResultImage.samplers.resize(1);
-	m_lightingResultImage.samplers[0] = m_vulkanManager.createSampler(VK_FILTER_NEAREST, VK_FILTER_NEAREST, VK_SAMPLER_MIPMAP_MODE_NEAREST,
+	m_lightingResultImage.samplers[0] = m_vulkanManager.createSampler(VK_FILTER_LINEAR, VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_NEAREST,
 		VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 
-	// post effects
+	// post effects - perform post processing on 1/2 resolution for the sake of performance
 	m_postEffectImages.resize(m_numPostEffectImages);
 	for (uint32_t i = 0; i < m_numPostEffectImages; ++i)
 	{
 		auto &image = m_postEffectImages[i];
 		image.format = m_postEffectImageFormats[i];
-		image.width = swapChainExtent.width;
-		image.height = swapChainExtent.height;
+		image.width = swapChainExtent.width >> 1;
+		image.height = swapChainExtent.height >> 1;
 		image.depth = 1;
 		image.mipLevelCount = 1;
 		image.layerCount = 1;
@@ -1371,7 +1371,7 @@ void DeferredRenderer::createStaticMeshPipeline()
 
 #ifdef USE_GLTF
 	// temporary hack
-	m_vulkanManager.graphicsPipelineConfigureRasterizer(VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE, VK_FRONT_FACE_COUNTER_CLOCKWISE);
+	m_vulkanManager.graphicsPipelineConfigureRasterizer(VK_POLYGON_MODE_FILL, VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_COUNTER_CLOCKWISE);
 #endif
 
 	m_vulkanManager.graphicsPipelineConfigureMultisampleState(SAMPLE_COUNT, VK_TRUE, 0.25f);
@@ -1470,7 +1470,7 @@ void DeferredRenderer::createBloomPipelines()
 
 	VkExtent2D swapChainExtent = m_vulkanManager.getSwapChainExtent();
 	m_vulkanManager.graphicsPipelineAddViewportAndScissor(0.f, 0.f,
-		static_cast<float>(swapChainExtent.width), static_cast<float>(swapChainExtent.height));
+		static_cast<float>(swapChainExtent.width >> 1), static_cast<float>(swapChainExtent.height >> 1));
 
 	m_vulkanManager.graphicsPipelineConfigureDepthState(VK_FALSE, VK_FALSE, VK_COMPARE_OP_ALWAYS);
 
@@ -1485,7 +1485,7 @@ void DeferredRenderer::createBloomPipelines()
 	m_vulkanManager.graphicsPipelineAddShaderStage(VK_SHADER_STAGE_FRAGMENT_BIT, fsFileName2);
 
 	m_vulkanManager.graphicsPipelineAddViewportAndScissor(0.f, 0.f,
-		static_cast<float>(swapChainExtent.width), static_cast<float>(swapChainExtent.height));
+		static_cast<float>(swapChainExtent.width >> 1), static_cast<float>(swapChainExtent.height >> 1));
 
 	m_vulkanManager.graphicsPipelineConfigureDepthState(VK_FALSE, VK_FALSE, VK_COMPARE_OP_ALWAYS);
 
@@ -1914,7 +1914,8 @@ void DeferredRenderer::createPostEffectCommandBuffer()
 	m_vulkanManager.cmdEndRenderPass(m_postEffectCommandBuffer);
 
 	// gaussian blur
-	for (uint32_t i = 0; i < 5; ++i)
+	const uint32_t bloomPassCount = 1;
+	for (uint32_t i = 0; i < bloomPassCount; ++i)
 	{
 		// horizontal
 		m_vulkanManager.cmdBeginRenderPass(m_postEffectCommandBuffer, m_bloomRenderPasses[0], m_postEffectFramebuffers[1], clearValues);

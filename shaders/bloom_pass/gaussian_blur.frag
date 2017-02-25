@@ -16,26 +16,18 @@ layout (push_constant) uniform PushConst
 
 void main() 
 {
-	const float weight[5] = {0.227027, 0.1945946, 0.1216216, 0.054054, 0.016216};
+	const int stepCount = 4;
+	const float weights[stepCount] = { 0.249615, 0.192463, 0.051476, 0.006446 };
+	const float offsets[stepCount] = { 0.644342, 2.378848, 4.291111, 6.216607 };
 	
-	vec2 deltaUV = 1.0 / textureSize(inputImage, 0);
-	vec3 result = texture(inputImage, inUV).rgb * weight[0];
+	vec2 deltaUV = (1.0 / textureSize(inputImage, 0)) * vec2(float(pcs.isHorizontal), float(!pcs.isHorizontal));
+	vec3 result = vec3(0.0);
 	
-	if (pcs.isHorizontal)
+	for (int i = 0; i < stepCount; ++i)
 	{
-		for (int i = 1; i < 5; ++i)
-		{
-			result += texture(inputImage, inUV + vec2(deltaUV.s * i, 0.0)).rgb * weight[i];
-			result += texture(inputImage, inUV - vec2(deltaUV.s * i, 0.0)).rgb * weight[i];
-		}
-	}
-	else
-	{
-		for (int i = 1; i < 5; ++i)
-		{
-			result += texture(inputImage, inUV + vec2(0.0, deltaUV.t * i)).rgb * weight[i];
-			result += texture(inputImage, inUV - vec2(0.0, deltaUV.t * i)).rgb * weight[i];
-		}
+		vec2 offset = offsets[i] * deltaUV;
+		vec3 color = texture(inputImage, inUV + offset).rgb + texture(inputImage, inUV - offset).rgb;
+		result += color * weights[i];
 	}
 	
 	outColor = vec4(result, 1.0);
