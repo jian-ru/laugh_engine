@@ -171,6 +171,12 @@ namespace rj
 			if (pos == std::string::npos) return ""; else return fn.substr(pos + 1);
 		}
 
+		inline std::string getBaseDir(const std::string &fn)
+		{
+			auto pos = fn.find_last_of('/');
+			return pos == std::string::npos ? "" : fn.substr(0, pos);
+		}
+
 		std::vector<char> readFile(const std::string& filename)
 		{
 			std::ifstream file(filename, std::ios::ate | std::ios::binary);

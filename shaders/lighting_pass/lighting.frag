@@ -10,9 +10,8 @@ layout (set = 0, binding = 2) uniform sampler2DMS gbuffer2;
 layout (set = 0, binding = 3) uniform sampler2DMS gbuffer3;
 layout (set = 0, binding = 4) uniform sampler2DMS depthImage;
 
-layout (set = 0, binding = 5) uniform samplerCube diffuseIrradianceMap;
-layout (set = 0, binding = 6) uniform samplerCube specularIrradianceMap;
-layout (set = 0, binding = 7) uniform sampler2D brdfLuts[1];
+layout (set = 0, binding = 5) uniform samplerCube specularIrradianceMap;
+layout (set = 0, binding = 6) uniform sampler2D brdfLuts[1];
 
 layout (location = 0) in vec2 inUV;
 
@@ -32,6 +31,7 @@ layout (std140, set = 0, binding = 0) uniform UBO
 {
 	vec3 eyePos;
 	float emissiveStrength;
+	vec4 diffuseSHCoefficients[9];
 	Light pointLights[NUM_LIGHTS];
 };
 
@@ -46,6 +46,31 @@ vec4 unpackRGBA(float packedColor)
 	uint tmp = uint(packedColor);	
 	return vec4((tmp >> 24) & 0xff, (tmp >> 16) & 0xff, (tmp >> 8) & 0xff, tmp & 0xff) 
 		* 0.0039215686274509803921568627451;
+}
+
+vec3 computeDiffuseIrradiance(vec3 nrm)
+{
+	// rotate cosine lobe's SH coefficients so that
+	// nrm is the rotational symmetric axis
+	float c0 = 0.886228; // l = m = 0
+	float c1 = 1.023328 * nrm.y; // l = 1, m = -1
+	float c2 = 1.023328 * nrm.z; // l = 1, m = 0
+	float c3 = 1.023328 * nrm.x; // l = 1, m = 1
+	float c4 = 0.858085 * nrm.x * nrm.y; // l = 2, m = -2
+	float c5 = 0.858085 * nrm.y * nrm.z; // l = 2, m = -1
+	float c6 = 0.247708 * (3.0 * nrm.z * nrm.z - 1.0); // l = 2, m = 0
+	float c7 = 0.858085 * nrm.x * nrm.z; // l = 2, m = 1
+	float c8 = 0.429043 * (nrm.x * nrm.x - nrm.y * nrm.y); // l = 2, m = 2
+	
+	return diffuseSHCoefficients[0].rgb * c0 +
+		diffuseSHCoefficients[1].rgb * c1 +
+		diffuseSHCoefficients[2].rgb * c2 +
+		diffuseSHCoefficients[3].rgb * c3 +
+		diffuseSHCoefficients[4].rgb * c4 +
+		diffuseSHCoefficients[5].rgb * c5 +
+		diffuseSHCoefficients[6].rgb * c6 +
+		diffuseSHCoefficients[7].rgb * c7 +
+		diffuseSHCoefficients[8].rgb * c8;
 }
 
 
@@ -86,7 +111,7 @@ void main()
 			vec3 v = normalize(eyePos.xyz - pos);
 			vec3 r = normalize(reflect(-v, nrm));
 			
-			vec3 diffIr = textureLod(diffuseIrradianceMap, nrm, 0).rgb / 3.1415926;
+			vec3 diffIr = computeDiffuseIrradiance(nrm) * 0.318310;
 			
 			float specMipLevel = roughness * float(pcs.totalMipLevels - 1);
 			vec3 specIr = textureLod(specularIrradianceMap, r, specMipLevel).rgb;

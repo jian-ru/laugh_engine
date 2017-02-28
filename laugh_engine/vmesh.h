@@ -757,12 +757,10 @@ class Skybox : public VMesh
 public:
 	rj::helper_functions::ImageWrapper radianceMap; // unfiltered map
 	rj::helper_functions::ImageWrapper specularIrradianceMap;
-	rj::helper_functions::ImageWrapper diffuseIrradianceMap; // TODO: use spherical harmonics instead
+	glm::vec3 diffuseSHCoefficients[9];
 
 	bool specMapReady = false;
-	bool diffMapReady = false;
 	bool shouldSaveSpecMap = false;
-	bool shouldSaveDiffMap = false;
 
 	Skybox(rj::VManager *pManager) :
 		VMesh{ pManager }
@@ -774,7 +772,7 @@ public:
 		const std::string &modelFileName,
 		const std::string &radianceMapName,
 		const std::string &specMapName,
-		const std::string &diffuseMapName)
+		const std::string &diffuseSHName)
 	{
 		using namespace rj::helper_functions;
 
@@ -826,36 +824,121 @@ public:
 			shouldSaveSpecMap = true;
 		}
 
-		if (diffuseMapName != "")
+		if (diffuseSHName != "")
 		{
-			loadCubemap(&diffuseIrradianceMap, pVulkanManager, diffuseMapName);
-			diffMapReady = true;
+			loadSHCoefficients(diffuseSHName);
 		}
 		else
 		{
-			diffuseIrradianceMap.format = VK_FORMAT_R32G32B32A32_SFLOAT;
-			diffuseIrradianceMap.width = diffuseIrradianceMap.height = DIFF_IRRADIANCE_MAP_SIZE;
-			diffuseIrradianceMap.depth = 1;
-			diffuseIrradianceMap.mipLevelCount = 1;
-			diffuseIrradianceMap.layerCount = 6;
-
-			diffuseIrradianceMap.image =
-				pVulkanManager->createImageCube(diffuseIrradianceMap.width, diffuseIrradianceMap.height, diffuseIrradianceMap.format,
-					VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-					VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-			diffuseIrradianceMap.imageViews.push_back(pVulkanManager->createImageViewCube(diffuseIrradianceMap.image, VK_IMAGE_ASPECT_COLOR_BIT));
-
-			// maxLod == 0.f will cause magFilter to always be used. This is fine if minFilter == maxFilter but
-			// need to be careful
-			diffuseIrradianceMap.samplers.resize(1);
-			diffuseIrradianceMap.samplers[0] = pVulkanManager->createSampler(VK_FILTER_LINEAR, VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_LINEAR,
-				VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-				0.f, 0.f, 0.f, VK_TRUE, 16.f);
-
-			shouldSaveDiffMap = true;
+			computeSHCoefficients(radianceMapName, rj::helper_functions::getBaseDir(radianceMapName) + "/Diffuse_SH.bin");
 		}
 
 		VMesh::load(modelFileName);
+	}
+
+private:
+	void computeSHCoefficients(const std::string &radianceMapName, const std::string &saveFileName = "")
+	{
+		gli::texture_cube rm(gli::load(radianceMapName));
+		if (rm.empty()) throw std::runtime_error("Failed to load: " + radianceMapName);
+
+		uint32_t width = rm.extent().x;
+		uint32_t height = rm.extent().y;
+		float pixelArea = (1.f / float(width)) * (1.f / float(height));
+		memset(diffuseSHCoefficients, 0, sizeof(diffuseSHCoefficients));
+
+		for (uint32_t faceIdx = 0; faceIdx < 6; ++faceIdx)
+		{
+			const glm::vec4 *rgba = reinterpret_cast<const glm::vec4 *>(rm.data(0, faceIdx, 0));
+			glm::vec3 faceNrm = getFaceNormal(faceIdx);
+
+			for (uint32_t py = 0; py < height; ++py)
+			{
+				for (uint32_t px = 0; px < width; ++px)
+				{
+					glm::vec3 wi = getWorldDir(faceIdx, px, py, width, height);
+					float dist2 = glm::dot(wi, wi);
+					wi = glm::normalize(wi);
+					float dw = pixelArea * glm::dot(faceNrm, -wi) / dist2; // differential solid angle
+					glm::vec3 L = glm::vec3(rgba[py * width + px]);
+
+					diffuseSHCoefficients[0] += L * 0.282095f * dw; // l = m = 0
+					diffuseSHCoefficients[1] += L * 0.488603f * wi.y * dw; // l = 1, m = -1
+					diffuseSHCoefficients[2] += L * 0.488603f * wi.z * dw; // l = 1, m = 0
+					diffuseSHCoefficients[3] += L * 0.488603f * wi.x * dw; // l = 1, m = 1
+					diffuseSHCoefficients[4] += L * 1.092548f * wi.x * wi.y * dw; // l = 2, m = -2
+					diffuseSHCoefficients[5] += L * 1.092548f * wi.y * wi.z * dw; // l = 2, m = -1
+					diffuseSHCoefficients[6] += L * 0.315392f * (3.f * wi.z * wi.z - 1.f) * dw; // l = 2, m = 0
+					diffuseSHCoefficients[7] += L * 1.092548f * wi.x * wi.z * dw; // l = 2, m = 1
+					diffuseSHCoefficients[8] += L * 0.546274f * (wi.x * wi.x - wi.y * wi.y) * dw; // l = 2, m = 2
+				}
+			}
+		}
+
+		if (saveFileName != "")
+		{
+			std::ofstream fs(saveFileName, std::ofstream::out | std::ofstream::binary);
+			if (fs.is_open())
+			{
+				fs.write(reinterpret_cast<const char *>(diffuseSHCoefficients), sizeof(diffuseSHCoefficients));
+				fs.close();
+			}
+			else
+			{
+				throw std::runtime_error("Unable to open file: " + saveFileName);
+			}
+		}
+	}
+
+	glm::vec3 getFaceNormal(uint32_t faceIdx) const
+	{
+		glm::vec3 result(0.f);
+		result[faceIdx >> 1] = (faceIdx & 1) ? 1.f : -1.f;
+		return result;
+	}
+
+	glm::vec3 getWorldDir(uint32_t faceIdx, uint32_t px, uint32_t py, uint32_t width, uint32_t height) const
+	{
+		glm::vec2 pixelSize = 1.f / glm::vec2(static_cast<float>(width), static_cast<float>(height));
+		glm::vec2 uv = glm::vec2(static_cast<float>(px) + 0.5f, static_cast<float>(py) + 0.5f) * pixelSize;
+		uv.y = 1.f - uv.y;
+		uv -= 0.5f; // [-0.5, 0.5]
+
+		switch (faceIdx)
+		{
+		case 0: // +x
+			return glm::vec3(0.5f, uv.y, -uv.x); // DDS uses left-handed system. Need to flip z
+		case 1: // -x
+			return glm::vec3(-0.5f, uv.y, uv.x);
+		case 2: // +y
+			return glm::vec3(uv.x, 0.5f, -uv.y);
+		case 3: // -y
+			return glm::vec3(uv.x, -0.5f, uv.y);
+		case 4: // +z
+			return glm::vec3(uv.x, uv.y, 0.5f);
+		case 5: // -z
+			return glm::vec3(-uv.x, uv.y, -0.5f);
+		default:
+			throw std::runtime_error("Invalid face index");
+		}
+	}
+
+	void loadSHCoefficients(const std::string &fn)
+	{
+		std::ifstream fs(fn, std::ifstream::in | std::ifstream::binary);
+
+		if (fs.is_open())
+		{
+			fs.seekg(0, std::ifstream::end);
+			size_t fileSize = fs.tellg();
+			assert(fileSize == sizeof(diffuseSHCoefficients));
+			fs.seekg(0, std::ifstream::beg);
+			fs.read(reinterpret_cast<char *>(diffuseSHCoefficients), fileSize);
+			fs.close();
+		}
+		else
+		{
+			throw std::runtime_error("Invalid file name: " + fn);
+		}
 	}
 };

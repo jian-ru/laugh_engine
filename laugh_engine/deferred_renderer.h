@@ -108,6 +108,7 @@ struct LightingPassUniformBuffer
 {
 	glm::vec3 eyePos;
 	float emissiveStrength;
+	glm::vec4 diffuseSHCoefficients[9];
 	PointLight pointLights[NUM_LIGHTS];
 };
 
@@ -153,7 +154,6 @@ protected:
 	uint32_t m_finalOutputDescriptorSetLayout;
 
 	uint32_t m_brdfLutPipelineLayout;
-	uint32_t m_diffEnvPrefilterPipelineLayout;
 	uint32_t m_specEnvPrefilterPipelineLayout;
 	uint32_t m_skyboxPipelineLayout;
 	uint32_t m_geomPipelineLayout;
@@ -162,7 +162,6 @@ protected:
 	uint32_t m_finalOutputPipelineLayout;
 
 	uint32_t m_brdfLutPipeline;
-	uint32_t m_diffEnvPrefilterPipeline;
 	uint32_t m_specEnvPrefilterPipeline;
 	uint32_t m_skyboxPipeline;
 	uint32_t m_geomPipeline;
@@ -204,7 +203,6 @@ protected:
 	std::vector<uint32_t> m_bloomDescriptorSets;
 	uint32_t m_finalOutputDescriptorSet;
 
-	uint32_t m_diffEnvPrefilterFramebuffer;
 	std::vector<uint32_t> m_specEnvPrefilterFramebuffers;
 	uint32_t m_geomFramebuffer;
 	uint32_t m_lightingFramebuffer;
@@ -261,7 +259,6 @@ protected:
 	virtual void createFinalOutputDescriptorSetLayout();
 
 	virtual void createBrdfLutPipeline();
-	virtual void createDiffEnvPrefilterPipeline();
 	virtual void createSpecEnvPrefilterPipeline();
 	virtual void createSkyboxPipeline();
 	virtual void createStaticMeshPipeline();
@@ -330,6 +327,12 @@ void DeferredRenderer::updateUniformBuffers()
 	m_uTransMats->VP = P * V;
 
 	// update lighting info
+	m_uLightInfo->eyePos = m_camera.position;
+	m_uLightInfo->emissiveStrength = 5.f;
+	for (uint32_t i = 0; i < 9; ++i)
+	{
+		m_uLightInfo->diffuseSHCoefficients[i] = glm::vec4(m_skybox.diffuseSHCoefficients[i], 0.f);
+	}
 	m_uLightInfo->pointLights[0] =
 	{
 		glm::vec4(1.f, 2.f, 2.f, 1.f),
@@ -342,8 +345,6 @@ void DeferredRenderer::updateUniformBuffers()
 		glm::vec3(1.5f, 1.5f, 1.5f),
 		5.f
 	};
-	m_uLightInfo->eyePos = m_camera.position;
-	m_uLightInfo->emissiveStrength = 5.f;
 
 	// update per model information
 	for (auto &model : m_models)
@@ -431,7 +432,6 @@ void DeferredRenderer::createComputePipelines()
 
 void DeferredRenderer::createGraphicsPipelines()
 {
-	createDiffEnvPrefilterPipeline();
 	createSpecEnvPrefilterPipeline();
 	createGeomPassPipeline();
 	createLightingPassPipeline();
@@ -666,9 +666,9 @@ void DeferredRenderer::loadAndPrepareAssets()
 		specProbeFileName = PROBE_BASE_DIR "Specular_HDR.dds";
 	}
 	std::string diffuseProbeFileName = "";
-	if (fileExist(PROBE_BASE_DIR "Diffuse_HDR.dds"))
+	if (fileExist(PROBE_BASE_DIR "Diffuse_SH.bin"))
 	{
-		diffuseProbeFileName = PROBE_BASE_DIR "Diffuse_HDR.dds";
+		diffuseProbeFileName = PROBE_BASE_DIR "Diffuse_SH.bin";
 	}
 	
 	m_skybox.load(skyboxFileName, unfilteredProbeFileName, specProbeFileName, diffuseProbeFileName);
@@ -788,12 +788,6 @@ void DeferredRenderer::createFramebuffers()
 {
 	// Used in final output pass
 	m_finalOutputFramebuffers = m_vulkanManager.createSwapChainFramebuffers(m_finalOutputRenderPass);
-
-	// Diffuse irradiance map pass
-	if (!m_skybox.diffMapReady)
-	{
-		m_diffEnvPrefilterFramebuffer = m_vulkanManager.createFramebuffer(m_specEnvPrefilterRenderPass, { m_skybox.diffuseIrradianceMap.imageViews[0] });
-	}
 
 	// Specular irradiance map pass
 	if (!m_skybox.specMapReady)
@@ -1153,14 +1147,11 @@ void DeferredRenderer::createLightingPassDescriptorSetLayout()
 	// depth image
 	m_vulkanManager.setLayoutAddBinding(4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT);
 
-	// diffuse irradiance map
+	// specular irradiance map (prefiltered environment map)
 	m_vulkanManager.setLayoutAddBinding(5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT);
 
-	// specular irradiance map (prefiltered environment map)
-	m_vulkanManager.setLayoutAddBinding(6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT);
-
 	// BRDF LUT
-	m_vulkanManager.setLayoutAddBinding(7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT);
+	m_vulkanManager.setLayoutAddBinding(6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT);
 
 	m_lightingDescriptorSetLayout = m_vulkanManager.endCreateDescriptorSetLayout();
 }
@@ -1203,48 +1194,6 @@ void DeferredRenderer::createBrdfLutPipeline()
 	m_vulkanManager.beginCreateComputePipeline(m_brdfLutPipelineLayout);
 	m_vulkanManager.computePipelineAddShaderStage(csFileName);
 	m_brdfLutPipeline = m_vulkanManager.endCreateComputePipeline();
-}
-
-void DeferredRenderer::createDiffEnvPrefilterPipeline()
-{
-	if (m_initialized)
-	{
-		m_vulkanManager.destroyPipelineLayout(m_diffEnvPrefilterPipelineLayout);
-		m_vulkanManager.destroyPipeline(m_diffEnvPrefilterPipeline);
-	}
-
-	const std::string vsFileName = "../shaders/env_prefilter_pass/env_prefilter.vert.spv";
-	const std::string gsFileName = "../shaders/env_prefilter_pass/env_prefilter.geom.spv";
-	const std::string fsFileName = "../shaders/env_prefilter_pass/diff_env_prefilter.frag.spv";
-
-	m_vulkanManager.beginCreatePipelineLayout();
-	m_vulkanManager.pipelineLayoutAddDescriptorSetLayouts({ m_specEnvPrefilterDescriptorSetLayout });
-	m_diffEnvPrefilterPipelineLayout = m_vulkanManager.endCreatePipelineLayout();
-
-	m_vulkanManager.beginCreateGraphicsPipeline(m_diffEnvPrefilterPipelineLayout, m_specEnvPrefilterRenderPass, 0);
-
-	m_vulkanManager.graphicsPipelineAddShaderStage(VK_SHADER_STAGE_VERTEX_BIT, vsFileName);
-	m_vulkanManager.graphicsPipelineAddShaderStage(VK_SHADER_STAGE_GEOMETRY_BIT, gsFileName);
-	m_vulkanManager.graphicsPipelineAddShaderStage(VK_SHADER_STAGE_FRAGMENT_BIT, fsFileName);
-
-	auto bindingDesc = Vertex::getBindingDescription();
-	m_vulkanManager.graphicsPipelineAddBindingDescription(bindingDesc.binding, bindingDesc.stride, bindingDesc.inputRate);
-	auto attrDescs = Vertex::getAttributeDescriptions();
-	for (const auto &attrDesc : attrDescs)
-	{
-		m_vulkanManager.graphicsPipelineAddAttributeDescription(attrDesc.location, attrDesc.binding, attrDesc.format, attrDesc.offset);
-	}
-
-	m_vulkanManager.graphicsPipelineConfigureRasterizer(VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE);
-
-	m_vulkanManager.graphicsPipelineConfigureDepthState(VK_FALSE, VK_FALSE, VK_COMPARE_OP_ALWAYS);
-
-	m_vulkanManager.graphicsPipeLineAddColorBlendAttachment(VK_FALSE);
-
-	m_vulkanManager.graphicsPipelineAddDynamicState(VK_DYNAMIC_STATE_VIEWPORT);
-	m_vulkanManager.graphicsPipelineAddDynamicState(VK_DYNAMIC_STATE_SCISSOR);
-
-	m_diffEnvPrefilterPipeline = m_vulkanManager.endCreateGraphicsPipeline();
 }
 
 void DeferredRenderer::createSpecEnvPrefilterPipeline()
@@ -1556,7 +1505,7 @@ void DeferredRenderer::createBrdfLutDescriptorSet()
 
 void DeferredRenderer::createSpecEnvPrefilterDescriptorSet()
 {
-	if (m_skybox.diffMapReady && m_skybox.specMapReady) return;
+	if (m_skybox.specMapReady) return;
 
 	std::vector<rj::DescriptorSetUpdateBufferInfo> bufferInfos(1);
 	bufferInfos[0].bufferName = m_allUniformBuffer.buffer;
@@ -1674,17 +1623,13 @@ void DeferredRenderer::createLightingPassDescriptorSets()
 	imageInfos[0].samplerName = m_depthImage.samplers[0];
 	m_vulkanManager.descriptorSetAddImageDescriptor(4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, imageInfos);
 
-	imageInfos[0].imageViewName = m_skybox.diffuseIrradianceMap.imageViews[0];
-	imageInfos[0].samplerName = m_skybox.diffuseIrradianceMap.samplers[0];
-	m_vulkanManager.descriptorSetAddImageDescriptor(5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, imageInfos);
-
 	imageInfos[0].imageViewName = m_skybox.specularIrradianceMap.imageViews[0];
 	imageInfos[0].samplerName = m_skybox.specularIrradianceMap.samplers[0];
-	m_vulkanManager.descriptorSetAddImageDescriptor(6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, imageInfos);
+	m_vulkanManager.descriptorSetAddImageDescriptor(5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, imageInfos);
 
 	imageInfos[0].imageViewName = m_bakedBRDFs[0].imageViews[0];
 	imageInfos[0].samplerName = m_bakedBRDFs[0].samplers[0];
-	m_vulkanManager.descriptorSetAddImageDescriptor(7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, imageInfos);
+	m_vulkanManager.descriptorSetAddImageDescriptor(6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, imageInfos);
 
 	m_vulkanManager.endUpdateDescriptorSet();
 }
@@ -1769,29 +1714,16 @@ void DeferredRenderer::createBrdfLutCommandBuffer()
 
 void DeferredRenderer::createEnvPrefilterCommandBuffer()
 {
-	if (m_skybox.diffMapReady && m_skybox.specMapReady) return;
+	if (m_skybox.specMapReady) return;
 
 	m_vulkanManager.beginCommandBuffer(m_envPrefilterCommandBuffer);
 
 	m_vulkanManager.cmdBindVertexBuffers(m_envPrefilterCommandBuffer, { m_skybox.vertexBuffer.buffer }, { 0 });
 	m_vulkanManager.cmdBindIndexBuffer(m_envPrefilterCommandBuffer, m_skybox.indexBuffer.buffer, VK_INDEX_TYPE_UINT32);
 
-	// Diffuse prefilter pass
 	std::vector<VkClearValue> clearValues(1);
 	clearValues[0].color = { { 0.f, 0.f, 0.f, 0.f } };
-	m_vulkanManager.cmdBeginRenderPass(m_envPrefilterCommandBuffer, m_specEnvPrefilterRenderPass, m_diffEnvPrefilterFramebuffer, clearValues);
-
-	m_vulkanManager.cmdBindPipeline(m_envPrefilterCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_diffEnvPrefilterPipeline);
-	m_vulkanManager.cmdBindDescriptorSets(m_envPrefilterCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-		m_diffEnvPrefilterPipelineLayout, { m_specEnvPrefilterDescriptorSet });
-
-	m_vulkanManager.cmdSetViewport(m_envPrefilterCommandBuffer, m_diffEnvPrefilterFramebuffer);
-	m_vulkanManager.cmdSetScissor(m_envPrefilterCommandBuffer, m_diffEnvPrefilterFramebuffer);
-
 	const uint32_t numIndices = static_cast<uint32_t>(m_skybox.indexBuffer.size / sizeof(uint32_t));
-	m_vulkanManager.cmdDrawIndexed(m_envPrefilterCommandBuffer, numIndices);
-
-	m_vulkanManager.cmdEndRenderPass(m_envPrefilterCommandBuffer);
 
 	// Specular prefitler pass
 	uint32_t mipLevels = m_skybox.specularIrradianceMap.mipLevelCount;
@@ -2006,7 +1938,7 @@ void DeferredRenderer::prefilterEnvironmentAndComputeBrdfLut()
 	}
 
 	// Prefilter radiance map
-	if (!m_skybox.diffMapReady || !m_skybox.specMapReady)
+	if (!m_skybox.specMapReady)
 	{
 		m_vulkanManager.beginQueueSubmit(VK_QUEUE_GRAPHICS_BIT);
 		m_vulkanManager.queueSubmitNewSubmit({ m_envPrefilterCommandBuffer });
@@ -2024,12 +1956,6 @@ void DeferredRenderer::prefilterEnvironmentAndComputeBrdfLut()
 		{
 			m_vulkanManager.transitionImageLayout(m_bakedBRDFs[0].image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 			m_bakedBrdfReady = true;
-		}
-
-		if (!m_skybox.diffMapReady)
-		{
-			m_vulkanManager.transitionImageLayout(m_skybox.diffuseIrradianceMap.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-			m_skybox.diffMapReady = true;
 		}
 
 		if (!m_skybox.specMapReady)
@@ -2050,16 +1976,6 @@ void DeferredRenderer::savePrecomputationResults()
 
 		rj::helper_functions::saveImage2D(BRDF_BASE_DIR BRDF_NAME,
 			BRDF_LUT_SIZE, BRDF_LUT_SIZE, sizeof(glm::vec2), 1, gli::FORMAT_RG32_SFLOAT_PACK32, hostData.data());
-	}
-
-	if (m_skybox.shouldSaveDiffMap)
-	{
-		std::vector<char> hostData;
-		m_vulkanManager.readImage(hostData, m_skybox.diffuseIrradianceMap.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-
-		rj::helper_functions::saveImageCube(PROBE_BASE_DIR "Diffuse_HDR.dds",
-			DIFF_IRRADIANCE_MAP_SIZE, DIFF_IRRADIANCE_MAP_SIZE, sizeof(glm::vec4),
-			m_skybox.diffuseIrradianceMap.mipLevelCount, gli::FORMAT_RGBA32_SFLOAT_PACK32, hostData.data());
 	}
 
 	if (m_skybox.shouldSaveSpecMap)
