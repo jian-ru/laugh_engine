@@ -48,6 +48,9 @@ A Vulkan implementation of real-time PBR renderer.
     * Performing Gaussian kernel filtering at half resolution
     * Taking advantage of hardware linear filtering to halve the number of texture read operations during the blur pass
   * The first optimization is easy to understand. For the second one, the basic idea is that we can take advantage of hardware linear filtering feature to fetch two texels in one texture read operation, which is usually much cheaper than doing two texture reads. To do that we need to compute modified weights and texture coordinate offsets that are specific to the size/mean and sigma/stddev of the Gaussian kernel used. For more information, you can refer to this article [An investigation of fast real-time GPU-based image blur algorithms](https://software.intel.com/en-us/blogs/2014/07/15/an-investigation-of-fast-real-time-gpu-based-image-blur-algorithms).
+  * Following chart shows the performance difference in milliseconds per frame for different models
+  
+  ![](docs/perf_bloom_optimization.png)
 
 ### Overview
 
