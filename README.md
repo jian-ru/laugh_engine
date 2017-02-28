@@ -36,7 +36,7 @@ A Vulkan implementation of real-time PBR renderer.
 * Spherical Harmonics Diffuse Lighting
   * The lastest update to Laugh Engine implemented spherical harmonics diffuse lighting. It doesn't change too much in terms of speed but it does save a lot of memory and opens up an opportunity for algorithms that bake environment lighting at lots of locations in a scene (e.g. LPV - Light Propogation Volume), which I want to implement in the future.
   * For each environment map, only 9 float3 SH coefficients are needed which take up **9 * 12 = 108 bytes** in contrast to the **32 * 32 * 6 * 16 = 98,304 bytes** storage for a 32x32 cube map which was used to store diffuse irradiance previously. Consequently, a **99.9%** saving in space was achieved in my case. In practice, since diffuse irradiance is a low frequency signal, we probably don't need a 32x32 cube map. But even for a 4x4 cube map, using spherical harmonics still result in **93.0%** saving in space. Such a huge saving thus justified a little extra computation cost required by SH.
-  * The following 6 screenshots the diffuse irradiance recovered using precomputed SH coefficients. It is easy to see that SH successfully captures the tone of the environment (e.g. the bottom of the helmet reflects the yellow tone of desert, the top of the helmet captures the blue sky).
+  * The following 6 screenshots show the diffuse irradiance recovered using precomputed SH coefficients. It is easy to see that SH successfully captures the tone of the environment (e.g. the bottom of the helmet reflects the yellow tone of desert, the top of the helmet captures the blue sky).
   
   | ![](docs/sh_helmet1.png) | ![](docs/sh_helmet2.png) |
   | --- | --- |
@@ -48,9 +48,16 @@ A Vulkan implementation of real-time PBR renderer.
     * Performing Gaussian kernel filtering at half resolution
     * Taking advantage of hardware linear filtering to halve the number of texture read operations during the blur pass
   * The first optimization is easy to understand. For the second one, the basic idea is that we can take advantage of hardware linear filtering feature to fetch two texels in one texture read operation, which is usually much cheaper than doing two texture reads. To do that we need to compute modified weights and texture coordinate offsets that are specific to the size/mean and sigma/stddev of the Gaussian kernel used. For more information, you can refer to this article [An investigation of fast real-time GPU-based image blur algorithms](https://software.intel.com/en-us/blogs/2014/07/15/an-investigation-of-fast-real-time-gpu-based-image-blur-algorithms).
-  * Following chart shows the performance difference in milliseconds per frame for different models
+  * Following chart shows the performance difference in milliseconds per frame for different models. Benchmark was performed on a GTX 1080 graphics card.
   
   ![](docs/perf_bloom_optimization.png)
+  
+* MSAA
+  * I implemented MSAA in my custom resolve shader. The basic idea is that for each type of materials, select a representative sample (if there is any), perform lighting calculation using corresponding material model only for the representatives, and finally, colors of all material types are blended together based on the percentage of samples having that type.
+  * Following chart shows the performance difference between MSAA and SSAA in terms of milliseconds per frame. Performance boost is more salient on models that cover a large portion of the viewport. Test was performed on a GTX 1080 graphics card.
+  
+  ![](docs/perf_msaa.png)
+  
 
 ### Overview
 
@@ -78,19 +85,6 @@ A Vulkan implementation of real-time PBR renderer.
   * Basically no addtional cost by using PBR over Blinn-Phong but we get much better quality
   
   ![](docs/pbr_vs_blinnphong.png)
-  
-* Anti-Aliasing
-  * Increases visual quality (smoother edges and more accurate shading)
-  * Decreases performance. For 2xAA, 4xAA, and 8xAA, frame time is increased by 31%, 70%, and 173%, respectively when compared to no AA
-  * I did custom resolve in a fragment shader because Laugh Engine is deferred. Right now, I am doing lighting computation on each sample so it is basically SSAA not MSAA. I tried to perform computation only once per material type but the performance was much worse because the code that figures out distinct material types is expensive causes a lot of branching (frame time goes up to 8ms for 4xAA). So I will stick to the current scheme until I find a better way.
-  
-  | 1xAA | 2xAA |
-  | --- | --- |
-  | ![](docs/1xaa.png) | ![](docs/2xaa.png) |
-  
-  | 4xAA | 8xAA |
-  | --- | --- |
-  | ![](docs/4xaa.png) | ![](docs/8xaa.png) |
 
 ### Build Instruction
 
