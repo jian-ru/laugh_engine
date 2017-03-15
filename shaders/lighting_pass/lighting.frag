@@ -81,59 +81,65 @@ void main()
 	const ivec2 pixelPos = ivec2(extent * inUV);
 	
 	vec3 finalColor = vec3(0.0);
-	int matIdCounts[NUM_MATERIALS] = { 0, 0 };
-	int matIdRep[NUM_MATERIALS]; // stores representative sample id for each material
+	bool bComplexPixel = false;
+	vec3 firstNrm = texelFetch(gbuffer1, pixelPos, 0).xyz;
 	
-	for (int i = 0; i < NUM_SAMPLES; ++i)
+	// Analyze normal complexity/discontinuity
+	for (int i = 1; i < NUM_SAMPLES; ++i)
 	{
-		int matId = int(round(texelFetch(gbuffer3, pixelPos, i).w * 255.0));
-		++matIdCounts[matId];
-		matIdRep[matId] = i;
+		if (dot(abs(firstNrm - texelFetch(gbuffer1, pixelPos, i).xyz), vec3(1.0)) > 0.1)
+		{
+			bComplexPixel = true;
+			break;
+		}
 	}
 	
-	if (matIdCounts[MAT_ID_HDR_PROBE] > 0)
+	int numIters = bComplexPixel ? NUM_SAMPLES : 1;
+	for (int i = 0; i < numIters; ++i)
 	{
-		finalColor += texelFetch(gbuffer1, pixelPos, matIdRep[MAT_ID_HDR_PROBE]).rgb *
-			float(matIdCounts[MAT_ID_HDR_PROBE]) / NUM_SAMPLES;
-	}
-	
-	if (matIdCounts[MAT_ID_FSCHLICK_DGGX_GSMITH] > 0)
-	{
-		int i = matIdRep[MAT_ID_FSCHLICK_DGGX_GSMITH];
-		vec4 gb1 = texelFetch(gbuffer1, pixelPos, i);
-		vec4 gb2 = texelFetch(gbuffer2, pixelPos, i);
 		vec4 RMAI = texelFetch(gbuffer3, pixelPos, i); // (roughness, metalness, AO, material id)
 		
-		vec3 pos = gb2.xyz;
-		float emissiveness = gb2.w;
-		vec3 nrm = gb1.xyz;
-		vec3 albedo = unpackRGBA(gb1.w).rgb;
-		albedo = pow(albedo, vec3(2.2)); // to linear space
-		
-		float roughness = clamp(RMAI.x, 0.0, 1.0);
-		float metalness = clamp(RMAI.y, 0.0, 1.0);
-		float aoVal = RMAI.z;
-		
-		vec3 v = normalize(eyePos.xyz - pos);
-		vec3 r = normalize(reflect(-v, nrm));
-		
-		vec3 diffIr = computeDiffuseIrradiance(nrm) * 0.318310;
-		
-		float specMipLevel = roughness * float(pcs.totalMipLevels - 1);
-		vec3 specIr = textureLod(specularIrradianceMap, r, specMipLevel).rgb;
-		
-		float NoV = clamp(dot(nrm, v), 0.0, 1.0);
-		vec2 brdfTerm = textureLod(brdfLuts[0], vec2(NoV, clamp(roughness, 0.0, 1.0)), 0).rg;
-		
-		const vec3 dielectricF0 = vec3(0.04);
-		vec3 diffColor = albedo * (1.0 - metalness); // if it is metal, no diffuse color
-		vec3 specColor = mix(dielectricF0, albedo, metalness); // since metal has no albedo, we use the space to store its F0
-		
-		vec3 result = diffColor * diffIr + specIr * (specColor * brdfTerm.x + brdfTerm.y);
-		result *= aoVal;
-		result += albedo * emissiveness * emissiveStrength;
-		finalColor += result * float(matIdCounts[MAT_ID_FSCHLICK_DGGX_GSMITH]) / NUM_SAMPLES;
+		if (round(RMAI.w * 255.0) == MAT_ID_HDR_PROBE)
+		{
+			finalColor += texelFetch(gbuffer1, pixelPos, i).rgb;
+		}
+		else // MAT_ID_FSCHLICK_DGGX_GSMITH
+		{
+			vec4 gb1 = texelFetch(gbuffer1, pixelPos, i);
+			vec4 gb2 = texelFetch(gbuffer2, pixelPos, i);
+			
+			vec3 pos = gb2.xyz;
+			float emissiveness = gb2.w;
+			vec3 nrm = gb1.xyz;
+			vec3 albedo = unpackRGBA(gb1.w).rgb;
+			albedo = pow(albedo, vec3(2.2)); // to linear space
+			
+			float roughness = clamp(RMAI.x, 0.0, 1.0);
+			float metalness = clamp(RMAI.y, 0.0, 1.0);
+			float aoVal = RMAI.z;
+			
+			vec3 v = normalize(eyePos.xyz - pos);
+			vec3 r = normalize(reflect(-v, nrm));
+			
+			vec3 diffIr = computeDiffuseIrradiance(nrm) * 0.318310;
+			
+			float specMipLevel = roughness * float(pcs.totalMipLevels - 1);
+			vec3 specIr = textureLod(specularIrradianceMap, r, specMipLevel).rgb;
+			
+			float NoV = clamp(dot(nrm, v), 0.0, 1.0);
+			vec2 brdfTerm = textureLod(brdfLuts[0], vec2(NoV, clamp(roughness, 0.0, 1.0)), 0).rg;
+			
+			const vec3 dielectricF0 = vec3(0.04);
+			vec3 diffColor = albedo * (1.0 - metalness); // if it is metal, no diffuse color
+			vec3 specColor = mix(dielectricF0, albedo, metalness); // since metal has no albedo, we use the space to store its F0
+			
+			vec3 result = diffColor * diffIr + specIr * (specColor * brdfTerm.x + brdfTerm.y);
+			result *= aoVal;
+			result += albedo * emissiveness * emissiveStrength;
+			
+			finalColor += result;
+		}
 	}
 	
-	outColor = vec4(finalColor, 1.0);
+	outColor = vec4(finalColor / float(numIters), 1.0);
 }
