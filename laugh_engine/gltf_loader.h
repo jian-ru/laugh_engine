@@ -3,6 +3,7 @@
 #include <fstream>
 #include <unordered_set>
 
+#define PICOJSON_USE_INT64
 #include "picojson.h"
 #include "gli/gli.hpp"
 

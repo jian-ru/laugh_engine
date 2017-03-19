@@ -175,7 +175,7 @@ namespace rj
 				pipelineInfo.pRasterizationState = &rasterizerInfo;
 				pipelineInfo.pMultisampleState = &multisamplingInfo;
 				pipelineInfo.pDepthStencilState = &depthStencilInfo;
-				pipelineInfo.pColorBlendState = &colorBlendInfo;
+				pipelineInfo.pColorBlendState = nullptr;
 				pipelineInfo.pDynamicState = nullptr;
 			}
 		};
@@ -947,7 +947,10 @@ namespace rj
 			info.pRasterizationState = &m_curGraphicsPipelineInfo.rasterizerInfo;
 			info.pMultisampleState = &m_curGraphicsPipelineInfo.multisamplingInfo;
 			info.pDepthStencilState = &m_curGraphicsPipelineInfo.depthStencilInfo;
-			info.pColorBlendState = &m_curGraphicsPipelineInfo.colorBlendInfo;
+			if (!m_curGraphicsPipelineInfo.colorBlendAttachmentStates.empty())
+			{
+				info.pColorBlendState = &m_curGraphicsPipelineInfo.colorBlendInfo;
+			}
 			if (!m_curGraphicsPipelineInfo.dynamicStates.empty())
 			{
 				info.pDynamicState = &m_curGraphicsPipelineInfo.dynamicStateInfo;

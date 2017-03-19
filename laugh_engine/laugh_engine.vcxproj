@@ -153,11 +153,20 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="camera.cpp" />
+    <ClCompile Include="deferred_renderer.cpp" />
+    <ClCompile Include="directional_light.cpp" />
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="vbase.cpp" />
+    <ClCompile Include="VDevice.cpp" />
+    <ClCompile Include="VInstance.cpp" />
+    <ClCompile Include="vk_helpers.cpp" />
+    <ClCompile Include="vmesh.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="camera.h" />
     <ClInclude Include="deferred_renderer.h" />
+    <ClInclude Include="directional_light.h" />
     <ClInclude Include="gltf_loader.h" />
     <ClInclude Include="vbase.h" />
     <ClInclude Include="VBuffer.h" />

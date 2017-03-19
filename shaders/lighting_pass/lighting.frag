@@ -5,6 +5,7 @@
 #define MAT_ID_HDR_PROBE 0
 #define MAT_ID_FSCHLICK_DGGX_GSMITH 1
 #define NUM_MATERIALS 2
+#define CSM_MAX_SEG_COUNT 4
 
 layout (set = 0, binding = 1) uniform sampler2DMS gbuffer1;
 layout (set = 0, binding = 2) uniform sampler2DMS gbuffer2;
@@ -13,6 +14,7 @@ layout (set = 0, binding = 4) uniform sampler2DMS depthImage;
 
 layout (set = 0, binding = 5) uniform samplerCube specularIrradianceMap;
 layout (set = 0, binding = 6) uniform sampler2D brdfLuts[1];
+layout (set = 0, binding = 7) uniform sampler2DArrayShadow shadowMaps;
 
 layout (location = 0) in vec2 inUV;
 
@@ -33,12 +35,15 @@ layout (std140, set = 0, binding = 0) uniform UBO
 	vec3 eyePos;
 	float emissiveStrength;
 	vec4 diffuseSHCoefficients[9];
+	vec4 normFarPlaneZs;
+	mat4 lightVPCs[CSM_MAX_SEG_COUNT];
 	Light pointLights[NUM_LIGHTS];
 };
 
 layout (push_constant) uniform pushConstants
 {
 	uint totalMipLevels;
+	int segmentCount;
 } pcs;
 
 
@@ -74,17 +79,39 @@ vec3 computeDiffuseIrradiance(vec3 nrm)
 		diffuseSHCoefficients[8].rgb * c8;
 }
 
+vec3 computeShadowCoords(int seg, vec3 worldPos)
+{
+	vec4 clipCoords = lightVPCs[seg] * vec4(worldPos, 1.0);
+	vec3 ndcCoords = clipCoords.xyz / clipCoords.w;
+	return vec3(ndcCoords.xy * 0.5 + 0.5, ndcCoords.z);
+}
+
+float computeShadowCoef(float sampleDepth, vec3 worldPos, vec3 worldNrm)
+{
+	int seg = pcs.segmentCount - 1;
+	if (sampleDepth < normFarPlaneZs.x) seg = 0;
+	else if (sampleDepth < normFarPlaneZs.y) seg = 1;
+	else if (sampleDepth < normFarPlaneZs.z) seg = 2;
+
+	vec4 shadowCoords;
+	shadowCoords.xyw = computeShadowCoords(seg, worldPos + 0.005 * worldNrm);
+	shadowCoords.w -= 0.005; // Bias to reduce shadow acne
+	shadowCoords.z = float(seg);
+	
+	return texture(shadowMaps, shadowCoords);
+}
+
 
 void main() 
 {
 	const ivec2 extent = textureSize(gbuffer1);
 	const ivec2 pixelPos = ivec2(extent * inUV);
-	
 	vec3 finalColor = vec3(0.0);
-	bool bComplexPixel = false;
-	vec3 firstNrm = texelFetch(gbuffer1, pixelPos, 0).xyz;
 	
 	// Analyze normal complexity/discontinuity
+	bool bComplexPixel = false;
+	vec3 firstNrm = texelFetch(gbuffer1, pixelPos, 0).xyz;
+
 	for (int i = 1; i < NUM_SAMPLES; ++i)
 	{
 		if (dot(abs(firstNrm - texelFetch(gbuffer1, pixelPos, i).xyz), vec3(1.0)) > 0.1)
@@ -94,6 +121,10 @@ void main()
 		}
 	}
 	
+	int validSampleCount = 0;
+	float averageDepth = 0.0;
+	vec3 averageWorldPos = vec3(0.0);
+	vec3 averageWorldNrm = vec3(0.0);
 	int numIters = bComplexPixel ? NUM_SAMPLES : 1;
 	for (int i = 0; i < numIters; ++i)
 	{
@@ -105,6 +136,7 @@ void main()
 		}
 		else // MAT_ID_FSCHLICK_DGGX_GSMITH
 		{
+			float sampleDepth = texelFetch(depthImage, pixelPos, i).r;
 			vec4 gb1 = texelFetch(gbuffer1, pixelPos, i);
 			vec4 gb2 = texelFetch(gbuffer2, pixelPos, i);
 			
@@ -138,8 +170,23 @@ void main()
 			result += albedo * emissiveness * emissiveStrength;
 			
 			finalColor += result;
+			
+			++validSampleCount;
+			averageDepth += sampleDepth;
+			averageWorldPos += pos;
+			averageWorldNrm += nrm;
 		}
 	}
 	
-	outColor = vec4(finalColor / float(numIters), 1.0);
+	float shadowCoef = 1.0;
+	if (validSampleCount > 0)
+	{
+		float fsc = float(validSampleCount);
+		averageDepth /= fsc;
+		averageWorldPos /= fsc;
+		averageWorldNrm = normalize(averageWorldNrm);
+		shadowCoef = computeShadowCoef(averageDepth, averageWorldPos, averageWorldNrm);
+	}
+	shadowCoef = max(shadowCoef, 0.05);
+	outColor = vec4(finalColor * (shadowCoef / float(numIters)), 1.0);
 }

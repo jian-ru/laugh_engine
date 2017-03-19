@@ -68,8 +68,6 @@ void main()
 		return;
 	}
 	
-	if (depth >= 1.0 || depth <= 0.0) return;
-	
 	if (displayMode == 0)
 	{
 		finalColor = applyFilmicToneMap(finalColor);
