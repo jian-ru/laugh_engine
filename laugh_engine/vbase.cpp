@@ -61,7 +61,7 @@ void VBaseGraphics::mainLoop()
 	while (!m_vulkanManager.windowShouldClose())
 	{
 		m_vulkanManager.windowPollEvents();
-
+		
 		updateUniformBuffers();
 		drawFrame();
 	}
@@ -89,6 +89,7 @@ void VBaseGraphics::recreateSwapChain()
 	createDepthResources();
 	createColorAttachmentResources();
 	createFramebuffers();
+	createUniformBuffers();
 	// Image views of G-buffers and lighting result image has changed so
 	// recreation of descriptor sets is necessary
 	createDescriptorSets();

@@ -2,10 +2,14 @@
 
 #extension GL_ARB_separate_shader_objects : enable
 
-#define MAT_ID_HDR_PROBE 0
-#define MAT_ID_FSCHLICK_DGGX_GSMITH 1
-#define NUM_MATERIALS 2
-#define CSM_MAX_SEG_COUNT 4
+#define PI 								3.1415926535897932384626433832795
+#define ONE_OVER_PI						0.31830988618379067153776752674503
+
+#define MAT_ID_HDR_PROBE				0
+#define MAT_ID_FSCHLICK_DGGX_GSMITH 	1
+#define NUM_MATERIALS					2
+#define CSM_MAX_SEG_COUNT				4
+#define MAX_SHADOW_LIGHT_COUNT			2
 
 layout (set = 0, binding = 1) uniform sampler2DMS gbuffer1;
 layout (set = 0, binding = 2) uniform sampler2DMS gbuffer2;
@@ -14,7 +18,7 @@ layout (set = 0, binding = 4) uniform sampler2DMS depthImage;
 
 layout (set = 0, binding = 5) uniform samplerCube specularIrradianceMap;
 layout (set = 0, binding = 6) uniform sampler2D brdfLuts[1];
-layout (set = 0, binding = 7) uniform sampler2DArrayShadow shadowMaps;
+layout (set = 0, binding = 7) uniform sampler2DArrayShadow shadowMaps[1];
 
 layout (location = 0) in vec2 inUV;
 
@@ -23,21 +27,22 @@ layout (location = 0) out vec4 outColor;
 layout (constant_id = 0) const int NUM_LIGHTS = 32;
 layout (constant_id = 1) const int NUM_SAMPLES = 4;
 
-struct Light
+struct DiracLight
 {
-	vec4 position;
-	vec3 color;
-	float radius;
+	vec3 posOrDir;		// world position for point light, direction for directional light
+	int lightVPCsIdx;	// < 0 if doesn't cast shadow. Otherwise, (lightVPCsIdx * CSM_MAX_SEG_COUNT) points to the first lightVPC matrix
+	vec3 color;			// can be greater than one
+	float radius;		// == 0.0 for directional light and > 0.0 for point light
 };
 
 layout (std140, set = 0, binding = 0) uniform UBO 
 {
-	vec3 eyePos;
+	vec3 eyeWorldPos;
 	float emissiveStrength;
 	vec4 diffuseSHCoefficients[9];
 	vec4 normFarPlaneZs;
-	mat4 lightVPCs[CSM_MAX_SEG_COUNT];
-	Light pointLights[NUM_LIGHTS];
+	mat4 lightVPCs[CSM_MAX_SEG_COUNT * MAX_SHADOW_LIGHT_COUNT];
+	DiracLight diracLights[NUM_LIGHTS];
 };
 
 layout (push_constant) uniform pushConstants
@@ -86,7 +91,7 @@ vec3 computeShadowCoords(int seg, vec3 worldPos)
 	return vec3(ndcCoords.xy * 0.5 + 0.5, ndcCoords.z);
 }
 
-float computeShadowCoef(float sampleDepth, vec3 worldPos, vec3 worldNrm)
+float computeShadowCoef(int lightVPCsIdx, float sampleDepth, vec3 worldPos)
 {
 	int seg = pcs.segmentCount - 1;
 	if (sampleDepth < normFarPlaneZs.x) seg = 0;
@@ -94,11 +99,137 @@ float computeShadowCoef(float sampleDepth, vec3 worldPos, vec3 worldNrm)
 	else if (sampleDepth < normFarPlaneZs.z) seg = 2;
 
 	vec4 shadowCoords;
-	shadowCoords.xyw = computeShadowCoords(seg, worldPos + 0.005 * worldNrm);
+	shadowCoords.xyw = computeShadowCoords(CSM_MAX_SEG_COUNT * lightVPCsIdx + seg, worldPos);
 	shadowCoords.w -= 0.005; // Bias to reduce shadow acne
 	shadowCoords.z = float(seg);
 	
-	return texture(shadowMaps, shadowCoords);
+	return texture(shadowMaps[lightVPCsIdx], shadowCoords);
+}
+
+void unpackGbuffers(
+	in ivec2 pixelPos, in int sampleIdx, in vec4 RMAI, out vec3 worldPos, out vec3 worldNrm, out vec3 albedo,
+	out float roughness, out float metalness, out float aoVal, out float emissiveness, out float depth)
+{
+	vec4 gb1 = texelFetch(gbuffer1, pixelPos, sampleIdx);
+	vec4 gb2 = texelFetch(gbuffer2, pixelPos, sampleIdx);
+	depth = texelFetch(depthImage, pixelPos, sampleIdx).r; // [0, 1] non-linear
+	
+	worldPos = gb2.xyz;
+	worldNrm = gb1.xyz;
+	albedo = pow(unpackRGBA(gb1.w).rgb, vec3(2.2)); // to linear space
+	
+	roughness = clamp(RMAI.x, 0.0, 1.0);
+	metalness = clamp(RMAI.y, 0.0, 1.0);
+	aoVal = RMAI.z;
+	emissiveness = gb2.w;
+}
+
+vec3 computeDistantEnvironmentLighting(
+	vec3 worldPos, vec3 worldNrm, vec3 albedo,
+	float roughness, float metalness, float aoVal)
+{
+	vec3 v = normalize(eyeWorldPos.xyz - worldPos);
+	vec3 r = normalize(reflect(-v, worldNrm));
+	
+	vec3 diffIr = computeDiffuseIrradiance(worldNrm) * ONE_OVER_PI;
+	
+	float specMipLevel = roughness * float(pcs.totalMipLevels - 1);
+	vec3 specIr = textureLod(specularIrradianceMap, r, specMipLevel).rgb;
+	
+	float NoV = clamp(dot(worldNrm, v), 0.0, 1.0);
+	vec2 brdfTerm = textureLod(brdfLuts[0], vec2(NoV, clamp(roughness, 0.0, 1.0)), 0).rg;
+	
+	const vec3 dielectricF0 = vec3(0.04);
+	vec3 diffColor = albedo * (1.0 - metalness); // if it is metal, no diffuse color
+	vec3 specColor = mix(dielectricF0, albedo, metalness); // since metal has no albedo, we use the space to store its F0
+	
+	const float distEnvLightStrength = diffuseSHCoefficients[0].w;
+	vec3 distEnvLighting = diffColor * diffIr + specIr * (specColor * brdfTerm.x + brdfTerm.y);
+	distEnvLighting *= aoVal * distEnvLightStrength;
+	
+	return distEnvLighting;
+}
+
+float D_GGX(float NoH, float roughness)
+{
+	float a = roughness * roughness;
+	float a2 = a * a;
+	float denom = NoH * NoH * (a2 - 1.0) + 1.0;
+	denom = 1.0 / (denom * denom);
+	return a2 * denom * ONE_OVER_PI;
+}
+
+float G1_Schlick(float NoX, float k)
+{
+	return NoX * (1.0 / (NoX * (1.0 - k) + k));
+}
+
+float G(float NoL, float NoV, float roughness)
+{
+	float k = (roughness + 1.0) * (roughness + 1.0) * 0.125;
+	return G1_Schlick(NoL, k) * G1_Schlick(NoV, k);
+}
+
+vec3 F_Schlick(vec3 F0, float LoH)
+{
+	return F0 + (vec3(1.0) - F0) * pow(1.0 - LoH, 5.0);
+}
+
+vec3 f_CookTorrance(float NoL, float NoV, float NoH, float LoH, float roughness, vec3 F0)
+{
+	float denom = 4.0 * NoL * NoV;
+	return D_GGX(NoH, roughness) * F_Schlick(F0, LoH) * G(NoL, NoV, roughness) * (1.0 / denom);
+}
+
+vec3 computeDiracLighting(
+	vec3 worldPos, vec3 worldNrm, vec3 albedo,
+	float roughness, float metalness, float depth)
+{
+	const vec3 dielectricF0 = vec3(0.04);
+	vec3 diffColor = albedo * (1.0 - metalness) * ONE_OVER_PI;
+	vec3 specColor = mix(dielectricF0, albedo, metalness);
+	vec3 result = vec3(0.0);
+	vec3 L, V, H, Ir;
+	float NoL, NoV, NoH, LoH;
+	float visibility = 1.0;
+
+	for (int i = 0; i < NUM_LIGHTS; ++i)
+	{
+		DiracLight light = diracLights[i];
+		
+		if (light.radius > 0.0) // point light
+		{
+			L = light.posOrDir - worldPos;
+			float radius = light.radius;
+			float scale = max(0.0, radius - length(L)) / radius;
+			if (scale == 0.0) continue;
+			Ir = light.color * (scale * scale);
+			L = normalize(L);
+		}
+		else // directional light
+		{
+			L = light.posOrDir;
+			Ir = light.color;
+		}
+		
+		NoL = dot(worldNrm, L);
+		if (NoL <= 0.0) continue;
+		V = normalize(eyeWorldPos - worldPos);
+		H = normalize(V + L);
+		NoV = dot(worldNrm, V);
+		NoH = dot(worldNrm, H);
+		LoH = dot(L, H);
+		
+		if (light.lightVPCsIdx >= 0) // this light casts shadow
+		{
+			visibility = computeShadowCoef(light.lightVPCsIdx, depth, worldPos);
+			if (visibility == 0.0) continue;
+		}
+		
+		result += (diffColor + f_CookTorrance(NoL, NoV, NoH, LoH, roughness, specColor)) * Ir * NoL * visibility;
+	}
+	
+	return result;
 }
 
 
@@ -121,11 +252,9 @@ void main()
 		}
 	}
 	
-	int validSampleCount = 0;
-	float averageDepth = 0.0;
-	vec3 averageWorldPos = vec3(0.0);
-	vec3 averageWorldNrm = vec3(0.0);
+	// Lighting computation
 	int numIters = bComplexPixel ? NUM_SAMPLES : 1;
+	
 	for (int i = 0; i < numIters; ++i)
 	{
 		vec4 RMAI = texelFetch(gbuffer3, pixelPos, i); // (roughness, metalness, AO, material id)
@@ -136,57 +265,17 @@ void main()
 		}
 		else // MAT_ID_FSCHLICK_DGGX_GSMITH
 		{
-			float sampleDepth = texelFetch(depthImage, pixelPos, i).r;
-			vec4 gb1 = texelFetch(gbuffer1, pixelPos, i);
-			vec4 gb2 = texelFetch(gbuffer2, pixelPos, i);
+			vec3 worldPos, worldNrm, albedo;
+			float roughness, metalness, aoVal, emissiveness, depth;
 			
-			vec3 pos = gb2.xyz;
-			float emissiveness = gb2.w;
-			vec3 nrm = gb1.xyz;
-			vec3 albedo = unpackRGBA(gb1.w).rgb;
-			albedo = pow(albedo, vec3(2.2)); // to linear space
+			unpackGbuffers(pixelPos, i, RMAI, worldPos, worldNrm, albedo, roughness, metalness, aoVal, emissiveness, depth);
 			
-			float roughness = clamp(RMAI.x, 0.0, 1.0);
-			float metalness = clamp(RMAI.y, 0.0, 1.0);
-			float aoVal = RMAI.z;
-			
-			vec3 v = normalize(eyePos.xyz - pos);
-			vec3 r = normalize(reflect(-v, nrm));
-			
-			vec3 diffIr = computeDiffuseIrradiance(nrm) * 0.318310;
-			
-			float specMipLevel = roughness * float(pcs.totalMipLevels - 1);
-			vec3 specIr = textureLod(specularIrradianceMap, r, specMipLevel).rgb;
-			
-			float NoV = clamp(dot(nrm, v), 0.0, 1.0);
-			vec2 brdfTerm = textureLod(brdfLuts[0], vec2(NoV, clamp(roughness, 0.0, 1.0)), 0).rg;
-			
-			const vec3 dielectricF0 = vec3(0.04);
-			vec3 diffColor = albedo * (1.0 - metalness); // if it is metal, no diffuse color
-			vec3 specColor = mix(dielectricF0, albedo, metalness); // since metal has no albedo, we use the space to store its F0
-			
-			vec3 result = diffColor * diffIr + specIr * (specColor * brdfTerm.x + brdfTerm.y);
-			result *= aoVal;
-			result += albedo * emissiveness * emissiveStrength;
-			
-			finalColor += result;
-			
-			++validSampleCount;
-			averageDepth += sampleDepth;
-			averageWorldPos += pos;
-			averageWorldNrm += nrm;
+			finalColor += computeDistantEnvironmentLighting(worldPos, worldNrm, albedo, roughness, metalness, aoVal);
+			finalColor += computeDiracLighting(worldPos, worldNrm, albedo, roughness, metalness, depth);
+			finalColor += albedo * emissiveness * emissiveStrength;
 		}
 	}
 	
-	float shadowCoef = 1.0;
-	if (validSampleCount > 0)
-	{
-		float fsc = float(validSampleCount);
-		averageDepth /= fsc;
-		averageWorldPos /= fsc;
-		averageWorldNrm = normalize(averageWorldNrm);
-		shadowCoef = computeShadowCoef(averageDepth, averageWorldPos, averageWorldNrm);
-	}
-	shadowCoef = max(shadowCoef, 0.05);
-	outColor = vec4(finalColor * (shadowCoef / float(numIters)), 1.0);
+	outColor = vec4(finalColor / float(numIters), 1.0);
 }
+

@@ -15,7 +15,7 @@ public:
 		const glm::vec3 lookAtPos,
 		float fovy, float aspect,
 		float zNear, float zFar,
-		uint32_t segCount = 4);
+		uint32_t segCount = 3);
 
 	void getViewProjMatrix(glm::mat4 &V, glm::mat4 &P) const;
 	

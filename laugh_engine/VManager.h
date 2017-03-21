@@ -1282,7 +1282,7 @@ namespace rj
 			return bufferName;
 		}
 
-		void desctroyBuffer(uint32_t bufferName)
+		void destroyBuffer(uint32_t bufferName)
 		{
 			assert(std::find(m_availableBufferNames.begin(), m_availableBufferNames.end(), bufferName) == m_availableBufferNames.end());
 			assert(bufferName < m_buffers.size());

@@ -22,6 +22,7 @@ public:
 	const glm::mat4 &getViewMatrix() const { return V; }
 	const glm::mat4 &getProjMatrix() const { return P; }
 	const glm::vec3 &getColor() const { return color; }
+	const glm::vec3 &getDirection() const { return direction; }
 	bool castShadow() const { return bCastShadow; }
 
 protected:

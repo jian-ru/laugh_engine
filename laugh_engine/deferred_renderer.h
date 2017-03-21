@@ -53,7 +53,8 @@
 
 #define BRDF_LUT_SIZE 256
 #define ALL_UNIFORM_BLOB_SIZE (64 * 1024)
-#define NUM_LIGHTS 2
+#define NUM_LIGHTS 1
+#define MAX_SHADOW_LIGHT_COUNT 2
 #define SAMPLE_COUNT VK_SAMPLE_COUNT_4_BIT
 
 #define BRDF_BASE_DIR "../textures/BRDF_LUTs/"
@@ -64,8 +65,8 @@
  //#define PROBE_BASE_DIR "../textures/Environment/MonValley/"
  //#define PROBE_BASE_DIR "../textures/Environment/Canyon/"
 
-#define USE_GLTF
-#define GLTF_2_0
+//#define USE_GLTF
+//#define GLTF_2_0
 
 #ifdef USE_GLTF
 
@@ -76,7 +77,7 @@ extern std::string GLTF_NAME;
 //#define MODEL_NAMES { "Cerberus" }
 //#define MODEL_NAMES { "Jeep_Wagoneer" }
 //#define MODEL_NAMES { "9mm_Pistol" }
-//#define MODEL_NAMES { "Drone_Body", "Drone_Legs", "Floor" }
+#define MODEL_NAMES { "Drone_Body", "Drone_Legs", "Floor" }
 //#define MODEL_NAMES { "Combat_Helmet" }
 //#define MODEL_NAMES { "Bug_Ship" }
 //#define MODEL_NAMES { "Knight_Base", "Knight_Helmet", "Knight_Chainmail", "Knight_Skirt", "Knight_Sword", "Knight_Armor" }
@@ -99,9 +100,10 @@ struct ShadowLightUniformBuffer
 	glm::mat4 lightVPC;
 };
 
-struct PointLight
+struct DiracLight
 {
-	glm::vec4 position;
+	glm::vec3 posOrDir;
+	int lightVPCsIdx;
 	glm::vec3 color;
 	float radius;
 };
@@ -110,12 +112,12 @@ struct PointLight
 // only use data types that are vec4 or multiple of vec4's
 struct LightingPassUniformBuffer
 {
-	glm::vec3 eyePos;
+	glm::vec3 eyeWorldPos;
 	float emissiveStrength;
 	glm::vec4 diffuseSHCoefficients[9];
 	glm::vec4 normFarPlaneZs;
-	glm::mat4 lightVPCs[CSM_MAX_SEG_COUNT];
-	PointLight pointLights[NUM_LIGHTS];
+	glm::mat4 lightVPCs[CSM_MAX_SEG_COUNT * MAX_SHADOW_LIGHT_COUNT];
+	DiracLight diracLights[NUM_LIGHTS];
 };
 
 struct DisplayInfoUniformBuffer
@@ -207,7 +209,7 @@ protected:
 	std::vector<ShadowLightUniformBuffer *> m_uShadowLightInfos;
 	LightingPassUniformBuffer *m_uLightInfo = nullptr;
 	DisplayInfoUniformBuffer *m_uDisplayInfo = nullptr;
-	rj::helper_functions::BufferWrapper m_allUniformBuffer;
+	std::vector<rj::helper_functions::BufferWrapper> m_allUniformBuffers; // one copy for each swapchain image to avoid race condition
 
 	uint32_t m_brdfLutDescriptorSet;
 	uint32_t m_specEnvPrefilterDescriptorSet;
@@ -239,7 +241,7 @@ protected:
 	uint32_t m_geomShadowLightingCommandBuffer;
 	uint32_t m_postEffectCommandBuffer;
 
-	DirectionalLight m_shadowLight{ glm::vec3(1.f, 1.f, 1.f), glm::vec3(-1.f, -1.f, -1.f), glm::vec3(1.f) };
+	DirectionalLight m_shadowLight{ glm::vec3(1.f, 1.f, 1.f), glm::vec3(-1.f, -1.f, -1.f), glm::vec3(2.f) };
 
 
 	virtual void createRenderPasses();

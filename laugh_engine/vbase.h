@@ -34,6 +34,7 @@ public:
 	std::string m_windowTitle = "VBaseGraphics";
 
 	DisplayMode m_displayMode = DISPLAY_MODE_FULL;
+	float m_distEnvLightStrength = .5f;
 
 	static bool leftMBDown, middleMBDown;
 	static float lastX, lastY;

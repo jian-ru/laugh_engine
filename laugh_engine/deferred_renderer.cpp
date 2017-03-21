@@ -1,6 +1,6 @@
 #include "deferred_renderer.h"
 
-#define SHADOW_MAP_SIZE 4096
+#define SHADOW_MAP_SIZE 1024
 
 
 void DeferredRenderer::run()
@@ -36,23 +36,19 @@ void DeferredRenderer::updateUniformBuffers()
 	m_uTransMats->VP = P * V;
 
 	// update lighting info
-	m_uLightInfo->eyePos = m_camera.getPosition();
+	m_uLightInfo->eyeWorldPos = m_camera.getPosition();
 	m_uLightInfo->emissiveStrength = 5.f;
 	for (uint32_t i = 0; i < 9; ++i)
 	{
 		m_uLightInfo->diffuseSHCoefficients[i] = glm::vec4(m_skybox.diffuseSHCoefficients[i], 0.f);
 	}
-	m_uLightInfo->pointLights[0] =
+	m_uLightInfo->diffuseSHCoefficients[0].w = m_distEnvLightStrength;
+	m_uLightInfo->diracLights[0] =
 	{
-		glm::vec4(1.f, 2.f, 2.f, 1.f),
-		glm::vec3(4.f, 4.f, 4.f),
-		5.f
-	};
-	m_uLightInfo->pointLights[1] =
-	{
-		glm::vec4(-0.5f, 2.f, -2.f, 1.f),
-		glm::vec3(1.5f, 1.5f, 1.5f),
-		5.f
+		glm::normalize(-m_shadowLight.getDirection()),
+		0,
+		m_shadowLight.getColor(),
+		0.f
 	};
 
 	// update per model information
@@ -479,28 +475,45 @@ void DeferredRenderer::loadAndPrepareAssets()
 void DeferredRenderer::createUniformBuffers()
 {
 	// host
-	m_uCubeViews = reinterpret_cast<CubeMapCameraUniformBuffer *>(m_allUniformHostData.alloc(sizeof(CubeMapCameraUniformBuffer)));
-	m_uTransMats = reinterpret_cast<TransMatsUniformBuffer *>(m_allUniformHostData.alloc(sizeof(TransMatsUniformBuffer)));
-	m_uLightInfo = reinterpret_cast<LightingPassUniformBuffer *>(m_allUniformHostData.alloc(sizeof(LightingPassUniformBuffer)));
-	m_uDisplayInfo = reinterpret_cast<DisplayInfoUniformBuffer *>(m_allUniformHostData.alloc(sizeof(DisplayInfoUniformBuffer)));
-
-	m_uShadowLightInfos.resize(m_camera.getSegmentCount());
-	for (uint32_t i = 0; i < m_camera.getSegmentCount(); ++i)
+	if (!m_initialized)
 	{
-		m_uShadowLightInfos[i] = reinterpret_cast<ShadowLightUniformBuffer *>(m_allUniformHostData.alloc(sizeof(ShadowLightUniformBuffer)));
-	}
+		m_uCubeViews = reinterpret_cast<CubeMapCameraUniformBuffer *>(m_allUniformHostData.alloc(sizeof(CubeMapCameraUniformBuffer)));
+		m_uTransMats = reinterpret_cast<TransMatsUniformBuffer *>(m_allUniformHostData.alloc(sizeof(TransMatsUniformBuffer)));
+		m_uLightInfo = reinterpret_cast<LightingPassUniformBuffer *>(m_allUniformHostData.alloc(sizeof(LightingPassUniformBuffer)));
+		m_uDisplayInfo = reinterpret_cast<DisplayInfoUniformBuffer *>(m_allUniformHostData.alloc(sizeof(DisplayInfoUniformBuffer)));
 
-	for (auto &model : m_models)
-	{
-		model.uPerModelInfo = reinterpret_cast<PerModelUniformBuffer *>(m_allUniformHostData.alloc(sizeof(PerModelUniformBuffer)));
+		m_uShadowLightInfos.resize(m_camera.getSegmentCount());
+		for (uint32_t i = 0; i < m_camera.getSegmentCount(); ++i)
+		{
+			m_uShadowLightInfos[i] = reinterpret_cast<ShadowLightUniformBuffer *>(m_allUniformHostData.alloc(sizeof(ShadowLightUniformBuffer)));
+		}
+
+		for (auto &model : m_models)
+		{
+			model.uPerModelInfo = reinterpret_cast<PerModelUniformBuffer *>(m_allUniformHostData.alloc(sizeof(PerModelUniformBuffer)));
+		}
 	}
 
 	// device
-	m_allUniformBuffer.size = m_allUniformHostData.size();
-	m_allUniformBuffer.offset = 0;
+	if (m_initialized)
+	{
+		for (const auto &b : m_allUniformBuffers)
+		{
+			m_vulkanManager.destroyBuffer(b.buffer);
+		}
+	}
 
-	m_allUniformBuffer.buffer = m_vulkanManager.createBuffer(m_allUniformBuffer.size, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+	uint32_t swapchainImageCount = m_vulkanManager.getSwapChainSize();
+	m_allUniformBuffers.resize(swapchainImageCount);
+
+	for (uint32_t i = 0; i < swapchainImageCount; ++i)
+	{
+		m_allUniformBuffers[i].size = m_allUniformHostData.size();
+		m_allUniformBuffers[i].offset = 0;
+
+		m_allUniformBuffers[i].buffer = m_vulkanManager.createBuffer(m_allUniformBuffers[i].size, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+	}
 }
 
 void DeferredRenderer::createDescriptorPools()
