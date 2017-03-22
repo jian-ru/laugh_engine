@@ -136,9 +136,6 @@ protected:
 
 	uint32_t m_graphicsCommandPool;
 	uint32_t m_computeCommandPool;
-	std::vector<uint32_t> m_presentCommandBuffers;
-
-	std::vector<uint32_t> m_finalOutputFramebuffers; // present framebuffer names
 
 	Skybox m_skybox{ &m_vulkanManager };
 	std::vector<VMesh> m_models;
@@ -180,7 +177,8 @@ protected:
 	virtual void createCommandBuffers() = 0;
 	virtual void createSynchronizationObjects() = 0; // semaphores, fences, etc. go in here
 
-	virtual void updateUniformBuffers() = 0;
+	virtual void updateUniformHostData() = 0;
+	virtual void updateUniformDeviceData(uint32_t imageIdx) = 0;
 	virtual void updateText(uint32_t imageIdx);
 	virtual void drawFrame() = 0;
 };

@@ -51,36 +51,35 @@
 #include "directional_light.h"
 
 
-#define BRDF_LUT_SIZE 256
-#define ALL_UNIFORM_BLOB_SIZE (64 * 1024)
-#define NUM_LIGHTS 1
-#define MAX_SHADOW_LIGHT_COUNT 2
-#define SAMPLE_COUNT VK_SAMPLE_COUNT_4_BIT
+#define BRDF_LUT_SIZE					256
+#define ONE_TIME_UNIFORM_BLOB_SIZE		1024
+#define PER_FRAME_UNIFORM_BLOB_SIZE		(64 * 1024)
+#define NUM_LIGHTS						1
+#define MAX_SHADOW_LIGHT_COUNT			2
+#define SAMPLE_COUNT					VK_SAMPLE_COUNT_4_BIT
 
-#define BRDF_BASE_DIR "../textures/BRDF_LUTs/"
-#define BRDF_NAME "FSchlick_DGGX_GSmith.dds"
+#define BRDF_BASE_DIR					"../textures/BRDF_LUTs/"
+#define BRDF_NAME						"FSchlick_DGGX_GSmith.dds"
 
-#define PROBE_BASE_DIR "../textures/Environment/PaperMill/"
- //#define PROBE_BASE_DIR "../textures/Environment/Factory/"
- //#define PROBE_BASE_DIR "../textures/Environment/MonValley/"
- //#define PROBE_BASE_DIR "../textures/Environment/Canyon/"
+#define PROBE_BASE_DIR					"../textures/Environment/PaperMill/"
+ //#define PROBE_BASE_DIR					"../textures/Environment/Factory/"
+ //#define PROBE_BASE_DIR					"../textures/Environment/MonValley/"
+ //#define PROBE_BASE_DIR					"../textures/Environment/Canyon/"
 
 //#define USE_GLTF
-//#define GLTF_2_0
 
 #ifdef USE_GLTF
-
+//#define GLTF_2_0
 extern std::string GLTF_VERSION;
 extern std::string GLTF_NAME;
-
 #else
-//#define MODEL_NAMES { "Cerberus" }
-//#define MODEL_NAMES { "Jeep_Wagoneer" }
-//#define MODEL_NAMES { "9mm_Pistol" }
-#define MODEL_NAMES { "Drone_Body", "Drone_Legs", "Floor" }
-//#define MODEL_NAMES { "Combat_Helmet" }
-//#define MODEL_NAMES { "Bug_Ship" }
-//#define MODEL_NAMES { "Knight_Base", "Knight_Helmet", "Knight_Chainmail", "Knight_Skirt", "Knight_Sword", "Knight_Armor" }
+//#define MODEL_NAMES						{ "Cerberus" }
+//#define MODEL_NAMES						{ "Jeep_Wagoneer" }
+//#define MODEL_NAMES						{ "9mm_Pistol" }
+#define MODEL_NAMES						{ "Drone_Body", "Drone_Legs", "Floor" }
+//#define MODEL_NAMES						{ "Combat_Helmet" }
+//#define MODEL_NAMES						{ "Bug_Ship" }
+//#define MODEL_NAMES						{ "Knight_Base", "Knight_Helmet", "Knight_Chainmail", "Knight_Skirt", "Knight_Sword", "Knight_Armor" }
 #endif
 
 
@@ -123,7 +122,6 @@ struct LightingPassUniformBuffer
 struct DisplayInfoUniformBuffer
 {
 	typedef int DisplayMode_t;
-	
 	DisplayMode_t displayMode;
 };
 
@@ -141,7 +139,8 @@ public:
 
 		VkPhysicalDeviceProperties props;
 		m_vulkanManager.getPhysicalDeviceProperties(&props);
-		m_allUniformHostData.setAlignment(props.limits.minUniformBufferOffsetAlignment);
+		m_oneTimeUniformHostData.setAlignment(props.limits.minUniformBufferOffsetAlignment);
+		m_perFrameUniformHostData.setAlignment(props.limits.minUniformBufferOffsetAlignment);
 	}
 
 	virtual void run();
@@ -203,29 +202,36 @@ protected:
 	};
 	std::vector<rj::helper_functions::ImageWrapper> m_postEffectImages; // Image1: VK_FORMAT_R16G16B16A16_SFLOAT, Image2: VK_FORMAT_R16G16B16A16_SFLOAT
 
-	rj::helper_functions::UniformBlob<ALL_UNIFORM_BLOB_SIZE> m_allUniformHostData;
+	rj::helper_functions::UniformBlob<ONE_TIME_UNIFORM_BLOB_SIZE> m_oneTimeUniformHostData;
+	rj::helper_functions::UniformBlob<PER_FRAME_UNIFORM_BLOB_SIZE> m_perFrameUniformHostData;
 	CubeMapCameraUniformBuffer *m_uCubeViews = nullptr;
 	TransMatsUniformBuffer *m_uTransMats = nullptr;
 	std::vector<ShadowLightUniformBuffer *> m_uShadowLightInfos;
 	LightingPassUniformBuffer *m_uLightInfo = nullptr;
 	DisplayInfoUniformBuffer *m_uDisplayInfo = nullptr;
-	std::vector<rj::helper_functions::BufferWrapper> m_allUniformBuffers; // one copy for each swapchain image to avoid race condition
+	rj::helper_functions::BufferWrapper m_oneTimeUniformDeviceData;
+	std::vector<rj::helper_functions::BufferWrapper> m_perFrameUniformDeviceData;
 
 	uint32_t m_brdfLutDescriptorSet;
 	uint32_t m_specEnvPrefilterDescriptorSet;
-	uint32_t m_skyboxDescriptorSet;
-	std::vector<uint32_t> m_geomDescriptorSets; // one set per model
-	std::vector<uint32_t> m_shadowDescriptorSets1; // one set per segment
-	std::vector<uint32_t> m_shadowDescriptorSets2; // one per model
-	uint32_t m_lightingDescriptorSet;
-	std::vector<uint32_t> m_bloomDescriptorSets;
-	uint32_t m_finalOutputDescriptorSet;
+	typedef struct
+	{
+		uint32_t m_skyboxDescriptorSet;
+		std::vector<uint32_t> m_geomDescriptorSets; // one set per model
+		std::vector<uint32_t> m_shadowDescriptorSets1; // one set per segment
+		std::vector<uint32_t> m_shadowDescriptorSets2; // one per model
+		uint32_t m_lightingDescriptorSet;
+		std::vector<uint32_t> m_bloomDescriptorSets;
+		uint32_t m_finalOutputDescriptorSet;
+	} PerFrameDescriptorSets;
+	std::vector<PerFrameDescriptorSets> m_perFrameDescriptorSets;
 
 	std::vector<uint32_t> m_specEnvPrefilterFramebuffers;
 	uint32_t m_geomFramebuffer;
 	uint32_t m_shadowFramebuffer;
 	uint32_t m_lightingFramebuffer;
 	std::vector<uint32_t> m_postEffectFramebuffers;
+	std::vector<uint32_t> m_finalOutputFramebuffers; // present framebuffer names
 
 	uint32_t m_imageAvailableSemaphore;
 	uint32_t m_geomAndLightingCompleteSemaphore;
@@ -235,11 +241,17 @@ protected:
 
 	uint32_t m_brdfLutFence;
 	uint32_t m_envPrefilterFence;
+	uint32_t m_renderFinishedFence;
 
 	uint32_t m_brdfLutCommandBuffer;
 	uint32_t m_envPrefilterCommandBuffer;
-	uint32_t m_geomShadowLightingCommandBuffer;
-	uint32_t m_postEffectCommandBuffer;
+	typedef struct
+	{
+		uint32_t m_geomShadowLightingCommandBuffer;
+		uint32_t m_postEffectCommandBuffer;
+		uint32_t m_presentCommandBuffer;
+	} PerFrameCommandBuffers;
+	std::vector<PerFrameCommandBuffers> m_perFrameCommandBuffers;
 
 	DirectionalLight m_shadowLight{ glm::vec3(1.f, 1.f, 1.f), glm::vec3(-1.f, -1.f, -1.f), glm::vec3(2.f) };
 
@@ -260,7 +272,8 @@ protected:
 	virtual void createCommandBuffers();
 	virtual void createSynchronizationObjects(); // semaphores, fences, etc. go in here
 
-	virtual void updateUniformBuffers();
+	virtual void updateUniformHostData();
+	virtual void updateUniformDeviceData(uint32_t imgIdx);
 	virtual void drawFrame();
 
 	// Helpers
@@ -306,8 +319,8 @@ protected:
 
 	virtual void createBrdfLutCommandBuffer();
 	virtual void createEnvPrefilterCommandBuffer();
-	virtual void createGeomShadowLightingCommandBuffer();
-	virtual void createPostEffectCommandBuffer();
+	virtual void createGeomShadowLightingCommandBuffers();
+	virtual void createPostEffectCommandBuffers();
 	virtual void createPresentCommandBuffers();
 
 	virtual void prefilterEnvironmentAndComputeBrdfLut();

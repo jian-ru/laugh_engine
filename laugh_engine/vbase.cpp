@@ -39,19 +39,11 @@ void VBaseGraphics::initVulkan()
 
 void VBaseGraphics::updateText(uint32_t imageIdx)
 {
-	m_textOverlay.waitForFence(imageIdx);
-	m_perfTimer.stop();
-
 	m_textOverlay.beginTextUpdate();
 
 	std::stringstream ss;
 	ss << m_windowTitle << " - ver" << m_verNumMajor << "." << m_verNumMinor;
 	m_textOverlay.addText(ss.str(), 5.0f, 5.0f, VTextOverlay::alignLeft);
-
-	ss = std::stringstream();
-	float averageMsPerFrame = m_perfTimer.getAverageTime();
-	ss << std::fixed << std::setprecision(2) << "Frame time: " << averageMsPerFrame << " ms (" << 1000.f / averageMsPerFrame << " FPS)";
-	m_textOverlay.addText(ss.str(), 5.f, 25.f, VTextOverlay::alignLeft);
 
 	m_textOverlay.endTextUpdate(imageIdx);
 }
@@ -62,7 +54,7 @@ void VBaseGraphics::mainLoop()
 	{
 		m_vulkanManager.windowPollEvents();
 		
-		updateUniformBuffers();
+		updateUniformHostData();
 		drawFrame();
 	}
 

@@ -39,7 +39,6 @@ public:
 		createDescriptorSets();
 		createRenderPasses();
 		createPipelines();
-		createFences();
 	}
 
 	void beginTextUpdate()
@@ -153,17 +152,13 @@ public:
 		uint32_t bufferindex, 
 		const std::vector<uint32_t> &waitSemaphores,
 		const std::vector<VkPipelineStageFlags> &waitStages, 
-		const std::vector<uint32_t> &signalSemaphores) const
+		const std::vector<uint32_t> &signalSemaphores,
+		uint32_t fence = std::numeric_limits<uint32_t>::max(),
+		bool waitFence = false) const
 	{
 		pManager->beginQueueSubmit(VK_QUEUE_GRAPHICS_BIT);
 		pManager->queueSubmitNewSubmit({ commandBuffers[bufferindex] }, waitSemaphores, waitStages, signalSemaphores);
-		pManager->endQueueSubmit(fences[bufferindex], false);
-	}
-
-	void waitForFence(uint32_t idx)
-	{
-		pManager->waitForFences({ fences[idx] });
-		pManager->resetFences({ fences[idx] });
+		pManager->endQueueSubmit(fence, waitFence);
 	}
 
 private:
@@ -181,7 +176,6 @@ private:
 	uint32_t pipelineLayout;
 	uint32_t pipeline;
 	std::vector<uint32_t> commandBuffers;
-	std::vector<uint32_t> fences;
 
 	stb_fontchar fontDescriptors[STB_NUM_CHARS]; // meta info like x/y offsets to upper left corner of a character window. s/t texture coordinates
 	glm::vec4 *mapped = nullptr;
@@ -219,17 +213,6 @@ private:
 			return attributeDescriptions;
 		}
 	};
-
-	void createFences()
-	{
-		uint32_t count = pManager->getSwapChainSize();
-		fences.resize(count);
-
-		for (auto &fence : fences)
-		{
-			fence = pManager->createFence(VK_FENCE_CREATE_SIGNALED_BIT);
-		}
-	}
 
 	void createCommandPools()
 	{
