@@ -30,7 +30,7 @@ layout (constant_id = 1) const int NUM_SAMPLES = 4;
 struct DiracLight
 {
 	vec3 posOrDir;		// world position for point light, direction for directional light
-	int lightVPCsIdx;	// < 0 if doesn't cast shadow. Otherwise, (lightVPCsIdx * CSM_MAX_SEG_COUNT) points to the first lightVPC matrix
+	int idx;			// < 0 if doesn't cast shadow. Otherwise, (idx * CSM_MAX_SEG_COUNT) points to the first cascade scale/offset
 	vec3 color;			// can be greater than one
 	float radius;		// == 0.0 for directional light and > 0.0 for point light
 };
@@ -41,7 +41,7 @@ layout (std140, set = 0, binding = 0) uniform UBO
 	float emissiveStrength;
 	vec4 diffuseSHCoefficients[9];
 	vec4 normFarPlaneZs;
-	mat4 lightVPCs[CSM_MAX_SEG_COUNT * MAX_SHADOW_LIGHT_COUNT];
+	mat4 cascadeVPs[CSM_MAX_SEG_COUNT * MAX_SHADOW_LIGHT_COUNT];
 	DiracLight diracLights[NUM_LIGHTS];
 };
 
@@ -49,6 +49,7 @@ layout (push_constant) uniform pushConstants
 {
 	uint totalMipLevels;
 	int segmentCount;
+	int pcfKernelSize;
 } pcs;
 
 
@@ -84,14 +85,30 @@ vec3 computeDiffuseIrradiance(vec3 nrm)
 		diffuseSHCoefficients[8].rgb * c8;
 }
 
-vec3 computeShadowCoords(int seg, vec3 worldPos)
+vec3 computeShadowCoords(int idx, vec3 worldPos)
 {
-	vec4 clipCoords = lightVPCs[seg] * vec4(worldPos, 1.0);
-	vec3 ndcCoords = clipCoords.xyz / clipCoords.w;
-	return vec3(ndcCoords.xy * 0.5 + 0.5, ndcCoords.z);
+	vec4 clipPos = cascadeVPs[idx] * vec4(worldPos, 1.0);
+	vec3 ndcPos = clipPos.xyz / clipPos.w;
+	return vec3(ndcPos.xy * 0.5 + 0.5, ndcPos.z);
 }
 
-float computeShadowCoef(int lightVPCsIdx, float sampleDepth, vec3 worldPos)
+float pcfPercentLit(int lightIdx, vec4 shadowCoords, vec2 texelSize)
+{
+	int offset = pcs.pcfKernelSize >> 1;
+	float result = 0.0;
+	
+	for (int du = -offset; du <= offset; ++du)
+	{
+		for (int dv = -offset; dv <= offset; ++dv)
+		{
+			result += texture(shadowMaps[lightIdx], shadowCoords + vec4(vec2(du, dv) * texelSize, 0.0, 0.0));
+		}
+	}
+	
+	return result / float(pcs.pcfKernelSize * pcs.pcfKernelSize);
+}
+
+float computeShadowCoef(int lightIdx, float sampleDepth, vec3 worldPos, vec2 texelSize)
 {
 	int seg = pcs.segmentCount - 1;
 	if (sampleDepth < normFarPlaneZs.x) seg = 0;
@@ -99,11 +116,11 @@ float computeShadowCoef(int lightVPCsIdx, float sampleDepth, vec3 worldPos)
 	else if (sampleDepth < normFarPlaneZs.z) seg = 2;
 
 	vec4 shadowCoords;
-	shadowCoords.xyw = computeShadowCoords(CSM_MAX_SEG_COUNT * lightVPCsIdx + seg, worldPos);
-	shadowCoords.w -= 0.005; // Bias to reduce shadow acne
+	shadowCoords.xyw = computeShadowCoords(CSM_MAX_SEG_COUNT * lightIdx + seg, worldPos);
+	shadowCoords.w -= 0.002; // Bias to reduce shadow acne
 	shadowCoords.z = float(seg);
 	
-	return texture(shadowMaps[lightVPCsIdx], shadowCoords);
+	return pcfPercentLit(lightIdx, shadowCoords, texelSize);
 }
 
 void unpackGbuffers(
@@ -220,9 +237,10 @@ vec3 computeDiracLighting(
 		NoH = dot(worldNrm, H);
 		LoH = dot(L, H);
 		
-		if (light.lightVPCsIdx >= 0) // this light casts shadow
+		if (light.idx >= 0) // this light casts shadow
 		{
-			visibility = computeShadowCoef(light.lightVPCsIdx, depth, worldPos);
+			vec2 texelSize = vec2(1.0) / vec2(textureSize(shadowMaps[light.idx], 0).xy);
+			visibility = computeShadowCoef(light.idx, depth, worldPos, texelSize);
 			if (visibility == 0.0) continue;
 		}
 		

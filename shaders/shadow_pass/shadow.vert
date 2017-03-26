@@ -6,7 +6,7 @@ layout (location = 0) in vec3 inPosition;
 
 layout (std140, set = 0, binding = 0) uniform UBO 
 {
-	mat4 lightVPC;
+	mat4 cascadeVP;
 };
 
 layout (std140, set = 1, binding = 1) uniform UBO_per_model
@@ -23,5 +23,5 @@ out gl_PerVertex
 
 void main() 
 {
-	gl_Position = lightVPC * M * vec4(inPosition, 1.0);
+	gl_Position = cascadeVP * (M * vec4(inPosition, 1.0));
 }

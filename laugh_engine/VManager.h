@@ -810,8 +810,8 @@ namespace rj
 		}
 
 		void graphicsPipelineConfigureRasterizer(VkPolygonMode polygonMode, VkCullModeFlags cullMode, VkFrontFace frontFace, float lineWidth = 1.f,
-			VkBool32 depthBiasEnable = VK_FALSE, float depthBiasConstantFactor = 0.f, float depthBiasSlopeFactor = 1.f,
-			VkBool32 depthClampEnable = VK_FALSE, float depthBiasClamp = 1.f,
+			VkBool32 depthBiasEnable = VK_FALSE, float depthBiasConstantFactor = 0.f, float depthBiasSlopeFactor = 0.f,
+			VkBool32 depthClampEnable = VK_FALSE, float depthBiasClamp = 0.f,
 			VkBool32 rasterizerDiscardEnable = VK_FALSE, VkPipelineRasterizationStateCreateFlags flags = 0)
 		{
 			auto &info = m_curGraphicsPipelineInfo.rasterizerInfo;

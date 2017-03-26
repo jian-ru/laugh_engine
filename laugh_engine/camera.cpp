@@ -62,69 +62,39 @@ inline void bboxUnion(const glm::vec3 &p, glm::vec3 *pMin, glm::vec3 *pMax)
 	*pMax = glm::max(*pMax, p);
 }
 
-void Camera::getCornersWorldSpace(float zNear, float zFar, std::vector<glm::vec4> *corners) const
+void Camera::getSegmentDepths(std::vector<float> *segDepths) const
 {
-	auto f = glm::normalize(lookAtPos - position);
-	auto r = glm::normalize(glm::cross(f, glm::vec3(0.f, 1.f, 0.f)));
-	auto u = glm::cross(r, f);
-
-	const float tanHalfFovy = tanf(fovy * 0.5f);
-	auto fNear = zNear * f;
-	auto uNear = zNear * tanHalfFovy * u;
-	auto rNear = zNear * tanHalfFovy * aspectRatio * r;
-	auto fFar = zFar * f;
-	auto uFar = zFar * tanHalfFovy * u;
-	auto rFar = zFar * tanHalfFovy * aspectRatio * r;
-
-	*corners =
+	assert(segDepths);
+	segDepths->resize(segmentCount);
+	for (int i = 0; i < segmentCount; ++i)
 	{
-		glm::vec4(position + fNear + uNear + rNear, 1.f),
-		glm::vec4(position + fNear + uNear - rNear, 1.f),
-		glm::vec4(position + fNear - uNear - rNear, 1.f),
-		glm::vec4(position + fNear - uNear + rNear, 1.f),
-		glm::vec4(position + fFar + uFar + rFar, 1.f),
-		glm::vec4(position + fFar + uFar - rFar, 1.f),
-		glm::vec4(position + fFar - uFar - rFar, 1.f),
-		glm::vec4(position + fFar - uFar + rFar, 1.f)
-	};
-}
-
-void Camera::computeFrustumBBox(const glm::mat4 &worldToX, glm::vec3 *pMin, glm::vec3 *pMax) const
-{
-	assert(pMin && pMax);
-
-	std::vector<glm::vec4> corners;
-	getCornersWorldSpace(zNear, zFar, &corners);
-
-	*pMin = glm::vec3(std::numeric_limits<float>::max());
-	*pMax = glm::vec3(-std::numeric_limits<float>::max());
-
-	for (const auto &c : corners)
-	{
-		auto corner = worldToX * c;
-		corner /= corner.w;
-		bboxUnion(glm::vec3(corner), pMin, pMax);
+		float nearClip = i == 0 ? zNear : -farPlaneZs[i - 1];
+		float farClip = -farPlaneZs[i];
+		(*segDepths)[i] = farClip - nearClip;
 	}
 }
 
-void Camera::computeSegmentBBox(uint32_t segIdx, const glm::mat4 &worldToX, glm::vec3 *pMin, glm::vec3 *pMax) const
+void Camera::getCornersWorldSpace(std::vector<glm::vec3> *corners) const
 {
-	assert(pMin && pMax);
-	assert(segIdx < segmentCount);
+	assert(corners);
+	const auto f = glm::normalize(lookAtPos - position);
+	const auto r = glm::normalize(glm::cross(f, glm::vec3(0.f, 1.f, 0.f)));
+	const auto u = glm::cross(r, f);
+	const float tanHalfFovy = tanf(fovy * 0.5f);
 
-	const float n = segIdx == 0 ? 0.f : -farPlaneZs[segIdx - 1];
-	const float f = -farPlaneZs[segIdx];
-	std::vector<glm::vec4> corners;
-	getCornersWorldSpace(n, f, &corners);
+	corners->resize(segmentCount * 4 + 4);
 
-	*pMin = glm::vec3(std::numeric_limits<float>::max());
-	*pMax = glm::vec3(-std::numeric_limits<float>::max());
-
-	for (const auto &c : corners)
+	for (uint32_t i = 0; i <= segmentCount; ++i)
 	{
-		auto corner = worldToX * c;
-		corner /= corner.w;
-		bboxUnion(glm::vec3(corner), pMin, pMax);
+		float depth = i == 0 ? zNear : -farPlaneZs[i - 1];
+		auto df = depth * f;
+		auto du = depth * tanHalfFovy * u;
+		auto dr = depth * tanHalfFovy * aspectRatio * r;
+
+		(*corners)[4 * i] = position + df + du + dr;
+		(*corners)[4 * i + 1] = position + df + du - dr;
+		(*corners)[4 * i + 2] = position + df - du - dr;
+		(*corners)[4 * i + 3] = position + df - du + dr;
 	}
 }
 

@@ -248,3 +248,66 @@ namespace rj
 		}
 	}
 }
+
+BBox BBox::getTransformedAABB(const glm::mat4 & T) const
+{
+	glm::vec4 corners[8] =
+	{
+		glm::vec4(max.x, max.y, min.z, 1.f),
+		glm::vec4(min.x, max.y, min.z, 1.f),
+		glm::vec4(min.x, min.y, min.z, 1.f),
+		glm::vec4(max.x, min.y, min.z, 1.f),
+		glm::vec4(max.x, max.y, max.z, 1.f),
+		glm::vec4(min.x, max.y, max.z, 1.f),
+		glm::vec4(min.x, min.y, max.z, 1.f),
+		glm::vec4(max.x, min.y, max.z, 1.f)
+	};
+	
+	BBox result;
+	for (uint32_t i = 0; i < 8; ++i)
+	{
+		auto c = glm::vec3(T * corners[i]);
+		result.min = glm::min(result.min, c);
+		result.max = glm::max(result.max, c);
+	}
+
+	return result;
+}
+
+VMesh::VMesh(rj::VManager * pManager)
+	:
+	pVulkanManager(pManager),
+	scale(1.f)
+{
+	albedoMap.image = std::numeric_limits<uint32_t>::max();
+	normalMap.image = std::numeric_limits<uint32_t>::max();
+	roughnessMap.image = std::numeric_limits<uint32_t>::max();
+	metalnessMap.image = std::numeric_limits<uint32_t>::max();
+	aoMap.image = std::numeric_limits<uint32_t>::max();
+	emissiveMap.image = std::numeric_limits<uint32_t>::max();
+}
+
+void VMesh::setPosition(const glm::vec3 & newPos)
+{
+	worldPosition = newPos;
+}
+
+void VMesh::setRotation(const glm::quat & newRot)
+{
+	worldRotation = newRot;
+}
+
+void VMesh::setScale(float newScale)
+{
+	scale = newScale;
+}
+
+BBox VMesh::getAABBWorldSpace() const
+{
+	auto T = glm::mat4_cast(worldRotation);
+	T[0] *= scale;
+	T[1] *= scale;
+	T[2] *= scale;
+	T[3] = glm::vec4(worldPosition, 1.f);
+	return bounds.getTransformedAABB(T);
+}

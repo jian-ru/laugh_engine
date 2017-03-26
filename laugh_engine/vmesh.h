@@ -65,6 +65,7 @@ struct Vertex
 	}
 };
 
+// Actually AABB
 struct BBox
 {
 	glm::vec3 min;
@@ -74,6 +75,8 @@ struct BBox
 
 	BBox(const glm::vec3 &_min, const glm::vec3 &_max)
 		: min(_min), max(_max) {}
+
+	BBox getTransformedAABB(const glm::mat4 &T) const;
 };
 
 namespace std
@@ -137,11 +140,6 @@ public:
 
 	PerModelUniformBuffer *uPerModelInfo = nullptr;
 	bool uniformDataChanged = true;
-	
-	glm::vec3 worldPosition{ 0.f, 0.f, 0.f };
-	glm::quat worldRotation{ glm::vec3(0.f, 0.f, 0.f) }; // Euler angles to quaternion
-	float scale = 1.f;
-	BBox bounds;
 
 	rj::helper_functions::BufferWrapper vertexBuffer;
 	rj::helper_functions::BufferWrapper indexBuffer;
@@ -302,7 +300,7 @@ public:
 							hostVertices[vertOffset + i].pos = glm::vec3(pos[0], pos[1], pos[2]);
 
 							retMesh.bounds.max = glm::max(retMesh.bounds.max, hostVertices[vertOffset + i].pos);
-							retMesh.bounds.min = glm::min(retMesh.bounds.max, hostVertices[vertOffset + i].pos);
+							retMesh.bounds.min = glm::min(retMesh.bounds.min, hostVertices[vertOffset + i].pos);
 						}
 					}
 					// Normal
@@ -443,15 +441,7 @@ public:
 	}
 
 
-	VMesh(rj::VManager *pManager) : pVulkanManager(pManager)
-	{
-		albedoMap.image = std::numeric_limits<uint32_t>::max();
-		normalMap.image = std::numeric_limits<uint32_t>::max();
-		roughnessMap.image = std::numeric_limits<uint32_t>::max();
-		metalnessMap.image = std::numeric_limits<uint32_t>::max();
-		aoMap.image = std::numeric_limits<uint32_t>::max();
-		emissiveMap.image = std::numeric_limits<uint32_t>::max();
-	}
+	VMesh(rj::VManager *pManager);
 
 	void load(
 		const std::string &modelFileName,
@@ -523,6 +513,21 @@ public:
 		uPerModelInfo->M_invTrans = glm::transpose(glm::inverse(uPerModelInfo->M));
 		uniformDataChanged = false;
 	}
+
+	void setPosition(const glm::vec3 &newPos);
+	void setRotation(const glm::quat &newRot);
+	void setScale(float newScale);
+
+	const glm::vec3 &getPostion() const { return worldPosition; }
+	const glm::quat &getRotation() const { return worldRotation; }
+	float getScale() const { return scale; }
+	BBox getAABBWorldSpace() const;
+
+protected:
+	glm::vec3 worldPosition;
+	glm::quat worldRotation;
+	float scale;
+	BBox bounds;
 };
 
 class Skybox : public VMesh

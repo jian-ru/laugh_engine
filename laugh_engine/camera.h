@@ -19,12 +19,15 @@ public:
 
 	void getViewProjMatrix(glm::mat4 &V, glm::mat4 &P) const;
 	
+	float getZNear() const { return zNear; }
+	float getZFar() const { return zFar; }
 	const glm::vec3 &getPosition() const { return position; }
 	uint32_t getSegmentCount() const { return segmentCount; }
 	float getNormFarPlaneZ(uint32_t segIdx) const { return normFarPlaneZs[segIdx]; }
-
-	void computeFrustumBBox(const glm::mat4 &worldToX, glm::vec3 *pMin, glm::vec3 *pMax) const;
-	void computeSegmentBBox(uint32_t segIdx, const glm::mat4 &worldToX, glm::vec3 *pMin, glm::vec3 *pMax) const;
+	void getSegmentDepths(std::vector<float> *segDepths) const;
+	// On return, @corners contain (segmentCount * 4 + 4) points because
+	// near plane corners are the far plane corners of the previous segment
+	void getCornersWorldSpace(std::vector<glm::vec3> *corners) const;
 
 	void addRotation(float phi, float theta);
 	void addPan(float x, float y);
@@ -45,8 +48,6 @@ protected:
 	glm::vec2 phiTheta; // azimuth and zenith angles
 
 	uint32_t segmentCount;
-	float farPlaneZs[CSM_MAX_SEG_COUNT];
+	float farPlaneZs[CSM_MAX_SEG_COUNT]; // in camera view space
 	float normFarPlaneZs[CSM_MAX_SEG_COUNT];
-
-	void getCornersWorldSpace(float zNear, float zFar, std::vector<glm::vec4> *corners) const;
 };

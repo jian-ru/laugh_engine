@@ -7,7 +7,6 @@
 
 #include "camera.h"
 #include "vtextoverlay.h"
-#include "vmesh.h"
 
 
 enum DisplayMode
@@ -136,9 +135,6 @@ protected:
 
 	uint32_t m_graphicsCommandPool;
 	uint32_t m_computeCommandPool;
-
-	Skybox m_skybox{ &m_vulkanManager };
-	std::vector<VMesh> m_models;
 
 	typedef rj::helper_functions::ImageWrapper BakedBRDF;
 	std::vector<BakedBRDF> m_bakedBRDFs;

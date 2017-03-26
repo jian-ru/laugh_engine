@@ -162,12 +162,14 @@
     <ClCompile Include="VInstance.cpp" />
     <ClCompile Include="vk_helpers.cpp" />
     <ClCompile Include="vmesh.cpp" />
+    <ClCompile Include="vscene.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="camera.h" />
     <ClInclude Include="deferred_renderer.h" />
     <ClInclude Include="directional_light.h" />
     <ClInclude Include="gltf_loader.h" />
+    <ClInclude Include="vscene.h" />
     <ClInclude Include="vbase.h" />
     <ClInclude Include="VBuffer.h" />
     <ClInclude Include="VDeleter.h" />
