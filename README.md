@@ -31,6 +31,21 @@ A Vulkan implementation of real-time PBR renderer.
 | --- | --- |
 | ![](docs/boomBox.png) | ![](docs/lantern.png) |
 
+### Updates (3/26/2017)
+
+* Shadow
+  * Implemented Cascaded Shadow Map (CSM) for directional lights. The lesson I learned is that having shadow is easy but making it presentable is not. Most of my time was spent in fixing shadow mapping artifacts such as perspective aliasing (multiple pixels mapped to the same shadow map texel), projection aliasing (enlongated, pointy shadow on surfaces that are almost parallel to the light direction), shadow acne, and shadow edge shimmering.
+  * Tighter orthographic frustum, slope based depth bias, non-uniform frustum split, and PCF are used to mitigate shadow acne and perspective/projective aliasing. To fix the shadow edge flickering problem, I followed the moving light in texel-sized increments idea from DX11 CSM sample. The reason why shadow edge shimmers is that an area of the scene (e.g. a small patch on a floor) is covered by shadow pixels of different sizes/shapes/orientations due to the fact that the orthographic cascade frustums are updated each frame in reponse to camera movement. Therefore, to combact this artifact, we need to fix the sizes and orientations of the orthographic cascade frustums and move them in texel-sized increments. So a patch in the scene is always covered by a shadow map texel of the same size/shape/orientation.
+  * I render the shadow map for each cascade using different subpasses without inter-dependency in the hope that they will be executed in parallel. However, according the to timeline of RenderDoc capture, it seems that the subpasses are executed sequentially. So I may switch to the geometry shader layered rendering approach in the future. Performance comparison is needed.
+  
+  | Test Scene Cascades | Drone Cascades |
+  | --- | --- |
+  | ![](docs/cascades_test.png) | ![](docs/cascades_drone.png) |
+  
+  | Test Scene | Drone |
+  | --- | --- |
+  | ![](docs/shadow_test.png) | ![](docs/shadow_drone.png) |
+
 ### Optimizations
 
 * Spherical Harmonics Diffuse Lighting
@@ -111,6 +126,7 @@ A Vulkan implementation of real-time PBR renderer.
 * [Tinygltf](https://github.com/syoyo/tinygltfloader)
 
 #### Assets
+* [Buster Drone by LaVADraGoN](https://skfb.ly/TBnX)
 * [glTF 2.0 Test Models](https://github.com/sbtron/BabylonJS-glTFLoader/tree/master/models/2.0)
 * [Battle Damaged Sci-fi Helmet - PBR by theblueturtle_](https://sketchfab.com/theblueturtle_)
 * [Mysterious Island Centurion by levikingvolant](https://sketchfab.com/levikingvolant)
