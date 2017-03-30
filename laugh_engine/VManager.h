@@ -14,6 +14,7 @@
 #include "VSampler.h"
 #include "VFramebuffer.h"
 #include "VDescriptorPool.h"
+#include "VQueryPool.h"
 
 
 namespace rj
@@ -1455,6 +1456,51 @@ namespace rj
 		}
 		// --- Framebuffer related ---
 
+		// --- GPU Queries ---
+		uint32_t createQueryPool(VkQueryType queryType, uint32_t queryCount, VkQueryPipelineStatisticFlags pipelineStatistics = 0)
+		{
+			uint32_t newPoolName;
+			if (m_availableQueryPoolNames.empty())
+			{
+				newPoolName = uint32_t(m_queryPools.size());
+				m_queryPools.emplace_back(m_device);
+			}
+			else
+			{
+				newPoolName = m_availableQueryPoolNames.back();
+				m_availableQueryPoolNames.pop_back();
+			}
+
+			m_queryPools[newPoolName].init(queryType, queryCount, pipelineStatistics);
+
+			return newPoolName;
+		}
+
+		VkResult getQueryPoolResults(uint32_t queryPoolName, size_t dataSize, VkDeviceSize stride, void *pData,
+			uint32_t firstQuery = 0, uint32_t queryCount = std::numeric_limits<uint32_t>::max(), VkQueryResultFlags flags = 0)
+		{
+			assert(queryPoolName < m_queryPools.size());
+			assert(std::find(m_availableQueryPoolNames.begin(), m_availableQueryPoolNames.end(), queryPoolName) == m_availableQueryPoolNames.end());
+
+			const auto &queryPool = m_queryPools[queryPoolName];
+			if (queryCount == std::numeric_limits<uint32_t>::max()) queryCount = queryPool.getQueryCount();
+			assert(firstQuery + queryCount <= queryPool.getQueryCount());
+
+			// Return VK_NOT_READY if query results are not ready
+			// Make sure cmdResetQueryPool has been executed on this queryPool on GPU before calling.
+			// Otherwise the availability status is from last query (obsolete)
+			return vkGetQueryPoolResults(m_device, queryPool, firstQuery, queryCount, dataSize, pData, stride, flags);
+		}
+
+		void destroyQueryPool(uint32_t queryPoolName)
+		{
+			assert(queryPoolName < m_queryPools.size());
+			assert(std::find(m_availableQueryPoolNames.begin(), m_availableQueryPoolNames.end(), queryPoolName) == m_availableQueryPoolNames.end());
+
+			m_availableQueryPoolNames.push_back(queryPoolName);
+		}
+		// --- GPU Queries ---
+
 		// --- Descriptor pool related ---
 		void beginCreateDescriptorPool(uint32_t maxNumSets)
 		{
@@ -1999,6 +2045,31 @@ namespace rj
 			vkCmdDispatch(cmdBuffer, numBlocksX, numBlocksY, numBlocksZ);
 		}
 
+		void cmdResetQueryPool(uint32_t cmdBufferName, uint32_t queryPoolName,
+			uint32_t firstQuery = 0, uint32_t queryCount = std::numeric_limits<uint32_t>::max())
+		{
+			assert(queryPoolName < m_queryPools.size());
+			assert(std::find(m_availableQueryPoolNames.begin(), m_availableQueryPoolNames.end(), queryPoolName) == m_availableQueryPoolNames.end());
+
+			const auto &cb = m_commandBuffers[cmdBufferName];
+			const auto &queryPool = m_queryPools[queryPoolName];
+			if (queryCount == std::numeric_limits<uint32_t>::max()) queryCount = queryPool.getQueryCount();
+			assert(firstQuery + queryCount <= queryPool.getQueryCount());
+			vkCmdResetQueryPool(cb, queryPool, firstQuery, queryCount);
+		}
+
+		void cmdWriteTimestamp(uint32_t cmdBufferName, VkPipelineStageFlagBits pipelineStage,
+			uint32_t queryPoolName, uint32_t queryIdx)
+		{
+			assert(queryPoolName < m_queryPools.size());
+			assert(std::find(m_availableQueryPoolNames.begin(), m_availableQueryPoolNames.end(), queryPoolName) == m_availableQueryPoolNames.end());
+
+			const auto &cb = m_commandBuffers[cmdBufferName];
+			const auto &queryPool = m_queryPools[queryPoolName];
+			assert(queryIdx < queryPool.getQueryCount());
+			vkCmdWriteTimestamp(cb, pipelineStage, queryPool, queryIdx);
+		}
+
 		void queueWaitIdle(VkQueueFlags queueType) const
 		{
 			VkQueue queue = VK_NULL_HANDLE;
@@ -2220,7 +2291,7 @@ namespace rj
 
 		uint32_t getSwapChainSize() const
 		{
-			return static_cast<uint32_t>(m_swapChainFramebufferNames.size());
+			return m_swapChain.size();
 		}
 
 		VkResult swapChainNextImageIndex(uint32_t *pIdx, uint32_t signalSemaphoreName, uint32_t waitFenceName,
@@ -2356,6 +2427,9 @@ namespace rj
 		std::vector<uint32_t> m_swapChainFramebufferNames;
 		std::vector<uint32_t> m_availableFramebufferNames;
 		std::vector<VFramebuffer> m_framebuffers;
+
+		std::vector<uint32_t> m_availableQueryPoolNames;
+		std::vector<VQueryPool> m_queryPools;
 
 		DescriptorPoolCreateInfo m_curDescriptorPoolInfo;
 		uint32_t m_curDescriptorPoolName;

@@ -116,5 +116,8 @@
     <ClInclude Include="vscene.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="VQueryPool.h">
+      <Filter>Header Files\Vulkan</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

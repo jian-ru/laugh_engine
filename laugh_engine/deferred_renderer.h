@@ -243,9 +243,33 @@ protected:
 	} PerFrameCommandBuffers;
 	std::vector<PerFrameCommandBuffers> m_perFrameCommandBuffers;
 
+	enum PassTimestampQueryIndex
+	{
+		TQI_GEOM_START = 0,
+		TQI_GEOM_END,
+		TQI_SHADOW_START,
+		TQI_SHADOW_END,
+		TQI_LIGHTING_START,
+		TQI_LIGHTING_END,
+		TQI_BLOOM_START,
+		TQI_BLOOM_END,
+		TQI_FINAL_OUTPUT_START,
+		TQI_FINAL_OUTPUT_END,
+		TQI_QUERY_COUNT
+	};
+	std::vector<uint32_t> m_perFrameQueryPools;
+
 	VScene m_scene{ &m_vulkanManager };
 
+	rj::helper_functions::FrameTimeCalculator m_frameTimeCalculator;
+	rj::helper_functions::FrameTimeCalculator m_geomPassTimeCalculator;
+	rj::helper_functions::FrameTimeCalculator m_shadowPassTimeCalculator;
+	rj::helper_functions::FrameTimeCalculator m_lightingPassTimeCalculator;
+	rj::helper_functions::FrameTimeCalculator m_bloomPassTimeCalculator;
+	rj::helper_functions::FrameTimeCalculator m_finalOutputPassTimeCalculator;
 
+
+	virtual void createQueryPools();
 	virtual void createRenderPasses();
 	virtual void createDescriptorSetLayouts();
 	virtual void createComputePipelines();
@@ -264,6 +288,7 @@ protected:
 
 	virtual void updateUniformHostData();
 	virtual void updateUniformDeviceData(uint32_t imgIdx);
+	virtual void updateText(uint32_t imageIdx) override;
 	virtual void drawFrame();
 
 	// Helpers

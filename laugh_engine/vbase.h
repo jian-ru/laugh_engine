@@ -142,7 +142,6 @@ protected:
 	bool m_shouldSaveBakedBrdf = false;
 
 	VTextOverlay m_textOverlay{ &m_vulkanManager };
-	rj::helper_functions::Timer m_perfTimer;
 
 	bool m_initialized = false;
 
@@ -157,6 +156,7 @@ protected:
 	virtual const std::string &getWindowTitle();
 	virtual const VkPhysicalDeviceFeatures &getEnabledPhysicalDeviceFeatures();
 
+	virtual void createQueryPools() = 0;
 	virtual void createRenderPasses() = 0;
 	virtual void createDescriptorSetLayouts() = 0;
 	virtual void createComputePipelines() {}
@@ -175,7 +175,7 @@ protected:
 
 	virtual void updateUniformHostData() = 0;
 	virtual void updateUniformDeviceData(uint32_t imageIdx) = 0;
-	virtual void updateText(uint32_t imageIdx);
+	virtual void updateText(uint32_t imageIdx) {};
 	virtual void drawFrame() = 0;
 };
 

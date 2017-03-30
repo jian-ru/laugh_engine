@@ -18,6 +18,7 @@ void VBaseGraphics::run()
 void VBaseGraphics::initVulkan()
 {
 	loadAndPrepareAssets();
+	createQueryPools();
 	createRenderPasses();
 	createDescriptorSetLayouts();
 	createComputePipelines();
@@ -35,17 +36,6 @@ void VBaseGraphics::initVulkan()
 	m_textOverlay.prepareResources();
 
 	m_initialized = true;
-}
-
-void VBaseGraphics::updateText(uint32_t imageIdx)
-{
-	m_textOverlay.beginTextUpdate();
-
-	std::stringstream ss;
-	ss << m_windowTitle << " - ver" << m_verNumMajor << "." << m_verNumMinor;
-	m_textOverlay.addText(ss.str(), 5.0f, 5.0f, VTextOverlay::alignLeft);
-
-	m_textOverlay.endTextUpdate(imageIdx);
 }
 
 void VBaseGraphics::mainLoop()
@@ -76,6 +66,7 @@ void VBaseGraphics::recreateSwapChain()
 
 	m_vulkanManager.recreateSwapChain();
 	updateCamera();
+	createQueryPools();
 	createRenderPasses();
 	createGraphicsPipelines();
 	createDepthResources();

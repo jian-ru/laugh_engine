@@ -106,48 +106,40 @@ namespace rj
 			};
 		};
 
-		class Timer
+		class FrameTimeCalculator
 		{
 		public:
-			Timer(uint32_t ac = 100) :
-				tStart(std::chrono::high_resolution_clock::now()),
-				tEnd(tStart),
-				averageCount{ac},
+			FrameTimeCalculator(uint32_t ac = 30)
+				:
+				averageCount{ ac },
+				nextIdx{ 0 },
+				total{ 0.f },
 				timeIntervals(ac, 0.f)
 			{}
 		
-			void start()
+			float getAverageTimeMS() const
 			{
-				tStart = std::chrono::high_resolution_clock::now();
+				return total / static_cast<float>(averageCount);
 			}
-		
-			void stop()
+
+			void addFrameTime(float ms)
 			{
-				tEnd = std::chrono::high_resolution_clock::now();
-				float te = timeElapsed();
-				total -= timeIntervals[nextIdx];
-				timeIntervals[nextIdx] = te;
-				total += te;
-				nextIdx = (nextIdx + 1) % averageCount;
+				total += ms - timeIntervals[nextIdx];
+				timeIntervals[nextIdx++] = ms;
+				if (nextIdx >= averageCount) nextIdx -= averageCount;
 			}
-		
-			float timeElapsed() const
+
+			void clear()
 			{
-				return std::chrono::duration<float, std::milli>(tEnd - tStart).count();
-			}
-		
-			float getAverageTime() const
-			{
-				return total / averageCount;
+				nextIdx = 0;
+				total = 0.f;
+				memset(&timeIntervals[0], 0, timeIntervals.size() * sizeof(float));
 			}
 		
 		private:
-			std::chrono::time_point<std::chrono::high_resolution_clock> tStart;
-			decltype(tStart) tEnd;
-		
 			uint32_t averageCount;
-			uint32_t nextIdx = 0;
-			float total = 0.f;
+			uint32_t nextIdx;
+			float total;
 			std::vector<float> timeIntervals;
 		};
 

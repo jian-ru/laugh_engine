@@ -88,6 +88,41 @@ void DeferredRenderer::updateUniformDeviceData(uint32_t imgIdx)
 	m_vulkanManager.unmapBuffer(m_perFrameUniformDeviceData[imgIdx].buffer);
 }
 
+void DeferredRenderer::updateText(uint32_t imageIdx)
+{
+	m_textOverlay.beginTextUpdate();
+
+	std::stringstream ss;
+	ss << m_windowTitle << " - ver" << m_verNumMajor << "." << m_verNumMinor;
+	m_textOverlay.addText(ss.str(), 5.0f, 5.0f, VTextOverlay::alignLeft);
+
+	ss = std::stringstream();
+	ss << std::fixed << std::setprecision(2) << "Frame Time : " << m_frameTimeCalculator.getAverageTimeMS() << " ms";
+	m_textOverlay.addText(ss.str(), 5.f, 25.f, VTextOverlay::alignLeft);
+
+	ss = std::stringstream();
+	ss << std::fixed << std::setprecision(2) << "Geom Pass Time : " << m_geomPassTimeCalculator.getAverageTimeMS() << " ms";
+	m_textOverlay.addText(ss.str(), 5.f, 45.f, VTextOverlay::alignLeft);
+
+	ss = std::stringstream();
+	ss << std::fixed << std::setprecision(2) << "Shadow Pass Time : " << m_shadowPassTimeCalculator.getAverageTimeMS() << " ms";
+	m_textOverlay.addText(ss.str(), 5.f, 65.f, VTextOverlay::alignLeft);
+
+	ss = std::stringstream();
+	ss << std::fixed << std::setprecision(2) << "Lighting Pass Time : " << m_lightingPassTimeCalculator.getAverageTimeMS() << " ms";
+	m_textOverlay.addText(ss.str(), 5.f, 85.f, VTextOverlay::alignLeft);
+
+	ss = std::stringstream();
+	ss << std::fixed << std::setprecision(2) << "Bloom Pass Time : " << m_bloomPassTimeCalculator.getAverageTimeMS() << " ms";
+	m_textOverlay.addText(ss.str(), 5.f, 105.f, VTextOverlay::alignLeft);
+
+	ss = std::stringstream();
+	ss << std::fixed << std::setprecision(2) << "Final Ouput Pass Time : " << m_finalOutputPassTimeCalculator.getAverageTimeMS() << " ms";
+	m_textOverlay.addText(ss.str(), 5.f, 125.f, VTextOverlay::alignLeft);
+
+	m_textOverlay.endTextUpdate(imageIdx);
+}
+
 void DeferredRenderer::drawFrame()
 {
 	uint32_t imageIndex;
@@ -116,6 +151,29 @@ void DeferredRenderer::drawFrame()
 	m_vulkanManager.waitForFences({ m_renderFinishedFence });
 	m_vulkanManager.resetFences({ m_renderFinishedFence });
 
+	std::vector<uint64_t> timestampsNS(TQI_QUERY_COUNT);
+	if (m_vulkanManager.getQueryPoolResults(m_perFrameQueryPools[imageIndex], TQI_QUERY_COUNT * sizeof(uint64_t),
+		sizeof(uint64_t), &timestampsNS[0], 0, TQI_QUERY_COUNT, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS)
+	{
+		double elapsedTime = static_cast<double>(timestampsNS[TQI_FINAL_OUTPUT_END] - timestampsNS[TQI_GEOM_START]) * 1e-6;
+		m_frameTimeCalculator.addFrameTime(elapsedTime);
+
+		elapsedTime = static_cast<double>(timestampsNS[TQI_GEOM_END] - timestampsNS[TQI_GEOM_START]) * 1e-6;
+		m_geomPassTimeCalculator.addFrameTime(elapsedTime);
+
+		elapsedTime = static_cast<double>(timestampsNS[TQI_SHADOW_END] - timestampsNS[TQI_SHADOW_START]) * 1e-6;
+		m_shadowPassTimeCalculator.addFrameTime(elapsedTime);
+
+		elapsedTime = static_cast<double>(timestampsNS[TQI_LIGHTING_END] - timestampsNS[TQI_LIGHTING_START]) * 1e-6;
+		m_lightingPassTimeCalculator.addFrameTime(elapsedTime);
+
+		elapsedTime = static_cast<double>(timestampsNS[TQI_BLOOM_END] - timestampsNS[TQI_BLOOM_START]) * 1e-6;
+		m_bloomPassTimeCalculator.addFrameTime(elapsedTime);
+
+		elapsedTime = static_cast<double>(timestampsNS[TQI_FINAL_OUTPUT_END] - timestampsNS[TQI_FINAL_OUTPUT_START]) * 1e-6;
+		m_finalOutputPassTimeCalculator.addFrameTime(elapsedTime);
+	}
+
 	m_vulkanManager.beginQueueSubmit(VK_QUEUE_GRAPHICS_BIT);
 
 	m_vulkanManager.queueSubmitNewSubmit({ m_perFrameCommandBuffers[imageIndex].m_geomShadowLightingCommandBuffer },
@@ -142,6 +200,25 @@ void DeferredRenderer::drawFrame()
 	else if (result != VK_SUCCESS)
 	{
 		throw std::runtime_error("failed to present swap chain image!");
+	}
+}
+
+void DeferredRenderer::createQueryPools()
+{
+	if (m_initialized)
+	{
+		for (auto queryPoolName : m_perFrameQueryPools)
+		{
+			m_vulkanManager.destroyQueryPool(queryPoolName);
+		}
+	}
+	
+	const uint32_t swapChainImageCount = m_vulkanManager.getSwapChainSize();
+	m_perFrameQueryPools.resize(swapChainImageCount);
+
+	for (uint32_t i = 0; i < swapChainImageCount; ++i)
+	{
+		m_perFrameQueryPools[i] = m_vulkanManager.createQueryPool(VK_QUERY_TYPE_TIMESTAMP, TQI_QUERY_COUNT);
 	}
 }
 
@@ -1799,6 +1876,9 @@ void DeferredRenderer::createGeomShadowLightingCommandBuffers()
 		uint32_t cb = m_perFrameCommandBuffers[imgIdx].m_geomShadowLightingCommandBuffer;
 		m_vulkanManager.beginCommandBuffer(cb, VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT);
 
+		m_vulkanManager.cmdResetQueryPool(cb, m_perFrameQueryPools[imgIdx], 0, TQI_QUERY_COUNT);
+		m_vulkanManager.cmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, m_perFrameQueryPools[imgIdx], TQI_GEOM_START);
+
 		std::vector<VkClearValue> clearValues(4);
 		clearValues[0].depthStencil = { 1.0f, 0 };
 		clearValues[1].color = { { 0.0f, 0.0f, 0.0f, 0.0f } }; // g-buffer 1
@@ -1850,7 +1930,11 @@ void DeferredRenderer::createGeomShadowLightingCommandBuffers()
 
 		m_vulkanManager.cmdEndRenderPass(cb);
 
+		m_vulkanManager.cmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, m_perFrameQueryPools[imgIdx], TQI_GEOM_END);
+
 		// Shadow pass
+		m_vulkanManager.cmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, m_perFrameQueryPools[imgIdx], TQI_SHADOW_START);
+
 		clearValues.resize(m_camera.getSegmentCount());
 		for (uint32_t i = 0; i < m_camera.getSegmentCount(); ++i) clearValues[i].depthStencil = { 1.f, 0 };
 		m_vulkanManager.cmdBeginRenderPass(cb, m_shadowRenderPass, m_shadowFramebuffer, clearValues);
@@ -1876,7 +1960,11 @@ void DeferredRenderer::createGeomShadowLightingCommandBuffers()
 
 		m_vulkanManager.cmdEndRenderPass(cb);
 
+		m_vulkanManager.cmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, m_perFrameQueryPools[imgIdx], TQI_SHADOW_END);
+
 		// Lighting pass
+		m_vulkanManager.cmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, m_perFrameQueryPools[imgIdx], TQI_LIGHTING_START);
+
 		clearValues.resize(1);
 		clearValues[0].color = { { 0.f, 0.f, 0.f, 0.f } };
 		m_vulkanManager.cmdBeginRenderPass(cb, m_lightingRenderPass, m_lightingFramebuffer, clearValues);
@@ -1900,6 +1988,8 @@ void DeferredRenderer::createGeomShadowLightingCommandBuffers()
 
 		m_vulkanManager.cmdEndRenderPass(cb);
 
+		m_vulkanManager.cmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, m_perFrameQueryPools[imgIdx], TQI_LIGHTING_END);
+
 		m_vulkanManager.endCommandBuffer(cb);
 	}
 }
@@ -1911,6 +2001,8 @@ void DeferredRenderer::createPostEffectCommandBuffers()
 	{
 		uint32_t cb = m_perFrameCommandBuffers[imgIdx].m_postEffectCommandBuffer;
 		m_vulkanManager.beginCommandBuffer(cb, VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT);
+
+		m_vulkanManager.cmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, m_perFrameQueryPools[imgIdx], TQI_BLOOM_START);
 
 		// brightness mask
 		std::vector<VkClearValue> clearValues(1);
@@ -1969,6 +2061,8 @@ void DeferredRenderer::createPostEffectCommandBuffers()
 
 		m_vulkanManager.cmdEndRenderPass(cb);
 
+		m_vulkanManager.cmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, m_perFrameQueryPools[imgIdx], TQI_BLOOM_END);
+
 		m_vulkanManager.endCommandBuffer(cb);
 	}
 }
@@ -1985,6 +2079,8 @@ void DeferredRenderer::createPresentCommandBuffers()
 		uint32_t cb = m_perFrameCommandBuffers[imgIdx].m_presentCommandBuffer;
 		m_vulkanManager.beginCommandBuffer(cb, VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT);
 
+		m_vulkanManager.cmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, m_perFrameQueryPools[imgIdx], TQI_FINAL_OUTPUT_START);
+
 		m_vulkanManager.cmdBeginRenderPass(cb, m_finalOutputRenderPass, m_finalOutputFramebuffers[imgIdx], clearValues);
 
 		m_vulkanManager.cmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, m_finalOutputPipeline);
@@ -1994,6 +2090,8 @@ void DeferredRenderer::createPresentCommandBuffers()
 		m_vulkanManager.cmdDraw(cb, 3);
 
 		m_vulkanManager.cmdEndRenderPass(cb);
+
+		m_vulkanManager.cmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, m_perFrameQueryPools[imgIdx], TQI_FINAL_OUTPUT_END);
 
 		m_vulkanManager.endCommandBuffer(cb);
 	}

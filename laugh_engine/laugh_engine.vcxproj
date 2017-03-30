@@ -169,6 +169,7 @@
     <ClInclude Include="deferred_renderer.h" />
     <ClInclude Include="directional_light.h" />
     <ClInclude Include="gltf_loader.h" />
+    <ClInclude Include="VQueryPool.h" />
     <ClInclude Include="vscene.h" />
     <ClInclude Include="vbase.h" />
     <ClInclude Include="VBuffer.h" />

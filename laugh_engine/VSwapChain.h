@@ -41,6 +41,12 @@ namespace rj
 			return m_swapChainImageFormat;
 		}
 
+		// Return number of swap chain images
+		uint32_t size() const
+		{
+			return static_cast<uint32_t>(m_swapChainImages.size());
+		}
+
 	protected:
 		void createSwapChain()
 		{

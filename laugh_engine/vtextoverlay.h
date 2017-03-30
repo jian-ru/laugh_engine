@@ -161,6 +161,8 @@ public:
 		pManager->endQueueSubmit(fence, waitFence);
 	}
 
+	uint32_t getCommandBuffer(uint32_t bufferIdx) const { return commandBuffers[bufferIdx]; }
+
 private:
 	rj::VManager *pManager;
 
